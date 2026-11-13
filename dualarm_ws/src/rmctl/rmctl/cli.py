@@ -1233,10 +1233,22 @@ planning:
   num_planners: 2
   planning_time_s: 5.0
   planner_range: 0.01
-gripper:                   # 待接：型号、供电、协议
+gripper:                   # 夹爪唯一配置来源（换机型 = 换这份文件 + 重新标定，不改代码）
   model: RMG22-65
   power: external_24v     # 法兰供电上限 1.5A < 额定 1.9A，必须外部供电
-  protocol: modbus_rtu
+  protocol: modbus_rtu    # 线路协议：modbus_rtu（RTU 帧）/ rm_plus（官方 RM Plus）/ gripper_api（官方夹爪快路径）
+  path: modbus            # 驱动路径：modbus | gripper_api | rm_plus
+  device_id: 1            # Modbus 从站地址（1 起）
+  baud: 115200            # Modbus 波特率
+  timeout_ms: 500         # 单次寄存器读写超时（毫秒）
+  poll_interval_ms: 50    # 状态轮询周期（毫秒）
+  action_timeout_ms: 2000 # 一次开/合动作的等待上限（毫秒）
+  max_regrasp: 2          # 夹空/堵转后的最大重夹次数
+  # ---- 标定类字段：真机实测之前一律留 null（不得写入猜测值）----
+  position_mm_per_unit: null   # 位置换算系数 mm/unit（来源：厂商手册标度 + 真机实测回填）
+  force_scale: null            # 力度换算系数 N/源力度单位（来源：厂商手册标度 + 真机实测回填）
+  force_threshold: null        # 夹到判定阈值（源力度单位，来源：真机实测回填）
+  grasp_position_window: null  # 夹持位置窗口 [lo, hi]（mm，来源：真机实测回填）
 calibration:
   tcp: null               # 未标定：不得伪造
   base_to_base: null      # 未标定：不得伪造
