@@ -93,6 +93,22 @@ def test_model_path_env_unset_falls_back(monkeypatch):
     assert paths.model_search_paths() == [paths.models_dir]
 
 
+def test_calibration_dirs_are_distinct():
+    """包内标定目录 vs 仓库根标定目录（S04-T05）：同名易混，必须分清。
+
+    * ``calibration_dir``       = ``src/rm75_drake/calibration/`` → 随包分发的默认标定；
+    * ``calibration_files_dir`` = ``<repo root>/calibration/``     → 部署实例的标定产出/采样。
+    """
+    assert paths.calibration_dir == paths.package_dir / "calibration"
+    assert paths.calibration_dir.is_dir()
+    assert paths.calibration_files_dir == paths.REPO_ROOT / "calibration"
+    assert paths.calibration_files_dir.is_dir()
+    assert paths.calibration_files_dir != paths.calibration_dir
+    # 部署实例标定产出物落位
+    assert (paths.calibration_files_dir / "dual_arm.yaml").is_file()
+    assert (paths.calibration_files_dir / "samples" / "demo.yaml").is_file()
+
+
 def test_versions_lock_parses_and_has_baseline():
     with paths.versions_lock_path.open("r", encoding="utf-8") as fh:
         lock = yaml.safe_load(fh)

@@ -65,7 +65,10 @@ def test_dual_scenario_loads_and_declares_two_arms(dual_scenario):
     assert dual_scenario.robot("left").joint_names[0] == "left_joint_1"
     assert dual_scenario.robot("right").joint_names[-1] == "right_joint_7"
     assert dual_scenario.obstacles == ()
-    assert dual_scenario.calibration == {}
+    # S04-T05：场景改为**引用**标定文件（标定文件是基座外参的唯一真相源），
+    # 因此 calibration 段不再为空。
+    assert list(dual_scenario.calibration) == ["base_extrinsic"]
+    assert dual_scenario.calibration["base_extrinsic"]["file"].endswith("dual_arm.yaml")
 
 
 # ── 单一 plant 装配 ─────────────────────────────────────────────────────

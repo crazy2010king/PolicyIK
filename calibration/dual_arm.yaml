@@ -1,0 +1,102 @@
+# 双臂标定产出文件（部署实例标定，**仓库根 calibration/ 目录**）
+#
+# ⚠ **未实测声明（务必先读）**
+#   本文件里的所有数值都是**占位值 / 设计值**，**不是实测结果**：
+#     * measured: false   —— 数据**不来自**实测；
+#     * calibrated: false —— **尚未完成标定**。
+#   因此文件里的残差数字只是**占位**（samples = 0 表示"没有任何实测样本"），
+#   **不得**被解读为"标定精度为零误差"，更不得当作实测精度结论。
+#   真实精度（关节零位 < 0.1°、工具 TCP < 0.5 mm、基座外参 < 0.5 mm / 0.2°）
+#   需要真机 + 工装 + 第三方交叉验证，**本环境无真机、未实测**。
+#
+# 与包内标定目录的分工（勿混）：
+#   * src/rm75_drake/calibration/  → 随包分发的默认标定（夹爪力曲线等）；
+#   * <仓库根>/calibration/         → **本文件**：部署实例的标定产出与采样数据。
+#
+# schema 由 src/rm75_drake/calibration/schema.py 定义（schema_version: 1）。
+# 单位：长度 m、角度 **rad（弧度，不接收度）**。
+#
+# 本文件是**双臂基座外参的唯一真相源**：scenarios/dual_arm.yaml 通过
+# `calibration.base_extrinsic.file: dual_arm.yaml` 引用本文件，
+# 场景里手写的 base_extrinsics 仅在**不引用标定文件**时作为回退值。
+
+schema_version: 1
+
+# 数据是否来自实测。本环境无真机 / 无实测数据 → false。
+measured: false
+
+# 是否已完成标定。measured=false 时必须是 false（schema 强制自洽）。
+calibrated: false
+
+# 标定方法（**计划**方法，尚未执行）：
+#   * 双臂基座外参：尖对尖 15–20 组点对 + Kabsch/Umeyama 最小二乘 + 第三方交叉验证；
+#   * 工具 TCP 6D：四点法 / 六点法（Kabsch）；
+#   * 关节零位：逐关节 +10° 对比 FK 反解。
+method: "unmeasured-placeholder: base_extrinsic=tip-to-tip(15-20)+Kabsch+third-party-cross-check; tool_tcp=4pt/6pt; joint_zero=per-joint+10deg"
+
+# 标定日期（占位：本文件尚未由任何一次实测标定产生）。
+date: "2026-11-13"
+
+# 双臂基座在 world 系下的外参（占位值，measured=false）。
+#   * left  = 原点（设计约定：左臂为 world 原点）；
+#   * right = 沿 +x 平移 0.60 m（设计文档推荐区间 0.55–0.70 m），两臂共面（rpy 全 0）。
+base_extrinsic:
+  left:
+    xyz: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+    residual:
+      rms: 0.0        # 未实测：残差占位（samples=0 表示没有任何实测样本）
+      max: 0.0        # 未实测：残差占位
+      samples: 0      # 未实测：实测样本数为 0
+      threshold: 5.0e-4   # 目标阈值 0.5 mm（尚未验证）
+      within_threshold: false  # 未实测 → 不声称在阈值内
+  right:
+    xyz: [0.6, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+    residual:
+      rms: 0.0        # 未实测：残差占位
+      max: 0.0        # 未实测：残差占位
+      samples: 0      # 未实测：实测样本数为 0
+      threshold: 5.0e-4   # 目标阈值 0.5 mm（尚未验证）
+      within_threshold: false  # 未实测 → 不声称在阈值内
+
+# 关节零位偏差（rad，占位值：全 0 = "未标定"，**不是**"标定结果为零"）。
+# 每个机器人必须恰好 7 个关节（RM75-D 是 7 自由度）。
+joint_zero_offset:
+  left:
+    left_joint_1: 0.0
+    left_joint_2: 0.0
+    left_joint_3: 0.0
+    left_joint_4: 0.0
+    left_joint_5: 0.0
+    left_joint_6: 0.0
+    left_joint_7: 0.0
+  right:
+    right_joint_1: 0.0
+    right_joint_2: 0.0
+    right_joint_3: 0.0
+    right_joint_4: 0.0
+    right_joint_5: 0.0
+    right_joint_6: 0.0
+    right_joint_7: 0.0
+
+# 工具 TCP 6D 修正（相对 URDF 的 Link7→法兰→夹爪→TCP，占位值 = 单位修正）。
+tool_offset:
+  left:
+    xyz: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+    residual:
+      rms: 0.0        # 未实测：残差占位
+      max: 0.0        # 未实测：残差占位
+      samples: 0      # 未实测：实测样本数为 0
+      threshold: 5.0e-4   # 目标阈值 0.5 mm（尚未验证）
+      within_threshold: false  # 未实测 → 不声称在阈值内
+  right:
+    xyz: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+    residual:
+      rms: 0.0        # 未实测：残差占位
+      max: 0.0        # 未实测：残差占位
+      samples: 0      # 未实测：实测样本数为 0
+      threshold: 5.0e-4   # 目标阈值 0.5 mm（尚未验证）
+      within_threshold: false  # 未实测 → 不声称在阈值内

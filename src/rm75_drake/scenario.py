@@ -76,7 +76,16 @@ _OBSTACLE_KEYS: Tuple[str, ...] = ("name", "type", "size", "pose")
 _POSE_KEYS: Tuple[str, ...] = ("xyz", "rpy")
 
 #: 标定条目的合法子键（可整体为空映射）。
-_CALIBRATION_KEYS: Tuple[str, ...] = ("gripper_force", "joint_zero_offset", "tool_offset")
+#:
+#: ``base_extrinsic``（S04-T05 新增，**可选**）—— 形如 ``{file: dual_arm.yaml}``，
+#: 相对路径按 :data:`rm75_drake.paths.calibration_files_dir`（仓库根 ``calibration/``）解析；
+#: 该标定文件里的基座外参是**唯一真相源**（覆盖场景里手写的 ``base_extrinsics``）。
+_CALIBRATION_KEYS: Tuple[str, ...] = (
+    "gripper_force",
+    "joint_zero_offset",
+    "tool_offset",
+    "base_extrinsic",
+)
 
 #: 目前支持的障碍物类型（其它类型显式报错，不静默降级）。
 _SUPPORTED_OBSTACLE_TYPES: Tuple[str, ...] = ("box",)
@@ -315,8 +324,49 @@ def _parse_obstacle(entry: Any, index: int) -> Obstacle:
     )
 
 
-def _parse_calibration(entry: Any) -> Dict[str, Any]:
-    """解析 ``calibration`` 段（可为空映射，但键必须存在）。"""
+def _load_calibration_base_extrinsics(raw_file: str) -> Tuple[str, Dict[str, BaseExtrinsic]]:
+    """加载标定文件里的基座外参（标定文件是外参的**唯一真相源**）。
+
+    返回 ``(标定文件绝对路径, {机器人名: BaseExtrinsic})``。
+
+    * 文件不存在 → :class:`ScenarioError`，消息**点名路径**；
+    * 标定文件 schema 非法（未知键 / 缺字段 / 维度或单位错）→ :class:`ScenarioError`，
+      消息**同时点名路径与出错键**（标定层的 ``CalibrationError`` 消息里已带键路径）。
+    """
+    from . import paths
+    from .calibration.schema import CalibrationError, load_calibration_file
+
+    candidate = Path(raw_file)
+    if not candidate.is_absolute():
+        candidate = paths.calibration_files_dir / candidate
+    if not candidate.is_file():
+        raise ScenarioError(
+            f"calibration.base_extrinsic.file 引用的标定文件不存在：{candidate}；"
+            f"相对路径按 {paths.calibration_files_dir} 解析"
+        )
+    try:
+        doc = load_calibration_file(candidate)
+    except CalibrationError as exc:
+        # 标定层已点名出错键，这里补上路径（不静默回退到手写外参）。
+        raise ScenarioError(f"标定文件非法：{candidate}（{exc}）") from exc
+    except FileNotFoundError as exc:  # pragma: no cover - 竞态删除
+        raise ScenarioError(
+            f"calibration.base_extrinsic.file 引用的标定文件不存在：{candidate}"
+        ) from exc
+
+    resolved: Dict[str, BaseExtrinsic] = {}
+    for robot, entry in doc.base_extrinsic.items():
+        resolved[robot] = BaseExtrinsic(xyz=entry.xyz, rpy=entry.rpy)
+    return str(candidate), resolved
+
+
+def _parse_calibration(entry: Any) -> Tuple[Dict[str, Any], Dict[str, BaseExtrinsic]]:
+    """解析 ``calibration`` 段（可为空映射，但键必须存在）。
+
+    返回 ``(解析结果, 标定文件给出的基座外参)``；第二项仅在存在
+    ``calibration.base_extrinsic`` 时非空（此时它**覆盖**场景手写的
+    ``base_extrinsics``——标定文件是唯一真相源）。
+    """
     from . import paths
 
     mapping = _require_mapping(entry, "calibration")
@@ -367,7 +417,21 @@ def _parse_calibration(entry: Any) -> Dict[str, Any]:
             tool[robot_name] = _parse_extrinsic(value, tpath)
         out["tool_offset"] = tool
 
-    return out
+    resolved: Dict[str, BaseExtrinsic] = {}
+    if "base_extrinsic" in mapping:
+        path = "calibration.base_extrinsic"
+        sub = _require_mapping(mapping["base_extrinsic"], path)
+        _check_keys(sub, path, ("file",), ("file",))
+        raw = _require_str(sub["file"], f"{path}.file")
+        resolved_path, resolved = _load_calibration_base_extrinsics(raw)
+        out["base_extrinsic"] = {"file": resolved_path}
+        if not resolved:
+            raise ScenarioError(
+                f"标定文件里没有 base_extrinsic 段：{resolved_path}；"
+                "该场景引用了标定文件作为基座外参真相源，标定文件必须给出外参"
+            )
+
+    return out, resolved
 
 
 def load_scenario_dict(data: Any, source_path: Optional[str] = None) -> Scenario:
@@ -424,7 +488,25 @@ def load_scenario_dict(data: Any, source_path: Optional[str] = None) -> Scenario
     if len(set(obstacle_names)) != len(obstacle_names):
         raise ScenarioError(f"obstacles 里有重名障碍物：{obstacle_names}")
 
-    calibration = _parse_calibration(mapping["calibration"])
+    calibration, calibrated_extrinsics = _parse_calibration(mapping["calibration"])
+
+    if calibrated_extrinsics:
+        # 标定文件是基座外参的**唯一真相源**：它给出的值覆盖场景里手写的值；
+        # 缺项 / 多项一律显式报错（禁止静默回退到手写值造成两个真相源）。
+        unknown_calib = [k for k in calibrated_extrinsics if k not in names]
+        if unknown_calib:
+            raise ScenarioError(
+                f"标定文件里的基座外参含未在 robots 中声明的机器人：{sorted(unknown_calib)}；"
+                f"标定文件={calibration.get('base_extrinsic', {}).get('file')}"
+            )
+        missing_calib = [n for n in names if n not in calibrated_extrinsics]
+        if missing_calib:
+            raise ScenarioError(
+                f"标定文件里缺少机器人 {missing_calib} 的基座外参；"
+                f"标定文件={calibration.get('base_extrinsic', {}).get('file')}；"
+                "禁止静默回退到手写 base_extrinsics（那会形成两个真相源）"
+            )
+        extrinsics.update(calibrated_extrinsics)
 
     return Scenario(
         schema_version=version,

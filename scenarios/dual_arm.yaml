@@ -12,11 +12,12 @@
 # （models/rm75_drake/rm75_{left,right}.urdf）——Drake 不允许同一份 URDF 在
 # 同一个 plant 里装两次（实测 RuntimeError: model instance names must be unique）。
 #
-# **基座外参是占位值**（measured=false）：
-#   * 右臂基座沿 +x 平移 0.60 m（设计文档推荐区间 0.55–0.70 m）；
+# **基座外参**：本文件手写的值只是**无标定文件时的回退值**——
+#   **标定文件 calibration/dual_arm.yaml 才是唯一真相源**（见文件末尾 calibration 段）。
+#   * 左臂：原点；
+#   * 右臂：沿 +x 平移 0.60 m（设计文档推荐区间 0.55–0.70 m）；
 #   * 两臂共面（rpy 全 0）、同高；
-#   * 真实外参由标定文件给出（S04-T05 会让本文件**引用**标定文件，
-#     届时标定文件是基座外参的**唯一真相源**，这里的手写值只作无标定文件时的回退）。
+#   * 真实外参由标定文件给出（measured=false 占位 → 本环境无实测数据）。
 #
 # 未知键 / 缺字段 / 维度或单位写错 → rm75_drake.scenario.ScenarioError
 # （禁止静默默认值）。
@@ -49,8 +50,9 @@ robots:
       - right_joint_7
 
 # 机器人基座相对场景世界系的外参（m / rad）。
-#   * 左手：原点（占位值，标定后以 calibration/dual_arm.yaml 为准）
-#   * 右手：沿 +x 平移 0.60 m（占位值）
+#   ⚠ **下面这组手写值只是回退值**：一旦下面的 calibration 段引用了标定文件，
+#     **以标定文件为准**（本文件的手写值被标定文件覆盖）。
+#     这样保证「基座外参只有一个真相源」，避免两处手写值漂移。
 base_extrinsics:
   left:
     xyz: [0.0, 0.0, 0.0]
@@ -63,5 +65,13 @@ base_extrinsics:
 obstacles: []
 
 # 标定参数（键必须存在，可以是空映射 {}）。
-# S04-T05 会在这里写 base_extrinsic: {file: dual_arm.yaml}（标定文件是唯一真相源）。
-calibration: {}
+#
+# **base_extrinsic 是可选键**（S04-T05 新增）：引用**部署实例标定文件**，
+# 相对路径按 <仓库根>/calibration/（paths.calibration_files_dir）解析。
+#
+# 该标定文件里的基座外参是**唯一真相源**：加载场景时用它**覆盖**上面的
+# base_extrinsics 手写值（手写值仅在**不引用**标定文件时生效）。
+# 标定文件缺失 / schema 非法 → ScenarioError（点名路径与出错键），**不静默回退**。
+calibration:
+  base_extrinsic:
+    file: dual_arm.yaml

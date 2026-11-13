@@ -20,6 +20,7 @@ __all__ = [
     "REPO_ROOT",
     "package_dir",
     "calibration_dir",
+    "calibration_files_dir",
     "models_dir",
     "scenarios_dir",
     "devices_dir",
@@ -65,7 +66,15 @@ REPO_ROOT = resolve_repo_root()
 package_dir = Path(__file__).resolve().parent
 
 #: 标定数据目录（夹爪力曲线等，随包分发）。
+#: **语义**：随包分发的**默认标定**（package data），不承载部署实例数据。
 calibration_dir = package_dir / "calibration"
+
+#: 标定**产出文件**目录（仓库根 ``calibration/``）：部署实例的标定结果与采样数据。
+#: 与 :data:`calibration_dir` **同名易混，必须分清**：
+#:   * ``calibration_dir`` = ``src/rm75_drake/calibration/`` → 随包分发（夹爪力曲线等）；
+#:   * ``calibration_files_dir`` = ``<repo root>/calibration/`` → 部署实例（标定产出、采样）。
+#: 场景文件里的 ``calibration.base_extrinsic.file`` 相对路径按本目录解析。
+calibration_files_dir = REPO_ROOT / "calibration"
 
 #: 仓库内模型根目录（package:// 的默认来源）。
 models_dir = REPO_ROOT / "models"

@@ -1,0 +1,235 @@
+# 合成采样点集（**演练用**，非实测数据）
+#
+# ⚠ **合成声明**：本文件里的每一条采样都带 `synthetic: true` 与 `source: synthetic`，
+#   只用于**演练标定解算链路**（CLI / 脚本的联调用例），
+#   **不构成任何实测精度结论**，也**不得**被写进标定产出文件当作实测结果。
+#
+# 与包内标定目录的分工（勿混）：
+#   * src/rm75_drake/calibration/  → 随包分发的默认标定（夹爪力曲线等）；
+#   * <仓库根>/calibration/         → 部署实例：标定产出（本目录的上一级）与采样（本目录）。
+#
+# schema 由 src/rm75_drake/calibration/samples.py 定义。
+#   * 顶层键固定三个：joint_zero / tool_tcp / base_extrinsic；
+#   * **每条采样**必须带 synthetic + source（因此「整份文件是合成的」由每条采样逐条标注，
+#     而不是顶层一个总开关——schema 不接受顶层 synthetic/source 键）。
+#   * tool_tcp ≥ 4 组点对；base_extrinsic ≥ 15 组「尖对尖」点对。
+#
+# 本文件采用的**合成 FK**（与文件里的 pose_* 位姿自洽，供解算演练使用）：
+#   fk(q) = 平移 [0.5*q0, 0.5*q1, 0.5*q2]，旋转 = 单位阵（4×4 齐次矩阵）。
+#   即：只有前三个关节对末端位姿有影响，其余关节不可辨识（真实标定需换工装/编码器读数）。
+#
+# 单位：长度 m、角度 rad（+10° = 0.17453292519943295 rad）。
+
+# ── 关节零位：逐关节 +10° 对比采样（左臂 7 关节）──────────────────────
+joint_zero:
+  # 关节 1：nominal 全 0 → 该关节 +10°
+  - joint: left_joint_1
+    index: 0
+    q_nominal: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    q_offset: [0.17453292519943295, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    pose_nominal:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    pose_offset:
+      - [1.0, 0.0, 0.0, 0.08726646259971647]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    synthetic: true
+    source: synthetic
+  # 关节 2：nominal 全 0 → 该关节 +10°
+  - joint: left_joint_2
+    index: 1
+    q_nominal: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    q_offset: [0.0, 0.17453292519943295, 0.0, 0.0, 0.0, 0.0, 0.0]
+    pose_nominal:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    pose_offset:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.08726646259971647]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    synthetic: true
+    source: synthetic
+  # 关节 3：nominal 全 0 → 该关节 +10°
+  - joint: left_joint_3
+    index: 2
+    q_nominal: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    q_offset: [0.0, 0.0, 0.17453292519943295, 0.0, 0.0, 0.0, 0.0]
+    pose_nominal:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    pose_offset:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.08726646259971647]
+      - [0.0, 0.0, 0.0, 1.0]
+    synthetic: true
+    source: synthetic
+  # 关节 4：nominal 全 0 → 该关节 +10°
+  - joint: left_joint_4
+    index: 3
+    q_nominal: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    q_offset: [0.0, 0.0, 0.0, 0.17453292519943295, 0.0, 0.0, 0.0]
+    pose_nominal:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    pose_offset:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    synthetic: true
+    source: synthetic
+  # 关节 5：nominal 全 0 → 该关节 +10°
+  - joint: left_joint_5
+    index: 4
+    q_nominal: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    q_offset: [0.0, 0.0, 0.0, 0.0, 0.17453292519943295, 0.0, 0.0]
+    pose_nominal:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    pose_offset:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    synthetic: true
+    source: synthetic
+  # 关节 6：nominal 全 0 → 该关节 +10°
+  - joint: left_joint_6
+    index: 5
+    q_nominal: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    q_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.17453292519943295, 0.0]
+    pose_nominal:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    pose_offset:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    synthetic: true
+    source: synthetic
+  # 关节 7：nominal 全 0 → 该关节 +10°
+  - joint: left_joint_7
+    index: 6
+    q_nominal: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    q_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.17453292519943295]
+    pose_nominal:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    pose_offset:
+      - [1.0, 0.0, 0.0, 0.0]
+      - [0.0, 1.0, 0.0, 0.0]
+      - [0.0, 0.0, 1.0, 0.0]
+      - [0.0, 0.0, 0.0, 1.0]
+    synthetic: true
+    source: synthetic
+
+# ── 工具 TCP：局部点 ↔ 世界点对（6 组，满足四点法下限）──────────────────
+# 合成真值：world = local + [0.01, 0.02, 0.03]（即合成 TCP 偏移）。
+tool_tcp:
+  - local_point: [0.0, 0.0, 0.0]
+    world_point: [0.01, 0.02, 0.03]
+    synthetic: true
+    source: synthetic
+  - local_point: [0.05, 0.0, 0.0]
+    world_point: [0.060000000000000005, 0.02, 0.03]
+    synthetic: true
+    source: synthetic
+  - local_point: [0.0, 0.05, 0.0]
+    world_point: [0.01, 0.07, 0.03]
+    synthetic: true
+    source: synthetic
+  - local_point: [0.0, 0.0, 0.05]
+    world_point: [0.01, 0.02, 0.08]
+    synthetic: true
+    source: synthetic
+  - local_point: [0.05, 0.05, 0.0]
+    world_point: [0.060000000000000005, 0.07, 0.03]
+    synthetic: true
+    source: synthetic
+  - local_point: [0.05, 0.0, 0.05]
+    world_point: [0.060000000000000005, 0.02, 0.08]
+    synthetic: true
+    source: synthetic
+
+# ── 双臂基座外参：左点 ↔ 右点「尖对尖」点对（15 组）────────────────────
+# 合成真值：right_point = left_point - [0.6, 0.0, 0.0]（右臂沿 +x 平移 0.60 m）。
+base_extrinsic:
+  - left_point: [0.1, 0.05, 0.2]
+    right_point: [-0.5, 0.05, 0.2]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.15, 0.05, 0.25]
+    right_point: [-0.44999999999999996, 0.05, 0.25]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.2, 0.05, 0.3]
+    right_point: [-0.39999999999999997, 0.05, 0.3]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.1, 0.1, 0.2]
+    right_point: [-0.5, 0.1, 0.2]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.15, 0.1, 0.25]
+    right_point: [-0.44999999999999996, 0.1, 0.25]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.2, 0.1, 0.3]
+    right_point: [-0.39999999999999997, 0.1, 0.3]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.1, 0.15, 0.2]
+    right_point: [-0.5, 0.15, 0.2]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.15, 0.15, 0.25]
+    right_point: [-0.44999999999999996, 0.15, 0.25]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.2, 0.15, 0.3]
+    right_point: [-0.39999999999999997, 0.15, 0.3]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.25, 0.1, 0.35]
+    right_point: [-0.35, 0.1, 0.35]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.3, 0.1, 0.4]
+    right_point: [-0.3, 0.1, 0.4]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.25, 0.15, 0.35]
+    right_point: [-0.35, 0.15, 0.35]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.3, 0.15, 0.4]
+    right_point: [-0.3, 0.15, 0.4]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.35, 0.1, 0.45]
+    right_point: [-0.25, 0.1, 0.45]
+    synthetic: true
+    source: synthetic
+  - left_point: [0.35, 0.15, 0.45]
+    right_point: [-0.25, 0.15, 0.45]
+    synthetic: true
+    source: synthetic
