@@ -31,8 +31,13 @@ def repo_root() -> str:
 
 
 @pytest.fixture(scope="session")
-def pkg_root() -> str:
-    """rm_executor 包根（dualarm_ws/src/rm_executor）。"""
+def executor_pkg_root() -> str:
+    """rm_executor 包根（dualarm_ws/src/rm_executor）。
+
+    **刻意不叫 ``pkg_root``**：与 ``rm_hw_bridge/tests/conftest.py`` 的同名
+    fixture 冲突时，session 级同名 fixture 会互相覆盖，导致合并跑两个包的
+    pytest 时硬件层用例拿到错误的包根路径。
+    """
     return PKG_SRC
 
 

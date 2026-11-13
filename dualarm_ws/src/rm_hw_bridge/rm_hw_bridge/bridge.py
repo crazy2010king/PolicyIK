@@ -33,7 +33,7 @@ import math
 import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from rm_hw_bridge import errors, limits as limits_mod, loader, paths
 from rm_hw_bridge.generated import rm_api2_ctypes as gen
@@ -180,8 +180,47 @@ def print_diff(diff: List[Dict[str, Any]]) -> None:
 
 
 # --------------------------------------------------------------- 实时上报状态
+def _copy_joint_array(values: Any, size: int = ARM_DOF) -> Optional[List[float]]:
+    """把 SDK 关节数组**拷贝**成定长 float 列表；不合法 → ``None``。
+
+    **不返回 0 冒充**：数量不对 / 含非数值 → ``None``（调用方据此报「暂无数据」）。
+    """
+    if values is None or isinstance(values, (str, bytes)):
+        return None
+    try:
+        seq = list(values)
+    except TypeError:
+        return None
+    if len(seq) != size:
+        return None
+    out: List[float] = []
+    for item in seq:
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        out.append(float(item))
+    return out
+
+
+def _copy_joint_arrays(joint_status: Any) -> Tuple[Optional[List[float]], Optional[List[float]]]:
+    """从 ``rm_joint_status_t`` 拷贝出 (关节角°, 关节速度°/s)。
+
+    ``joint_status`` 为 ``None`` 或字段缺失/不合法 → 两个 ``None``（无数据）。
+    """
+    if joint_status is None:
+        return None, None
+    position = _copy_joint_array(getattr(joint_status, "joint_position", None))
+    speed = _copy_joint_array(getattr(joint_status, "joint_speed", None))
+    return position, speed
+
+
 class _RealtimeState:
-    """进程级实时上报状态（``rm_realtime_arm_state_call_back`` 是全局注册）。"""
+    """进程级实时上报状态（``rm_realtime_arm_state_call_back`` 是全局注册）。
+
+    **拷贝语义**：``push()`` 收到的 ``rm_joint_status_t`` 是 SDK **复用结构体**
+    （下一次回调会原地覆写），因此本类在 push 时就把 ``joint_position``（°）
+    与 ``joint_speed``（°/s）**拷贝**成 Python ``list``，只读访问器
+    :meth:`latest_joint_state` 只返回拷贝——读到的快照不会撕裂。
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -189,6 +228,9 @@ class _RealtimeState:
         self.last_ts: Optional[float] = None
         self.arm_current_status: Optional[int] = None
         self.last_joint_status: Optional[Any] = None
+        # 拷贝出来的关节字段（Python list，不保留 SDK 结构体引用）
+        self._joint_position: Optional[List[float]] = None
+        self._joint_speed: Optional[List[float]] = None
 
     def push(self, state: Any) -> None:
         with self._lock:
@@ -196,6 +238,9 @@ class _RealtimeState:
             self.last_ts = time.time()
             self.arm_current_status = int(getattr(state, "arm_current_status", 0) or 0)
             self.last_joint_status = getattr(state, "joint_status", None)
+            position, speed = _copy_joint_arrays(self.last_joint_status)
+            self._joint_position = position
+            self._joint_speed = speed
 
     def snapshot(self, period_ms: Optional[int]) -> Dict[str, Any]:
         with self._lock:
@@ -203,6 +248,33 @@ class _RealtimeState:
                 "frames": self.frames,
                 "last_ts": self.last_ts,
                 "period_ms": period_ms,
+            }
+
+    def latest_joint_state(self) -> Dict[str, Any]:
+        """最新关节状态快照（**拷贝语义**，线程安全只读）。
+
+        返回::
+
+            {
+              "joint_position_deg": [7] | None,   # 关节角（度）
+              "joint_speed_deg_s":  [7] | None,   # 关节角速度（度/秒）
+              "last_frame_ts": float | None,      # 最后一帧时间戳（秒）
+              "frames": int,                      # 已收到的帧数
+            }
+
+        **无数据时关节字段为 ``None``，绝不返回 0 冒充**（0 会被误读成
+        「关节在 0 度」）。返回值里的 list 是拷贝，改它不影响内部缓存。
+        """
+        with self._lock:
+            return {
+                "joint_position_deg": (
+                    list(self._joint_position) if self._joint_position else None
+                ),
+                "joint_speed_deg_s": (
+                    list(self._joint_speed) if self._joint_speed else None
+                ),
+                "last_frame_ts": self.last_ts,
+                "frames": self.frames,
             }
 
 

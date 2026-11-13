@@ -27,7 +27,8 @@
 * :class:`PollFeedback` —— 白名单符号 ``rm_get_joint_degree`` 轮询（独立线程，
   周期 10–20 ms），速度由位置差分得到；
 * :class:`UdpFeedback` —— 读 ``rm_hw_bridge.bridge.realtime_state()`` 的实时
-  上报（T6 接线前只有帧计数，关节字段为 ``None``）；
+  上报（**已接线**：T6 起 ``realtime_state().latest_joint_state()`` 提供线程安全
+  的**拷贝**快照，关节角/速度不再是 ``None``）；
 * :class:`FeedbackPump` —— 后台采集泵（线程安全的快照缓存 + 断流看门狗输入）。
 
 **零 rmctl 依赖、零 tesseract 依赖**。
@@ -49,6 +50,7 @@ __all__ = [
     "ScriptedFeedback",
     "UdpFeedback",
     "empty_snapshot",
+    "make_live_feedback",
 ]
 
 #: 反馈采集默认周期（秒）—— 10–20 ms 区间的中值
@@ -385,10 +387,13 @@ class PollFeedback(FeedbackSource):
 class UdpFeedback(FeedbackSource):
     """UDP 实时上报反馈源（读 ``rm_hw_bridge.bridge.realtime_state()``）。
 
-    T6 接线后，``realtime_state()`` 会提供线程安全的只读访问器
-    ``latest_joint_state()``（返回拷贝后的关节角/速度）；**T6 之前**该访问器
-    不存在，此时本模块**只**返回帧计数与时间戳，关节字段为 ``None``，
-    并在 ``last_error`` 里写明原因（**不返回 0 冒充**）。
+    **已接线（T6）**：``realtime_state().latest_joint_state()`` 返回**拷贝**后的
+    关节角/速度快照（线程安全只读），因此本类直接消费它——**不持有 SDK 结构体
+    引用**（SDK 的 ``rm_joint_status_t`` 是复用结构体，直接读会撕裂）。
+
+    若运行环境没有 ``rm_hw_bridge``（未安装硬件层），本类**降级**为
+    「只有帧计数」的形态，并在 ``last_error`` 里写明原因
+    （**不返回 0 冒充**）。
     """
 
     name = "udp"
@@ -452,7 +457,7 @@ class UdpFeedback(FeedbackSource):
                 "last_frame_ts": data.get("last_frame_ts"),
                 "frames": int(frames) if isinstance(frames, int) else 0,
             }
-        # T6 接线前：只有帧计数
+        # 兼容路径：硬件层未提供 latest_joint_state()（旧版 rm_hw_bridge）
         try:
             data = state.snapshot(None)
         except Exception as exc:  # noqa: BLE001
@@ -463,8 +468,8 @@ class UdpFeedback(FeedbackSource):
         data = data if isinstance(data, dict) else {}
         frames = data.get("frames")
         self.last_error = (
-            "rm_hw_bridge.bridge.realtime_state() 尚未提供 latest_joint_state()"
-            "（T6 接线前只有帧计数，关节字段为 None）"
+            "rm_hw_bridge.bridge.realtime_state() 未提供 latest_joint_state()"
+            "（硬件层版本过旧：只有帧计数，关节字段为 None）"
         )
         return {
             "joint_position_deg": None,
@@ -613,3 +618,19 @@ class FeedbackPump:
                 "running": self.running,
                 "errors": list(self.errors),
             }
+
+
+# --------------------------------------------------------------- 真机接线
+def make_live_feedback(period_s: float = DEFAULT_POLL_PERIOD_S) -> "FeedbackPump":
+    """真机反馈栈（**与 fake 同一套代码路径**）：UDP 实时上报 + 后台采集泵。
+
+    * 反馈源：:class:`UdpFeedback` → ``rm_hw_bridge.bridge.realtime_state()``
+      的**拷贝**快照（线程安全只读）；
+    * 采集节奏：后台线程（默认 15 ms），**tick 线程只读缓存**（零 SDK 调用进
+      tick 线程）。
+
+    硬件层不可用时**不抛裸异常**：:class:`UdpFeedback` 会降级为「只有帧计数」，
+    并在 ``last_error`` 里写明原因。
+    """
+    source = UdpFeedback()
+    return FeedbackPump(source, period_s=period_s)

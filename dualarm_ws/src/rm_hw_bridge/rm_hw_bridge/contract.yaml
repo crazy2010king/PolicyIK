@@ -18,6 +18,11 @@
 #   repo      —— 全仓禁止（厂商 Python 封装包 / MoveIt 依赖，任何层都不许引）。
 #   hardware  —— **仅硬件层包 rm_hw_bridge/ 内禁止**；rmctl 侧允许
 #                import tesseract_robotics（那是规划内核，合规）。
+#   <层名>    —— 除 repo / hardware 外，scope 也可写 rules.layers 里声明的层名
+#                （如 executor），audit.py 按层目录判定（见 rules.layers）。
+#
+# rules.*_must_not_import 是**层反向依赖禁令**（独立于 forbidden_imports）：
+#   命中即报 reverse-dependency 违规。
 
 sdk:
   name: RM-API2
@@ -186,9 +191,23 @@ forbidden_imports:
 # 其它代码层禁令
 # ---------------------------------------------------------------------------
 rules:
+  # 层 → 包根的**声明式映射**（audit.py 按层判定，不再硬编码 HARDWARE_ROOT）
+  #   hardware   —— 硬件层（唯一允许直接接触 SDK 的层）
+  #   executor   —— 执行层（10 ms 单时钟执行器，只允许依赖 hardware 层）
+  #   experience —— 体验层（rmctl，可依赖 hardware / executor）
+  layers:
+    hardware: rm_hw_bridge
+    executor: rm_executor
+    experience: rmctl
+
   # 硬件层不得反向依赖体验层（rmctl），否则厂商解耦失效
   hardware_must_not_import:
     - rmctl
+
+  # 执行层不得反向依赖体验层（rmctl），也不得依赖规划内核（tesseract*）
+  executor_must_not_import:
+    - rmctl
+    - "tesseract*"
 
 # ---------------------------------------------------------------------------
 # 自校验限额

@@ -44,6 +44,7 @@ __all__ = [
     "BridgeTransport",
     "FakeTransport",
     "Transport",
+    "make_live_transport",
     "validate_deg7",
 ]
 
@@ -374,6 +375,36 @@ class FakeTransport(Transport):
 
 
 # --------------------------------------------------------------- 真机传输
+def make_live_transport(ip: Optional[str] = None,
+                        port: Optional[int] = None,
+                        arm: str = "left",
+                        link: Any = None,
+                        **connect_kwargs: Any) -> BridgeTransport:
+    """真机传输通道工厂（**与 fake 同一套代码路径**）。
+
+    * 已给定 ``link`` → 直接包住它；
+    * 否则**惰性**建链：首次使用时才 import ``rm_hw_bridge.bridge.connect``
+      （建链失败 / 硬件层不可用 → :class:`BridgeTransport` 返回
+      ``status="blocked"`` + 可粘贴 next_action，**0 次 SDK 调用**、
+      **不抛裸异常**）。
+
+    本函数**不引入第二处 SDK 调用**——建链完全委托给硬件层的
+    ``rm_hw_bridge.bridge.connect``。
+    """
+    if link is not None:
+        return BridgeTransport(link=link)
+
+    def _factory() -> Any:
+        from rm_hw_bridge import bridge as hw_bridge  # 惰性导入硬件层
+
+        if not ip:
+            raise ValueError("未提供控制器 ip（真机路径必须显式给出 ip:port）")
+        return hw_bridge.connect(ip, int(port or hw_bridge.DEFAULT_TCP_PORT),
+                                 arm=arm, **connect_kwargs)
+
+    return BridgeTransport(link_factory=_factory)
+
+
 class BridgeTransport(Transport):
     """真机传输通道（**包住** ``rm_hw_bridge.bridge.ArmLink``，零 SDK 实现）。
 

@@ -48,6 +48,24 @@ RMCTL_SOURCE = '''\
 from rmctl import hwcollect
 '''
 
+EXECUTOR_RMCTL_SOURCE = '''\
+from rmctl import hwcollect
+'''
+
+EXECUTOR_TESSERACT_SOURCE = '''\
+import tesseract_robotics.planning
+'''
+
+EXECUTOR_HW_BRIDGE_SOURCE = '''\
+from rm_hw_bridge import bridge
+'''
+
+EXECUTOR_CLEAN_SOURCE = '''\
+"""干净的执行层文件（无任何禁止 import）。"""
+
+CONST = 1
+'''
+
 
 @pytest.fixture()
 def bad_file(tmp_path):
@@ -112,6 +130,100 @@ def test_negative_reverse_dependency_rmctl(tmp_path):
             fh.write(RMCTL_SOURCE)
         violations = audit.scan_paths([target])
         assert any(v.kind == audit.KIND_REVERSE_DEPENDENCY for v in violations)
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+# ------------------------------------------------------------------ 分层负例
+def _executor_fixture(repo_root, name, source):
+    """在执行层包目录里放一个临时文件（模拟执行层源码），返回路径。"""
+    target_dir = os.path.join(repo_root, "dualarm_ws", "src", "rm_executor",
+                              "rm_executor")
+    target = os.path.join(target_dir, name)
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(source)
+    return target
+
+
+def test_layers_are_declared_in_contract():
+    """contract.yaml 必须声明 rules.layers（层 → 包根）。"""
+    contract = audit._load_contract()
+    layers = (contract.get("rules") or {}).get("layers") or {}
+    assert layers.get("hardware") == "rm_hw_bridge"
+    assert layers.get("executor") == "rm_executor"
+    assert layers.get("experience") == "rmctl"
+    # 核心/支持符号清单不变（R003 结论原样成立）
+    assert contract["limits"]["core_count"] == 22
+    assert contract["limits"]["support_count"] == 5
+
+
+def test_layer_roots_are_resolved(repo_root):
+    """层 → 目录的解析结果正确。"""
+    roots = audit.layer_roots()
+    assert roots["hardware"].endswith(os.path.join("src", "rm_hw_bridge"))
+    assert roots["executor"].endswith(os.path.join("src", "rm_executor"))
+    assert roots["experience"].endswith(os.path.join("src", "rmctl"))
+
+
+def test_negative_executor_layer_imports_rmctl(repo_root):
+    """执行层 import rmctl → 反向依赖违规（CLI 退出码 3）。"""
+    target = _executor_fixture(repo_root, "_tmp_audit_exec_rmctl.py",
+                               EXECUTOR_RMCTL_SOURCE)
+    try:
+        violations = audit.scan_paths([target])
+        assert any(v.kind == audit.KIND_REVERSE_DEPENDENCY for v in violations)
+        assert audit.main(["--paths", target]) == 3
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+def test_negative_executor_layer_imports_tesseract(repo_root):
+    """执行层 import tesseract*（规划内核）→ 反向依赖违规（CLI 退出码 3）。"""
+    target = _executor_fixture(repo_root, "_tmp_audit_exec_tesseract.py",
+                               EXECUTOR_TESSERACT_SOURCE)
+    try:
+        violations = audit.scan_paths([target])
+        assert any(v.kind == audit.KIND_REVERSE_DEPENDENCY for v in violations)
+        assert audit.main(["--paths", target]) == 3
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+def test_positive_executor_layer_imports_hw_bridge(repo_root):
+    """执行层 import rm_hw_bridge → 合规（允许向下依赖硬件层，退出码 0）。"""
+    target = _executor_fixture(repo_root, "_tmp_audit_exec_hwbridge.py",
+                               EXECUTOR_HW_BRIDGE_SOURCE)
+    try:
+        assert audit.scan_paths([target]) == []
+        assert audit.main(["--paths", target]) == 0
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+def test_positive_clean_executor_file(repo_root):
+    """干净的执行层文件 → 0 违规（退出码 0）。"""
+    target = _executor_fixture(repo_root, "_tmp_audit_exec_clean.py",
+                               EXECUTOR_CLEAN_SOURCE)
+    try:
+        assert audit.scan_paths([target]) == []
+        assert audit.main(["--paths", target]) == 0
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+def test_negative_hardware_layer_imports_rmctl_still_violation(repo_root):
+    """硬件层 import rmctl → 仍违规（退出码 3，行为不变）。"""
+    pkg_root = os.path.abspath(os.path.join(os.path.dirname(audit.__file__), ".."))
+    target = os.path.join(pkg_root, "tests", "_tmp_audit_fixture3.py")
+    try:
+        with open(target, "w", encoding="utf-8") as fh:
+            fh.write(RMCTL_SOURCE)
+        assert audit.main(["--paths", target]) == 3
     finally:
         if os.path.exists(target):
             os.remove(target)

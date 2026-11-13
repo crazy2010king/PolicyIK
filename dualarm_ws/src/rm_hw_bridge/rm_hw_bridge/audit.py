@@ -7,8 +7,12 @@
     用 AST 精确判定 ``Call`` 节点，无法解析的语法错误文件退回正则扫描。
 (b) **禁止的 import** —— ``Robotic_Arm`` / ``tesseract*`` / ``moveit*``。
     scope=repo 全仓禁止；scope=hardware **仅在硬件层包内**禁止
-    （rmctl 侧允许 import ``tesseract_robotics``，那是规划内核，合规）。
-(c) **硬件层反向依赖 rmctl** —— 硬件层不得 import 体验层。
+    （rmctl 侧允许 import ``tesseract_robotics``，那是规划内核，合规）；
+    scope 也可写 ``contract.yaml`` 的 ``rules.layers`` 里声明的**层名**
+    （如 ``executor``）——**按层判定**，不再硬编码硬件层根目录。
+(c) **层反向依赖** —— 按 ``rules.<层>_must_not_import`` 判定：
+    硬件层不得反向依赖体验层（rmctl）；执行层不得反向依赖体验层（rmctl）
+    与规划内核（tesseract*）。
 
 CLI::
 
@@ -34,6 +38,8 @@ __all__ = [
     "Violation",
     "audit_repo",
     "check_symbols",
+    "layer_roots",
+    "layer_of",
     "main",
     "scan_paths",
 ]
@@ -42,6 +48,9 @@ _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 #: 硬件层包根（``dualarm_ws/src/rm_hw_bridge``）—— 含包体与 tests/
 HARDWARE_ROOT = os.path.abspath(os.path.join(_PACKAGE_DIR, ".."))
+
+#: 工作区源码根（``dualarm_ws/src``）—— 各层包根的公共父目录
+SRC_ROOT = os.path.abspath(os.path.join(_PACKAGE_DIR, "..", ".."))
 
 #: 本文件自身（审计器里必然出现黑名单字面量）——扫描时排除
 _SELF = os.path.abspath(__file__)
@@ -146,6 +155,78 @@ def _reverse_dep_targets(contract: Dict[str, Any]) -> List[str]:
     return _names(rules.get("hardware_must_not_import"))
 
 
+# ------------------------------------------------------------------ 分层
+def layer_roots(contract: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """层 → 层根目录（**声明式**，来自 ``contract.yaml`` 的 ``rules.layers``）。
+
+    ``rules.layers`` 形如 ``hardware: rm_hw_bridge`` —— 层名 → 包根名；
+    包根目录取「工作区源码根」下的同名目录（``dualarm_ws/src/<包根>``）。
+
+    * 契约未声明分层时**退化为**只有硬件层（保持 S02 的行为不变）；
+    * 返回的字典是**新拷贝**，调用方改动不影响契约。
+    """
+    contract = _load_contract(contract)
+    rules = contract.get("rules") or {}
+    layers = rules.get("layers") or {}
+    roots: Dict[str, str] = {}
+    for layer, pkg_root in (layers or {}).items():
+        if not layer or not pkg_root:
+            continue
+        root = os.path.abspath(os.path.join(SRC_ROOT, str(pkg_root)))
+        roots[str(layer)] = root
+    # 硬件层是审计器自身的层：契约没声明时也保留（行为不变）
+    roots.setdefault("hardware", HARDWARE_ROOT)
+    return roots
+
+
+def layer_of(path: str, roots: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """文件属于哪一层（``None`` = 不属于任何已声明层，如 workcell/）。
+
+    命中多个层时取**根目录最长**的那个（更具体的层优先）。
+    """
+    if roots is None:
+        roots = layer_roots()
+    ap = os.path.abspath(path)
+    best: Optional[str] = None
+    best_len = -1
+    for layer, root in (roots or {}).items():
+        try:
+            if os.path.commonpath([ap, os.path.abspath(root)]) == os.path.abspath(root):
+                if len(root) > best_len:
+                    best = layer
+                    best_len = len(root)
+        except ValueError:  # pragma: no cover - 跨盘（Windows）
+            continue
+    return best
+
+
+def _layer_reverse_targets(contract: Dict[str, Any],
+                           roots: Dict[str, str]) -> Dict[str, List[str]]:
+    """层 → 该层禁止 import 的模块清单（``rules.<层>_must_not_import``）。"""
+    rules = contract.get("rules") or {}
+    out: Dict[str, List[str]] = {}
+    for layer in roots or {}:
+        key = "%s_must_not_import" % layer
+        if key in rules:
+            out[layer] = _names(rules.get(key))
+    return out
+
+
+def _matches_layer_target(module: str, target: str) -> bool:
+    """模块是否命中该层的禁止清单。
+
+    * 无通配符 → **顶层包名精确匹配**（``rmctl`` 命中 ``rmctl.hwcollect``，
+      不命中 ``rmctlx``）；
+    * 带通配符 → ``fnmatch``（``tesseract*`` 命中 ``tesseract_robotics``）。
+    """
+    if not module or not target:
+        return False
+    root = module.split(".")[0]
+    if any(ch in target for ch in "*?["):
+        return fnmatch.fnmatch(module, target) or fnmatch.fnmatch(root, target)
+    return root == target or module == target
+
+
 # ------------------------------------------------------------------ 工具函数
 def _rel(path: str, base: Optional[str] = None) -> str:
     if base:
@@ -197,6 +278,26 @@ def _matches_forbidden(module: str, patterns: Sequence[str]) -> Optional[str]:
     return None
 
 
+def _scope_applies(scope: str, layer: Optional[str], path: str,
+                   roots: Optional[Dict[str, str]] = None) -> bool:
+    """``forbidden_imports.scope`` 是否适用于该文件（**按层判定**）。
+
+    * ``repo`` —— 全仓适用（调用方直接跳过本函数）；
+    * ``<层名>`` —— 仅该层内的文件适用（如 ``hardware`` / ``executor``）；
+    * 契约未声明的层名 → 保守按**全仓**适用（不静默放过）。
+    """
+    if scope == "repo":
+        return True
+    if roots is None:
+        roots = layer_roots()
+    if scope in (roots or {}):
+        return layer == scope
+    if scope == "hardware":
+        # 兼容：契约未声明 layers 时仍按硬件层包根判定（行为不变）
+        return _is_hardware(path)
+    return True
+
+
 def _matches_blacklist(name: str, symbols: Sequence[str], prefixes: Sequence[str]) -> Optional[str]:
     if name in symbols:
         return name
@@ -215,8 +316,9 @@ def _scan_file(
     rel = _rel(path, base)
     symbols, prefixes = _blacklist(contract)
     forbidden = _forbidden_imports(contract)
-    reverse_targets = _reverse_dep_targets(contract)
-    hardware = _is_hardware(path)
+    roots = layer_roots(contract)
+    layer = layer_of(path, roots)
+    layer_targets = _layer_reverse_targets(contract, roots)
     violations: List[Violation] = []
 
     try:
@@ -275,13 +377,13 @@ def _scan_file(
                 )
             )
 
-    # (b) 禁止的 import
+    # (b) 禁止的 import（scope 按**层**判定：repo 全仓 / <层名> 仅该层）
     for module, line in _imported_names(tree):
         if not module:
             continue
         for entry in forbidden:
             scope = entry["scope"]
-            if scope == "hardware" and not hardware:
+            if scope != "repo" and not _scope_applies(scope, layer, path, roots):
                 continue
             if _matches_forbidden(module, [entry["name"]]):
                 violations.append(
@@ -296,22 +398,24 @@ def _scan_file(
                 )
                 break
 
-    # (c) 硬件层反向依赖 rmctl
-    if hardware:
+    # (c) 层反向依赖（rules.<层>_must_not_import）
+    if layer and layer in layer_targets:
         for module, line in _imported_names(tree):
             if not module:
                 continue
-            root = module.split(".")[0]
-            if root in reverse_targets:
-                violations.append(
-                    Violation(
-                        kind=KIND_REVERSE_DEPENDENCY,
-                        path=rel,
-                        line=line,
-                        detail=module,
-                        message="硬件层不得 import %s（反向依赖体验层）" % module,
+            for target in layer_targets[layer]:
+                if _matches_layer_target(module, target):
+                    violations.append(
+                        Violation(
+                            kind=KIND_REVERSE_DEPENDENCY,
+                            path=rel,
+                            line=line,
+                            detail=module,
+                            message="%s 层不得 import %s（层反向依赖禁令 %s）"
+                            % (layer, module, target),
+                        )
                     )
-                )
+                    break
     return violations
 
 
