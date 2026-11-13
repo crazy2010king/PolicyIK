@@ -1,0 +1,57 @@
+# 真机零位基线（设计 §5.8 零位治理；归档内容：固件版本 + 示教器截图 + 凹槽对齐照片 + 修正后 URDF 零位 + FK 一致性复测）
+# 约定：
+#   - 关节读数单位为「度」（SDK 返回度，内部换算 rad 只在代码里做一次）。
+#   - 未实测项一律写 null，禁止填占位数值；实测后把 status 改为 measured 并补齐证据。
+#   - 控制器位姿来自厂商运动学输出，仅用于 FK 交叉校验，不得作为规划真值（设计 §1.4 / R003）。
+kind: zero_baseline
+schema_version: 1
+version: 1                  # 基线修订号（单调递增）
+status: pending            # pending / measured / blocked
+captured_at: null           # 采集时间（ISO8601）；未实测写 null
+arm: left                   # 本基线所属臂（left / right）——零位按臂独立
+firmware: null              # 控制器固件版本
+teachpendant_version: null  # 示教器版本
+joints:
+  - name: joint1
+    zero_deg: null
+    unit: deg
+    groove_photo: null      # 示教器凹槽对齐照片引用（仓库相对路径）
+  - name: joint2
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint3
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint4
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint5
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint6
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint7
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+groove_photos: []           # 凹槽对齐照片 + 示教器截图引用列表
+fk_recheck:
+  method: null              # 复测方法（如 rmctl.fk_cross，20 组随机位形）
+  samples: null             # 复测样本组数
+  max_pos_dev_mm: null      # 自研 FK 与控制器位姿的最大位置偏差（mm，判定 < 1）
+  max_ori_dev_deg: null     # 最大姿态偏差（deg，判定 < 0.05）
+  conclusion: null          # 结论文本
+  controller_pose_usage: "仅用于 FK 交叉校验，不得作为规划真值"
+recalibration_triggers:     # 重标触发条件（设计 §5.8）
+  - 更换码盘电池
+  - 机械拆装
+  - 外力冲击
+  - 电源波动
+  - 控制器固件升级
+  - 基座移动

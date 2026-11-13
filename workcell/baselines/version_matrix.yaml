@@ -1,0 +1,20 @@
+# 版本矩阵基线（设计 §9.3 第 5 条：版本矩阵冻结清单）
+# 约定：
+#   - 每个条目是字符串或 null；null = 未采集（禁止编造）。
+#   - 工具链侧（tesseract / Python / OS / 容器镜像 / libstdcxx）由部署环境决定，
+#     真机窗口当天回填；控制器固件 / 示教器 / RM-API2 SDK 必须现场读数。
+#   - status=measured 表示该矩阵已冻结（每一条都非 null）。
+kind: version_matrix
+schema_version: 1
+version: 1                  # 基线修订号（单调递增）
+status: pending
+captured_at: null
+controller_firmware: null        # 控制器固件版本（真机读数）
+teachpendant: null               # 示教器版本
+rm_api2_sdk: null                # RM-API2 SDK 版本（计划 1.1.7，需 nm -D 复核白名单符号）
+ros2_rm_robot_tag: null          # ros2_rm_robot 源码 tag
+tesseract_robotics_nanobind: "0.35.0.8"   # 仓库 pyproject.toml 锁定值
+libstdcxx: null                  # 需 GLIBCXX_3.4.31+（conda-forge libstdcxx-ng）
+python: null                     # 运行 Python 版本
+os: null                         # 宿主 OS
+container_image: null            # 容器镜像标签（如 ros_dev:ubuntu22.04）

@@ -1,0 +1,43 @@
+# 真机实测限值基线（设计 §5.2：加速度上限官方未给 RM75 数值，必须实测后回填）
+# 约定：
+#   - 加速度单位 rad/s^2，jerk 单位 rad/s^3，TCP 重复性单位 mm。
+#   - 每条实测值必须带 source（来源，可追溯）/ method（采集方法）/ samples（样本数 ≥ 3）。
+#   - 未实测项一律写 null，禁止填占位数值；status=measured 时数值不得高于
+#     dualarm_ws/src/rm_description/config/joint_limits.yaml 的已生效限值。
+#   - 重复性 ≠ 绝对精度：官方只标重复定位 ±0.05 mm，不标绝对精度。
+kind: measured_limits
+schema_version: 1
+version: 1                  # 基线修订号（单调递增）
+status: pending            # pending / measured / blocked
+captured_at: null
+arm: left
+udp_period_ms: 5            # 实时上报周期（5 ms 的倍数；实测取样与限值反推共用该周期）
+joints:
+  - name: joint1
+    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
+    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+  - name: joint2
+    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
+    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+  - name: joint3
+    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
+    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+  - name: joint4
+    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
+    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+  - name: joint5
+    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
+    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+  - name: joint6
+    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
+    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+  - name: joint7
+    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
+    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+tcp_repeatability:
+  value_mm: null            # TCP 位置重复性（mm）
+  unit: mm
+  source: null
+  method: null              # 如 rm_movej 固定目标 N 次到位统计
+  samples: null             # 默认 30 次
+  note: "重复性 ≠ 绝对精度；官方只标重复定位 ±0.05 mm"

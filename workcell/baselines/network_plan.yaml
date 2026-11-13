@@ -1,0 +1,30 @@
+# 网络与端口规划基线（设计 §5.1：左 192.168.1.18:8080 / 右 192.168.1.19:8080，UDP 8091 / 8092）
+# 约定：
+#   - IP/端口为规划值（来自官方 RX75 左右臂配置），真机窗口需连通性确认后把 status 改为 measured。
+#   - 实时上报周期必须是 5 ms 的倍数，且必须开三线程模式（RM_TRIPLE_MODE_E），否则收不到 UDP。
+#   - 同一 ip:port 只能被一个客户端占用；上一个进程未退干净会静默失败（采集前先确认端口空闲）。
+kind: network_plan
+schema_version: 1
+version: 1                  # 基线修订号（单调递增）
+status: pending
+captured_at: null
+arms:
+  left:
+    ip: "192.168.1.18"
+    tcp_port: 8080
+    udp_port: 8091
+  right:
+    ip: "192.168.1.19"
+    tcp_port: 8080
+    udp_port: 8092          # 预留第二臂（单臂窗口只占用 8091）
+realtime_report:
+  period_ms: 5              # 实时上报周期（5 ms 的倍数）
+  cycle_multiple_ms: 5      # SDK cycle 单位 = 5 ms
+  mode: triple_thread       # rm_init(RM_TRIPLE_MODE_E)：不开三线程收不到 UDP
+constraints:
+  single_client_per_endpoint: true   # 同一 ip:port 单客户端（上一个进程未退净会静默失败）
+  triple_thread_mode: true           # 必须三线程模式
+  wired_direct: true                 # 有线直连，关闭防火墙
+notes:
+  - "UDP 8092 为第二臂预留；单臂窗口不得占用"
+  - "端口占用/单客户端约束导致静默失败，采集前用 ss -ulnp 确认端口空闲"
