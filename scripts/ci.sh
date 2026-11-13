@@ -41,11 +41,14 @@ usage() {
   fast      目标 < 10 min。内容：lint（ruff，缺失时退回 py_compile 兜底）、
             骨架单测（路径层 / 锁 / 禁用名单扫描器）、versions.lock 自洽性、
             厂商解算接口禁用名单静态扫描、**模型回归**（碰撞/质量/FK/限位/夹爪，
-            模型本体零外部资产依赖 → 恒跑；Drake 不可用时显式 SKIP）。
+            模型本体零外部资产依赖 → 恒跑；Drake 不可用时显式 SKIP）、
+            **规划回归**（场景 / 轨迹 / CLI / 回放，Drake 不可用时显式 SKIP）。
   medium    在 fast 之上追加：constraints ↔ versions.lock 依赖锁一致性、
             package:// 解析测试、wheel 离线归档 sha256 校验（归档缺失时 SKIP）。
-  nightly   在 medium 之上追加：规划统计与长稳占位。当前为**明确标注的 no-op**
-            ——真实负载在 S02（场景构建）与 S07（golden-file 回归）落地后填充。
+  nightly   在 medium 之上追加：**规划统计真实调用**（scripts/plan_stats.py，
+            默认 100 组随机起终点，规模/预算可用环境变量覆盖；
+            超时按失败处理但打印实测值）、规划链路自检（verify_env --plan）、
+            长稳占位（golden-file 回归，属 S07）。
 
 退出码
   0  全部检查通过（SKIP 项不算失败）
@@ -99,6 +102,8 @@ run_check() {
     else
         record_fail "$name" "${desc}（${dur}s，退出码 $rc）"
         sed -n '1,40p' "$log" | sed 's/^/    | /'
+        echo "    | ...（日志尾部，用于保留实测值）"
+        tail -n 20 "$log" | sed 's/^/    | /'
     fi
     rm -f "$log"
     return $rc
@@ -192,6 +197,23 @@ run_check "tests/mesh-tools" "网格工具单测（STL 解析 / OBJ 写出 / 包
 run_check_skippable "assets/visual-mesh" "官方 STL → OBJ 转换与包围盒复测（需上游归档）" -- \
     "$PYTHON" scripts/convert_meshes.py --print-boxes
 
+# 8) 规划回归（S02-T08 接入）：CLI 族 + 录制/回放 + 场景/轨迹契约。
+#    重负载用例（IRIS 区域生成）打 @pytest.mark.slow → fast 档用 -m "not slow" 跳过。
+#    pydrake 不可用 → 显式 SKIP（不伪装成通过）。
+PLANNING_TESTS=(
+    tests/test_scenario.py
+    tests/test_planning_scene.py
+    tests/test_trajectory.py
+    tests/test_cli.py
+    tests/test_replay.py
+)
+if "$PYTHON" -c "import pydrake" >/dev/null 2>&1; then
+    run_check "tests/planning" "规划回归单测（场景/轨迹/CLI/回放）" -- \
+        "$PYTHON" -m pytest -q "${PLANNING_TESTS[@]}" -m "not slow"
+else
+    record_skip "tests/planning" "Drake（pydrake）不可用：规划回归断言跳过（环境未就绪）"
+fi
+
 # --------------------------------------------------------------------------- #
 # medium 档
 # --------------------------------------------------------------------------- #
@@ -219,9 +241,26 @@ fi
 # nightly 档
 # --------------------------------------------------------------------------- #
 if [ "$TIER" = "nightly" ]; then
-    # 11) 规划统计与长稳：S02/S07 才填充真实负载，当前是**明确标注的 no-op**。
-    #    刻意不做任何"假装跑过"的事情——占位就是占位。
-    record_skip "nightly/plan-stats" "规划统计占位：S02 场景构建后填充真实负载（当前 no-op）"
+    # 11) 规划统计（**真实调用**，不再是 no-op）。
+    #     规模与时间预算可用环境变量覆盖：
+    #       PLAN_STATS_SAMPLES   采样组数（默认 100）
+    #       PLAN_STATS_MAX_SECONDS  时间预算（默认 1500，超出即停并打印实测值）
+    #     超时按**失败**处理（退出码非 0），但实测值照样打印（见 run_check 的日志回显）。
+    PLAN_STATS_SAMPLES="${PLAN_STATS_SAMPLES:-100}"
+    PLAN_STATS_MAX_SECONDS="${PLAN_STATS_MAX_SECONDS:-1500}"
+    run_check "nightly/plan-stats" "规划统计（${PLAN_STATS_SAMPLES} 组随机起终点，预算 ${PLAN_STATS_MAX_SECONDS}s）" -- \
+        "$PYTHON" scripts/plan_stats.py --samples "$PLAN_STATS_SAMPLES" \
+        --max-seconds "$PLAN_STATS_MAX_SECONDS"
+
+    # 12) 规划链路自检（装配场景 + IK + 短规划 + 碰撞复检）
+    if "$PYTHON" -c "import pydrake" >/dev/null 2>&1; then
+        run_check "nightly/plan-verify" "规划链路自检（verify_env --plan）" -- \
+            "$PYTHON" tools/verify_env.py --plan
+    else
+        record_skip "nightly/plan-verify" "Drake（pydrake）不可用：规划链路自检跳过（环境未就绪）"
+    fi
+
+    # 13) 长稳测试占位：S07 golden-file 回归后填充（当前 no-op）。
     record_skip "nightly/soak" "长稳测试占位：S07 golden-file 回归后填充（当前 no-op）"
 fi
 

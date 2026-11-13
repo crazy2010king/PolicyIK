@@ -27,6 +27,9 @@
                     并校验 models/rm75_drake/joint_limits.yaml 与 URDF 一致。
                     该子检查**依赖 Drake**，因此不进入"未指定子检查时的默认全跑"集合，
                     需显式指定（CI 由 scripts/ci.sh fast 档调用）。
+    --plan          规划链路自检（S02-T08）：装配场景 → 一次 IK → 一段短规划
+                    → 一次碰撞复检；打印 ``[PASS]/[FAIL] plan — ...``。
+                    该子检查**依赖 Drake**，同样需显式指定。
 
 退出码：0 通过 / 1 检查失败 / 2 运行期错误（锁文件不可读、包映射构建失败、
 Drake 不可用等）。
@@ -487,6 +490,101 @@ def check_model(
 
 
 # --------------------------------------------------------------------------- #
+# 规划链路自检（--plan）
+# --------------------------------------------------------------------------- #
+#: 自检用的起点位形（抬肘名义姿态，碰撞自由）。
+PLAN_START_Q = (0.0, -0.6, 0.0, 0.9, 0.0, 0.5, 0.0)
+#: 自检用的目标位形（沿 joint_1 偏移 0.2 rad，直线段碰撞自由）。
+PLAN_TARGET_Q = (0.2, -0.6, 0.0, 0.9, 0.0, 0.5, 0.0)
+
+
+def check_plan(
+    scenario_path: Optional[Path] = None,
+) -> Tuple[str, List[str], Dict[str, Any]]:
+    """规划链路自检，返回 ``(status, problems, summary)``。
+
+    流程：**装配场景 → 一次 IK → 一段短规划 → 一次碰撞复检**。
+
+    status ∈ {"PASS", "FAIL", "ERROR"}：
+
+    * ``PASS``：四步全部成功，且碰撞复检逃逸数 = 0；
+    * ``FAIL``：链路跑通但结果不满足（IK 失败 / 规划失败 / 有逃逸）；
+    * ``ERROR``：Drake 不可用等**环境**问题（调用方应返回退出码 2）。
+    """
+    src_dir = REPO_ROOT / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    try:
+        import numpy as np
+        from pydrake.math import RigidTransform
+
+        from rm75_drake.planner import Planner, PlanOptions
+        from rm75_drake.planning.gcs import collision_recheck
+        from rm75_drake.planning.ik import solve_ik
+        from rm75_drake.planning.scene import build_scene
+        from rm75_drake.scenario import load_scenario
+    except ImportError as exc:
+        return ("ERROR", [f"规划自检需要 Drake（pydrake）不可用：{exc}"], {})
+
+    scenario_file = scenario_path or (REPO_ROOT / "scenarios" / "single_arm.yaml")
+    try:
+        scenario = load_scenario(scenario_file)
+        scene = build_scene(scenario)
+    except Exception as exc:
+        return ("FAIL", [f"场景装配失败：{exc}"], {})
+
+    problems: List[str] = []
+    summary: Dict[str, Any] = {"scenario": str(scenario_file)}
+
+    # ── 一次 IK（目标 = 起点位形的 FK 位姿）───────────────────────────
+    try:
+        context = scene.plant.CreateDefaultContext()
+        scene.plant.SetPositions(context, np.asarray(PLAN_START_Q, dtype=float))
+        pose = scene.plant.GetFrameByName("link_7").CalcPoseInWorld(context)
+        target = RigidTransform(pose.rotation(), pose.translation())
+        ik_result = solve_ik(scene, target)
+        summary["ik_success"] = bool(ik_result.success)
+        summary["ik_reason"] = ik_result.reason
+        summary["ik_message"] = ik_result.message
+        if not ik_result.success:
+            problems.append(f"IK 失败（{ik_result.reason}）：{ik_result.message}")
+    except Exception as exc:
+        problems.append(f"IK 自检异常：{exc}")
+
+    # ── 一段短规划 + 一次碰撞复检 ──────────────────────────────────────
+    try:
+        planner = Planner(
+            scenario,
+            scene=scene,
+            options=PlanOptions(
+                start_configuration=PLAN_START_Q,
+                region_spacing=0.5,
+                region_options={"num_collision_infeasible_samples": 3},
+            ),
+        )
+        result = planner.plan_joint_target(PLAN_TARGET_Q)
+        summary["plan_success"] = bool(result.success)
+        summary["plan_message"] = result.message
+        summary["stage_durations_s"] = {
+            stage: (result.diagnostics.get(stage) or {}).get("duration_s")
+            for stage in ("ik", "regions", "gcs", "retime", "collision")
+        }
+        if not result.success:
+            problems.append(f"规划失败（{result.stage}/{result.reason}）：{result.message}")
+        else:
+            trajectory = result.trajectory
+            recheck = collision_recheck(scene, trajectory.q_matrix())
+            summary["num_samples"] = int(recheck.num_samples)
+            summary["num_escapes"] = int(recheck.num_escapes)
+            if recheck.num_escapes != 0:
+                problems.append(f"碰撞复检发现 {recheck.num_escapes} 处逃逸")
+    except Exception as exc:
+        problems.append(f"规划自检异常：{exc}")
+
+    return ("FAIL" if problems else "PASS", problems, summary)
+
+
+# --------------------------------------------------------------------------- #
 # 输出
 # --------------------------------------------------------------------------- #
 def _table(rows: Sequence[Dict[str, Any]]) -> str:
@@ -551,6 +649,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--model", action="store_true", help="改造版 RM75-B 模型自检（DoF/质量/零位高度/限位）"
     )
     parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="规划链路自检（装配场景 + 一次 IK + 一段短规划 + 一次碰撞复检）",
+    )
+    parser.add_argument(
         "--joint-limits",
         type=Path,
         default=None,
@@ -566,6 +669,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.forbidden,
         args.package_map,
         args.model,
+        args.plan,
     ]
     if not any(selected):
         # 未指定子检查时全部执行（--model 需要 Drake，故不在默认集合里）
@@ -661,6 +765,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             status,
             problems,
             "改造版 RM75-B 模型自检（DoF / 总质量 / 零位末端高度 / 7 条限位）",
+            data=summary,
+        )
+        if status == "ERROR":
+            env_error = True
+
+    if args.plan:
+        status, problems, summary = check_plan()
+        emit(
+            "plan",
+            status,
+            problems,
+            "规划链路自检（场景装配 + IK + 短规划 + 碰撞复检）",
             data=summary,
         )
         if status == "ERROR":

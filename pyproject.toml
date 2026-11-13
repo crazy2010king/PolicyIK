@@ -13,6 +13,11 @@ dependencies = [
     "drake>=1.51.1",
     "PyYAML>=6.0",
     "numpy>=1.26",
+    # 轨迹重定时（S02-T06）：版本与 versions.lock:packages.toppra 一致（0.6.11）。
+    "toppra==0.6.11",
+    # 可视化 2D 兜底（S02-T08）：baseline 钉版 3.8.4（见 versions.lock:packages.matplotlib）。
+    # 本机实测 Axes3D（mpl_toolkits.mplot3d）导入失败 → rm75_drake.viz 只用 2D。
+    "matplotlib>=3.8.4",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +32,8 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+# planning/ 与 drivers/ 子包必须带 __init__.py（两者都有），
+# 否则 pip install -e . 不会把它们收进发行包（S02-T07/T08 依赖它们）。
 
 [tool.setuptools.package-data]
 rm75_drake = ["py.typed", "calibration/*.yaml"]
