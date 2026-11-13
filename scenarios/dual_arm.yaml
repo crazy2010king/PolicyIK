@@ -1,0 +1,67 @@
+# 双臂场景：RM75-B 左臂 + 右臂（scenario **正式 schema**，schema_version: 1）
+#
+# 单位约定（全表 SI，详见 src/rm75_drake/scenario.py 的模块 docstring）：
+#   * 长度：m（米）
+#   * 角度：**rad（弧度）**，**不接收度**
+#   * 时间：s（秒）
+#
+# 顶层四键固定为 robots / base_extrinsics / obstacles / calibration
+# （**不得改名**：会击穿 S07 的 golden-file 回归）。
+#
+# 本文件是**双臂场景真相源**：两臂的 URDF 是 S04-T01 生成的**重命名变体**
+# （models/rm75_drake/rm75_{left,right}.urdf）——Drake 不允许同一份 URDF 在
+# 同一个 plant 里装两次（实测 RuntimeError: model instance names must be unique）。
+#
+# **基座外参是占位值**（measured=false）：
+#   * 右臂基座沿 +x 平移 0.60 m（设计文档推荐区间 0.55–0.70 m）；
+#   * 两臂共面（rpy 全 0）、同高；
+#   * 真实外参由标定文件给出（S04-T05 会让本文件**引用**标定文件，
+#     届时标定文件是基座外参的**唯一真相源**，这里的手写值只作无标定文件时的回退）。
+#
+# 未知键 / 缺字段 / 维度或单位写错 → rm75_drake.scenario.ScenarioError
+# （禁止静默默认值）。
+
+schema_version: 1
+
+# 机器人列表（关节顺序 = 规划链路的变量顺序）。
+robots:
+  - name: left
+    urdf: package://rm75_drake/rm75_left.urdf
+    base_link: left_base_link
+    joint_names:
+      - left_joint_1
+      - left_joint_2
+      - left_joint_3
+      - left_joint_4
+      - left_joint_5
+      - left_joint_6
+      - left_joint_7
+  - name: right
+    urdf: package://rm75_drake/rm75_right.urdf
+    base_link: right_base_link
+    joint_names:
+      - right_joint_1
+      - right_joint_2
+      - right_joint_3
+      - right_joint_4
+      - right_joint_5
+      - right_joint_6
+      - right_joint_7
+
+# 机器人基座相对场景世界系的外参（m / rad）。
+#   * 左手：原点（占位值，标定后以 calibration/dual_arm.yaml 为准）
+#   * 右手：沿 +x 平移 0.60 m（占位值）
+base_extrinsics:
+  left:
+    xyz: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+  right:
+    xyz: [0.6, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
+
+# 静态障碍物（双臂工作区的公共障碍物；本切片留空，由后续切片按场景需要填充）。
+obstacles: []
+
+# 标定参数（键必须存在，可以是空映射 {}）。
+# S04-T05 会在这里写 base_extrinsic: {file: dual_arm.yaml}（标定文件是唯一真相源）。
+calibration: {}
