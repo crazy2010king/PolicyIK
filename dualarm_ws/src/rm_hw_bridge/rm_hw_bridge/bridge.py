@@ -52,8 +52,15 @@ __all__ = [
     "COLLISION_STAGE_MAX",
     "COLLISION_STAGE_MIN",
     "DEG2RAD",
+    "MAX_RETAINED_JOINT_BUFFERS",
     "RAD2DEG",
+    "RADIO_RANGE_CURVE_FIT",
+    "RADIO_RANGE_FILTER",
     "REALTIME_CYCLE_MULTIPLE_MS",
+    "TRAJECTORY_MODES",
+    "TRAJECTORY_MODE_CURVE_FIT",
+    "TRAJECTORY_MODE_FILTER",
+    "TRAJECTORY_MODE_PASSTHROUGH",
     "connect",
     "realtime_state",
 ]
@@ -76,6 +83,32 @@ RAD2DEG = 180.0 / math.pi
 #: 碰撞检测等级范围（厂商头文件 rm_interface.h：0=不检测，8=最灵敏）
 COLLISION_STAGE_MIN = 0
 COLLISION_STAGE_MAX = 8
+
+# ---------------------------------------------------------------------------
+# 关节角透传（rm_movej_canfd）语义常量
+#
+# **只用 rm_movej_canfd 透传关节角**：位姿透传（rm_movep_canfd / rm_movep_follow）
+# 在厂商黑名单里——控制器会偷偷做逆解，违反 R003 与设计 §1.4。
+# ---------------------------------------------------------------------------
+#: trajectory_mode = 0：完全透传（原始数据直发关节）
+TRAJECTORY_MODE_PASSTHROUGH = 0
+#: trajectory_mode = 1：曲线拟合（radio 0..100）
+TRAJECTORY_MODE_CURVE_FIT = 1
+#: trajectory_mode = 2：滤波（radio 0..1000）
+TRAJECTORY_MODE_FILTER = 2
+#: 允许的 trajectory_mode 取值
+TRAJECTORY_MODES = (
+    TRAJECTORY_MODE_PASSTHROUGH,
+    TRAJECTORY_MODE_CURVE_FIT,
+    TRAJECTORY_MODE_FILTER,
+)
+#: 曲线拟合模式的 radio 允许范围（厂商头文件 rm_define.h）
+RADIO_RANGE_CURVE_FIT = (0, 100)
+#: 滤波模式的 radio 允许范围（厂商头文件 rm_define.h）
+RADIO_RANGE_FILTER = (0, 1000)
+
+#: 保留的关节角缓冲上限（**有界**：防止 10 ms 调度下缓冲无限堆积）
+MAX_RETAINED_JOINT_BUFFERS = 64
 
 #: 下发限值族 →（SDK 符号名, SDK 单位, SI→SDK 换算类型）
 #: 换算类型："deg"（位置）、"deg_per_s"（速度）、"deg_per_s2"（加速度）
@@ -200,6 +233,30 @@ def _brake_to_list(brake_state: int) -> List[bool]:
     return [bool((int(brake_state) >> i) & 1) for i in range(ARM_DOF)]
 
 
+def _normalize_deg7(deg7: Any) -> Any:
+    """关节角输入校验：7 个数字（单位**度**）。
+
+    返回 ``(values, None)`` 或 ``(None, reason)``；``reason`` 非空即表示拒绝，
+    且拒绝路径**必须 0 次 SDK 调用**。
+    """
+    if deg7 is None:
+        return None, "关节角输入为 None"
+    if isinstance(deg7, (str, bytes)):
+        return None, "关节角输入必须是 7 个数字的序列（收到 %s）" % type(deg7).__name__
+    try:
+        seq = list(deg7)
+    except TypeError:
+        return None, "关节角输入必须是可迭代序列（收到 %s）" % type(deg7).__name__
+    if len(seq) != ARM_DOF:
+        return None, "关节角必须是 %d 个（收到 %d 个）" % (ARM_DOF, len(seq))
+    values: List[float] = []
+    for i, item in enumerate(seq):
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None, "第 %d 个关节角不是数字（%r）" % (i + 1, item)
+        values.append(float(item))
+    return values, None
+
+
 def _find_sdk(ws: Optional[str] = None, env: Optional[Dict[str, str]] = None):
     """找 SDK；找不到返回 ``(None, 候选路径列表)``。"""
     candidates = loader.sdk_candidates(ws=ws, env=env)
@@ -235,6 +292,9 @@ class ArmLink:
         self.realtime_period_ms = realtime_period_ms
         self.endpoint = dict(endpoint or {})
         self._closed = False
+        # 关节角缓冲的**显式持有**（防止 GC 提前回收）+ **有界**保留
+        self._joint_buffers: List[Any] = []
+        self._last_transmit: Optional[Dict[str, Any]] = None
 
     # -- 属性
     @property
@@ -735,6 +795,451 @@ class ArmLink:
             applied=applied,
             dry_run=False,
             sdk_calls=len(applied),
+        )
+
+    # ------------------------------------------------------- 关节角透传通道
+    def _not_connected(self, action: str) -> Dict[str, Any]:
+        """未连接时的统一失败结果（**不伪造任何数值**）。"""
+        return errors.result(
+            self.status if self.status != errors.STATUS_OK else errors.STATUS_ERROR,
+            self.reason or ("尚未建立连接，无法执行 %s" % action),
+            self.next_action,
+            self.evidence,
+            sdk_calls=0,
+        )
+
+    def _retain_joint_buffer(self, buf: Any, config: Any) -> None:
+        """**显式持有**关节角缓冲（防止 GC 提前回收）+ **有界**保留。
+
+        厂商 Python 参考实现是 ``config.joint = ctypes.pointer(arr)``，
+        缓冲必须**活到调用结束**；这里额外保留最近若干个，
+        保证 SDK 侧异步取用时也不会读到已回收内存。
+        """
+        self._joint_buffers.append(buf)
+        overflow = len(self._joint_buffers) - MAX_RETAINED_JOINT_BUFFERS
+        if overflow > 0:
+            del self._joint_buffers[:overflow]
+        self._last_transmit = {"buffer": buf, "config": config}
+
+    def transmit_joint(
+        self,
+        deg7: Any,
+        follow: bool = False,
+        trajectory_mode: int = TRAJECTORY_MODE_CURVE_FIT,
+        radio: int = 30,
+        expand: float = 0.0,
+    ) -> Dict[str, Any]:
+        """关节角透传（``rm_movej_canfd``）——**唯一的关节透传通道**。
+
+        参数
+        ----
+        deg7
+            7 个关节角，**单位度**（内部不换算，SDK 也是度制）。
+        follow
+            ``True`` 高跟随 / ``False`` 低跟随（写入 ``rm_movej_canfd_mode_t.follow``）。
+        trajectory_mode
+            ``0`` 完全透传 / ``1`` 曲线拟合 / ``2`` 滤波。
+        radio
+            平滑系数：曲线拟合 ``0..100``、滤波 ``0..1000``（完全透传模式下忽略）。
+
+        **只走关节角透传**：位姿透传（``rm_movep_canfd`` / ``rm_movep_follow``）
+        在厂商黑名单里（控制器会偷偷做逆解，违反 R003）。
+
+        非法参数 → ``status="error"`` + reason + next_action，**0 次 SDK 调用**；
+        SDK 返回非 0 → ``status="error"`` + reason（**接口名 + 返回码**）+ next_action。
+        """
+        if not self.connected:
+            return self._not_connected("关节角透传")
+
+        values, err = _normalize_deg7(deg7)
+        if err:
+            return errors.error(
+                err,
+                "传入 7 个关节角（单位：度）后重跑",
+                [],
+                symbol="rm_movej_canfd",
+                sdk_calls=0,
+            )
+        if isinstance(trajectory_mode, bool) or not isinstance(trajectory_mode, int):
+            return errors.error(
+                "trajectory_mode 必须是整数（当前 %r）" % (trajectory_mode,),
+                "传入 0（完全透传）/ 1（曲线拟合）/ 2（滤波）后重跑",
+                [],
+                symbol="rm_movej_canfd",
+                sdk_calls=0,
+            )
+        if trajectory_mode not in TRAJECTORY_MODES:
+            return errors.error(
+                "trajectory_mode=%d 非法（允许 0=完全透传 / 1=曲线拟合 / 2=滤波）"
+                % trajectory_mode,
+                "把 trajectory_mode 改成 0 / 1 / 2 后重跑",
+                [],
+                symbol="rm_movej_canfd",
+                sdk_calls=0,
+            )
+        if isinstance(radio, bool) or not isinstance(radio, int):
+            return errors.error(
+                "radio 必须是整数（当前 %r）" % (radio,),
+                "传入整数平滑系数后重跑",
+                [],
+                symbol="rm_movej_canfd",
+                sdk_calls=0,
+            )
+        if trajectory_mode == TRAJECTORY_MODE_CURVE_FIT:
+            radio_lo, radio_hi = RADIO_RANGE_CURVE_FIT
+        elif trajectory_mode == TRAJECTORY_MODE_FILTER:
+            radio_lo, radio_hi = RADIO_RANGE_FILTER
+        else:
+            radio_lo, radio_hi = 0, 1000
+        if radio < radio_lo or radio > radio_hi:
+            return errors.error(
+                "radio=%d 越界（trajectory_mode=%d 允许范围 %d..%d）" % (
+                    radio, trajectory_mode, radio_lo, radio_hi,
+                ),
+                "把 radio 改到 %d..%d 后重跑" % (radio_lo, radio_hi),
+                [],
+                symbol="rm_movej_canfd",
+                sdk_calls=0,
+            )
+        if not isinstance(follow, bool):
+            return errors.error(
+                "follow 必须是 bool（当前 %r）" % (follow,),
+                "传入 True（高跟随）/ False（低跟随）后重跑",
+                [],
+                symbol="rm_movej_canfd",
+                sdk_calls=0,
+            )
+        if isinstance(expand, bool) or not isinstance(expand, (int, float)):
+            return errors.error(
+                "expand 必须是数字（当前 %r）" % (expand,),
+                "传入扩展关节角数值（无扩展关节时传 0）后重跑",
+                [],
+                symbol="rm_movej_canfd",
+                sdk_calls=0,
+            )
+
+        binding = self._bridge.binding
+        fn = getattr(binding, "rm_movej_canfd", None)
+        if fn is None:
+            return errors.error(
+                "契约清单缺少符号 rm_movej_canfd，无法透传关节角",
+                "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep rm_movej_canfd`），"
+                "重新物化 SDK 后重跑",
+                [],
+                symbol="rm_movej_canfd",
+                sdk_calls=0,
+            )
+
+        # 组装配置（结构体按值传入）；缓冲**显式持有**到调用返回之后
+        buf = (ctypes.c_float * ARM_DOF)(*values)
+        config = gen.rm_movej_canfd_mode_t()
+        config.joint = ctypes.cast(buf, ctypes.POINTER(ctypes.c_float))
+        config.expand = float(expand)
+        config.follow = bool(follow)
+        config.trajectory_mode = int(trajectory_mode)
+        config.radio = int(radio)
+        self._retain_joint_buffer(buf, config)
+
+        try:
+            rc = int(fn(self._handle, config) or 0)
+        except Exception as exc:
+            return errors.error(
+                "rm_movej_canfd 调用异常：%s" % exc,
+                "确认 .so 与当前架构匹配（file <so>），修复后重跑",
+                [repr(exc)],
+                symbol="rm_movej_canfd",
+                rc=None,
+                sdk_calls=1,
+            )
+        if rc != 0:
+            return errors.error(
+                "rm_movej_canfd 返回 %d（关节角透传失败）" % rc,
+                "确认控制器在线、句柄有效（同一 ip:port 只允许一个客户端），"
+                "并核对关节角范围后重跑",
+                ["rm_movej_canfd rc=%d" % rc],
+                symbol="rm_movej_canfd",
+                rc=rc,
+                sdk_calls=1,
+                joint_deg=values,
+                follow=bool(follow),
+                trajectory_mode=int(trajectory_mode),
+                radio=int(radio),
+            )
+
+        return errors.ok(
+            "关节角透传已下发（%d 个关节，trajectory_mode=%d，radio=%d）" % (
+                ARM_DOF, trajectory_mode, radio,
+            ),
+            "",
+            ["rm_movej_canfd rc=0"],
+            symbol="rm_movej_canfd",
+            rc=0,
+            sdk_calls=1,
+            joint_deg=values,
+            follow=bool(follow),
+            trajectory_mode=int(trajectory_mode),
+            radio=int(radio),
+            expand=float(expand),
+        )
+
+    def preposition_movej(
+        self,
+        deg7: Any,
+        speed: int = 10,
+        radius: int = 0,
+        block: int = 0,
+        trajectory_connect: int = 0,
+    ) -> Dict[str, Any]:
+        """预就位 / 归位（``rm_movej``，关节空间**规划**运动）。
+
+        参数
+        ----
+        deg7
+            7 个关节角（单位度）。
+        speed
+            速度百分比（``v``，允许 1..100）。
+        radius
+            交融半径百分比（``r``，允许 0..100）。
+        block
+            ``0`` 非阻塞 / ``1`` 阻塞（**阻塞时本调用会一直等到到位**）。
+        trajectory_connect
+            ``0`` 立即规划执行 / ``1`` 与下一条轨迹连接。
+
+        与 :meth:`transmit_joint` 的分工：**本接口走控制器规划**（慢、可到位），
+        透传接口走 CANFD 直发（快、不规划）。两者都用**关节角**，不用位姿。
+        """
+        if not self.connected:
+            return self._not_connected("预就位运动")
+
+        values, err = _normalize_deg7(deg7)
+        if err:
+            return errors.error(
+                err,
+                "传入 7 个关节角（单位：度）后重跑",
+                [],
+                symbol="rm_movej",
+                sdk_calls=0,
+            )
+        for name, value, lo, hi in (
+            ("speed", speed, 1, 100),
+            ("radius", radius, 0, 100),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                return errors.error(
+                    "%s 必须是整数（当前 %r）" % (name, value),
+                    "传入 %d..%d 的整数后重跑" % (lo, hi),
+                    [],
+                    symbol="rm_movej",
+                    sdk_calls=0,
+                )
+            if value < lo or value > hi:
+                return errors.error(
+                    "%s=%d 越界（允许范围 %d..%d）" % (name, value, lo, hi),
+                    "把 %s 改到 %d..%d 后重跑" % (name, lo, hi),
+                    [],
+                    symbol="rm_movej",
+                    sdk_calls=0,
+                )
+        for name, value in (
+            ("block", block),
+            ("trajectory_connect", trajectory_connect),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value not in (0, 1):
+                return errors.error(
+                    "%s 必须是 0 或 1（当前 %r）" % (name, value),
+                    "传入 0 或 1 后重跑",
+                    [],
+                    symbol="rm_movej",
+                    sdk_calls=0,
+                )
+
+        binding = self._bridge.binding
+        fn = getattr(binding, "rm_movej", None)
+        if fn is None:
+            return errors.error(
+                "契约清单缺少符号 rm_movej，无法执行预就位",
+                "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep rm_movej`），"
+                "重新物化 SDK 后重跑",
+                [],
+                symbol="rm_movej",
+                sdk_calls=0,
+            )
+
+        buf = (ctypes.c_float * ARM_DOF)(*values)
+        self._retain_joint_buffer(buf, None)
+        try:
+            rc = int(
+                fn(
+                    self._handle,
+                    ctypes.cast(buf, ctypes.POINTER(ctypes.c_float)),
+                    int(speed),
+                    int(radius),
+                    int(trajectory_connect),
+                    int(block),
+                )
+                or 0
+            )
+        except Exception as exc:
+            return errors.error(
+                "rm_movej 调用异常：%s" % exc,
+                "确认 .so 与当前架构匹配（file <so>），修复后重跑",
+                [repr(exc)],
+                symbol="rm_movej",
+                rc=None,
+                sdk_calls=1,
+            )
+        if rc != 0:
+            return errors.error(
+                "rm_movej 返回 %d（预就位失败）" % rc,
+                "确认控制器在线、句柄有效（同一 ip:port 只允许一个客户端），"
+                "并核对目标角度与速度参数后重跑",
+                ["rm_movej rc=%d" % rc],
+                symbol="rm_movej",
+                rc=rc,
+                sdk_calls=1,
+                joint_deg=values,
+                speed=int(speed),
+                radius=int(radius),
+                block=int(block),
+                trajectory_connect=int(trajectory_connect),
+            )
+        return errors.ok(
+            "预就位指令已下发（7 个关节，速度 %d%%，交融半径 %d%%，%s）" % (
+                speed, radius, "阻塞" if block else "非阻塞",
+            ),
+            "",
+            ["rm_movej rc=0"],
+            symbol="rm_movej",
+            rc=0,
+            sdk_calls=1,
+            joint_deg=values,
+            speed=int(speed),
+            radius=int(radius),
+            block=int(block),
+            trajectory_connect=int(trajectory_connect),
+        )
+
+    # ------------------------------------------------------------ 停机族语义
+    def _stop_call(self, symbol: str, label: str) -> Dict[str, Any]:
+        """停机族统一实现（符号映射 + 返回码处理）。"""
+        if not self.connected:
+            return self._not_connected(label)
+        binding = self._bridge.binding
+        fn = getattr(binding, symbol, None)
+        if fn is None:
+            return errors.error(
+                "契约清单缺少符号 %s，无法执行%s" % (symbol, label),
+                "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep %s`），"
+                "重新物化 SDK 后重跑" % symbol,
+                [],
+                symbol=symbol,
+                sdk_calls=0,
+            )
+        try:
+            rc = int(fn(self._handle) or 0)
+        except Exception as exc:
+            return errors.error(
+                "%s 调用异常（%s）：%s" % (symbol, label, exc),
+                "确认 .so 与当前架构匹配（file <so>），修复后重跑",
+                [repr(exc)],
+                symbol=symbol,
+                rc=None,
+                sdk_calls=1,
+            )
+        if rc != 0:
+            return errors.error(
+                "%s 返回 %d（%s失败）" % (symbol, rc, label),
+                "确认控制器在线、句柄有效（同一 ip:port 只允许一个客户端）后重跑",
+                ["%s rc=%d" % (symbol, rc)],
+                symbol=symbol,
+                rc=rc,
+                sdk_calls=1,
+            )
+        return errors.ok(
+            "%s已下发（%s）" % (label, symbol),
+            "",
+            ["%s rc=0" % symbol],
+            symbol=symbol,
+            rc=0,
+            sdk_calls=1,
+        )
+
+    def stop(self) -> Dict[str, Any]:
+        """急停（``rm_set_arm_stop``）。"""
+        return self._stop_call("rm_set_arm_stop", "急停")
+
+    def slow_stop(self) -> Dict[str, Any]:
+        """缓停（``rm_set_arm_slow_stop``）。"""
+        return self._stop_call("rm_set_arm_slow_stop", "缓停")
+
+    def pause(self) -> Dict[str, Any]:
+        """暂停（``rm_set_arm_pause``）。"""
+        return self._stop_call("rm_set_arm_pause", "暂停")
+
+    def continue_(self) -> Dict[str, Any]:
+        """继续（``rm_set_arm_continue``）。"""
+        return self._stop_call("rm_set_arm_continue", "继续")
+
+    def delete_current_trajectory(self) -> Dict[str, Any]:
+        """删除当前轨迹（``rm_set_delete_current_trajectory``）——规划器崩溃兜底。"""
+        return self._stop_call("rm_set_delete_current_trajectory", "删除当前轨迹")
+
+    def current_trajectory_type(self) -> Dict[str, Any]:
+        """查询控制器当前规划类型（``rm_get_arm_current_trajectory``）。
+
+        返回 ``type``（整数值）、``type_name``（枚举名，如 ``RM_NO_PLANNING_E``）
+        与 ``planning``（是否在规划中）——用于**检测控制器是否在偷偷规划**
+        （透传模式下应为 ``RM_NO_PLANNING_E``）。
+        """
+        if not self.connected:
+            return self._not_connected("规划类型查询")
+        binding = self._bridge.binding
+        fn = getattr(binding, "rm_get_arm_current_trajectory", None)
+        if fn is None:
+            return errors.error(
+                "契约清单缺少符号 rm_get_arm_current_trajectory，无法查询规划类型",
+                "确认所用 .so 为 RM-API2 1.1.7，重新物化 SDK 后重跑",
+                [],
+                symbol="rm_get_arm_current_trajectory",
+                sdk_calls=0,
+            )
+        traj_type = ctypes.c_int(0)
+        traj_data = (ctypes.c_float * ARM_DOF)()
+        try:
+            rc = int(
+                fn(self._handle, ctypes.pointer(traj_type), traj_data) or 0
+            )
+        except Exception as exc:
+            return errors.error(
+                "rm_get_arm_current_trajectory 调用异常：%s" % exc,
+                "确认 .so 与当前架构匹配（file <so>），修复后重跑",
+                [repr(exc)],
+                symbol="rm_get_arm_current_trajectory",
+                rc=None,
+                sdk_calls=1,
+            )
+        if rc != 0:
+            return errors.error(
+                "rm_get_arm_current_trajectory 返回 %d（查询规划类型失败）" % rc,
+                "确认控制器在线、句柄有效后重跑",
+                ["rm_get_arm_current_trajectory rc=%d" % rc],
+                symbol="rm_get_arm_current_trajectory",
+                rc=rc,
+                sdk_calls=1,
+            )
+        value = int(traj_type.value)
+        name = TRAJECTORY_ENUM_NAMES.get(value)
+        return errors.ok(
+            "当前规划类型：%s（%d）" % (name or "未知", value),
+            "",
+            ["rm_get_arm_current_trajectory rc=0", "trajectory_type=%d" % value],
+            symbol="rm_get_arm_current_trajectory",
+            rc=0,
+            sdk_calls=1,
+            type=value,
+            type_name=name,
+            planning=(value != 0),
+            data=[float(v) for v in traj_data],
         )
 
     def __repr__(self) -> str:
