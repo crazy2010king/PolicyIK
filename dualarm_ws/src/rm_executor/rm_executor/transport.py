@@ -61,6 +61,18 @@ NEXT_ACTION_HW_BRIDGE_PATH = (
     "# 真机传输通道由 rm_hw_bridge.bridge.ArmLink 提供"
 )
 
+#: 可粘贴的下一步：降速比例取值非法
+NEXT_ACTION_SCALE_RANGE = (
+    "传入 (0, 1] 区间内的降速比例（0 < scale <= 1，如 0.5）后重跑"
+)
+
+#: 可粘贴的下一步：声明限值不可用（唯一数据源 rm_hw_bridge.limits）
+NEXT_ACTION_LIMITS = (
+    "确认声明限值文件存在且可读："
+    "`dualarm_ws/src/rm_description/config/joint_limits.yaml`；"
+    "或 `export RM_WS=<仓库根>` 指定工作区后重跑"
+)
+
 
 # --------------------------------------------------------------------- 校验
 def validate_deg7(deg7: Any) -> Tuple[Optional[List[float]], str]:
@@ -156,7 +168,68 @@ class Transport(ABC):
     def current_trajectory_type(self) -> Dict[str, Any]:
         """查询控制器当前规划类型（**不得**在 tick 线程内调用）。"""
 
+    # -- 安全窄接口（S04） -------------------------------------------------
+    @abstractmethod
+    def set_speed_scale(self, scale: Any, joint_index: Optional[int] = None) -> Dict[str, Any]:
+        """按比例下调驱动最大速度（**L1 降速**的唯一执行入口）。
+
+        参数
+        ----
+        scale
+            降速比例，**必须 ∈ (0, 1]**（0 / >1 / 非有限 → 拒绝，
+            **0 次底层调用**）。
+        joint_index
+            关节序号（**0 基**：0..6）；``None`` = 全关节。
+
+        返回值含 ``applied_scale``（真正下发的比例）与 ``sdk_calls``
+        （**底层调用数**）；失败路径不伪造数值、不抛裸异常。
+        """
+
+    @abstractmethod
+    def controller_state(self) -> Dict[str, Any]:
+        """控制器错误态（碰撞 / 保护停判据的输入源）。
+
+        返回 ``{status, reason, next_action, evidence, arm_err: list[int],
+        arm_current_status: int|None, arm_current_status_name: str|None}``。
+
+        **不得**在 tick 线程内调用（SDK 往返会打进栅格抖动）：由看门狗
+        线程采集、tick 只读缓存。
+        """
+
     # -- 共用校验 ---------------------------------------------------------
+    def _checked_scale(self, scale: Any) -> Tuple[Optional[float], Optional[Dict[str, Any]]]:
+        """降速比例校验（``scale ∈ (0, 1]``）。
+
+        返回 ``(value, None)``（合法）或 ``(None, error_result)``
+        （非法；拒绝路径 **0 次底层调用**）。
+        """
+        if isinstance(scale, bool) or not isinstance(scale, (int, float)):
+            return None, error_result(
+                "speed_scale 必须是数值（当前 %r）" % (scale,),
+                NEXT_ACTION_SCALE_RANGE,
+                [],
+                sdk_calls=0,
+                applied_scale=None,
+            )
+        value = float(scale)
+        if not math.isfinite(value):
+            return None, error_result(
+                "speed_scale=%r 非法（必须是有限数）" % (scale,),
+                NEXT_ACTION_SCALE_RANGE,
+                [],
+                sdk_calls=0,
+                applied_scale=None,
+            )
+        if not (0.0 < value <= 1.0):
+            return None, error_result(
+                "speed_scale=%r 越界（允许范围 (0, 1]）" % (scale,),
+                NEXT_ACTION_SCALE_RANGE,
+                [],
+                sdk_calls=0,
+                applied_scale=None,
+            )
+        return value, None
+
     def _checked_deg7(self, deg7: Any) -> Tuple[Optional[List[float]], Optional[Dict[str, Any]]]:
         """关节角校验。
 
@@ -373,12 +446,66 @@ class FakeTransport(Transport):
             planning=False,
         ))
 
+    # -- 安全窄接口（S04） -----------------------------------------------
+    def set_speed_scale(self, scale: Any, joint_index: Optional[int] = None) -> Dict[str, Any]:
+        """L1 降速（**离线**）：记录调用，不触达控制器。
+
+        * ``scale`` 非法 → **0 次记录**（拒绝路径不产生下行痕迹）；
+        * 合法 → 记录 ``method="set_speed_scale"``、``args`` 含 ``scale``
+          与 ``joint_index``，返回值含 ``applied_scale`` 与 ``sdk_calls=0``
+          （离线通道没有真实 SDK 调用）。
+        """
+        value, reject = self._checked_scale(scale)
+        if reject is not None:
+            return reject
+        args = {"scale": value, "joint_index": joint_index}
+        scripted = self._scripted("set_speed_scale", args)
+        if scripted is not None:
+            merged = dict(scripted)
+            merged.setdefault("applied_scale", value)
+            merged.setdefault("sdk_calls", 0)
+            return self._record("set_speed_scale", args, merged)
+        return self._record("set_speed_scale", args, ok_result(
+            "FakeTransport.set_speed_scale 已记录（离线，未触达控制器）：scale=%r" % value,
+            "", ["fake transport: set_speed_scale"],
+            applied_scale=value,
+            joint_index=joint_index,
+            sdk_calls=0,
+        ))
+
+    def controller_state(self) -> Dict[str, Any]:
+        """控制器错误态（**离线**）：默认**无错误码**（不伪造）。
+
+        * 默认返回 ``arm_err=[]``、``arm_current_status=None``；
+        * 可用既有 ``script`` 机制脚本化（键 ``"controller_state"``），
+          供故障注入（碰撞 / 保护停）使用。
+        """
+        defaults = {
+            "arm_err": [],
+            "arm_current_status": None,
+            "arm_current_status_name": None,
+        }
+        scripted = self._scripted("controller_state", {})
+        if scripted is not None:
+            merged = dict(defaults)
+            merged.update(scripted)
+            if merged.get("status") != "ok" and "arm_err" not in scripted:
+                # 失败路径不得返回「空错误码」冒充“无错误”
+                merged["arm_err"] = None
+            return self._record("controller_state", {}, merged)
+        return self._record("controller_state", {}, ok_result(
+            "FakeTransport.controller_state 已记录（离线，无错误码）",
+            "", ["fake transport: controller_state"],
+            **defaults,
+        ))
+
 
 # --------------------------------------------------------------- 真机传输
 def make_live_transport(ip: Optional[str] = None,
                         port: Optional[int] = None,
                         arm: str = "left",
                         link: Any = None,
+                        ws: Optional[str] = None,
                         **connect_kwargs: Any) -> BridgeTransport:
     """真机传输通道工厂（**与 fake 同一套代码路径**）。
 
@@ -392,7 +519,7 @@ def make_live_transport(ip: Optional[str] = None,
     ``rm_hw_bridge.bridge.connect``。
     """
     if link is not None:
-        return BridgeTransport(link=link)
+        return BridgeTransport(link=link, ws=ws)
 
     def _factory() -> Any:
         from rm_hw_bridge import bridge as hw_bridge  # 惰性导入硬件层
@@ -402,7 +529,7 @@ def make_live_transport(ip: Optional[str] = None,
         return hw_bridge.connect(ip, int(port or hw_bridge.DEFAULT_TCP_PORT),
                                  arm=arm, **connect_kwargs)
 
-    return BridgeTransport(link_factory=_factory)
+    return BridgeTransport(link_factory=_factory, ws=ws)
 
 
 class BridgeTransport(Transport):
@@ -420,7 +547,8 @@ class BridgeTransport(Transport):
     name = "bridge"
 
     def __init__(self, link: Any = None,
-                 link_factory: Optional[Callable[[], Any]] = None) -> None:
+                 link_factory: Optional[Callable[[], Any]] = None,
+                 ws: Optional[str] = None) -> None:
         """
         参数
         ----
@@ -429,10 +557,14 @@ class BridgeTransport(Transport):
         link_factory
             可选的连接工厂（真机入口用它惰性建链）。工厂抛异常时记为
             「不可用」，**不抛裸异常**。
+        ws
+            工作区根（声明限值文件的定位）；``None`` → 由
+            ``rm_hw_bridge.limits`` 自己解析（``$RM_WS`` → 向上查找）。
         """
         self._link = link
         self._link_factory = link_factory
         self._link_error = ""
+        self._ws = ws
 
     # -- 连接解析 ---------------------------------------------------------
     @property
@@ -611,3 +743,207 @@ class BridgeTransport(Transport):
                 [repr(exc)], sdk_calls=1,
             )
         return self._normalize(out, "规划类型查询")
+
+    # -- 安全窄接口（S04） -----------------------------------------------
+    def _checked_joint_index(self, joint_index: Any) -> Tuple[Optional[List[int]],
+                                                             Optional[Dict[str, Any]]]:
+        """关节序号校验（**0 基**：0..6；``None`` = 全关节）。
+
+        返回 ``(indices, None)`` 或 ``(None, error_result)``；
+        拒绝路径 **0 次底层调用**。
+        """
+        if joint_index is None:
+            return list(range(ARM_DOF)), None
+        if isinstance(joint_index, bool) or not isinstance(joint_index, int):
+            return None, error_result(
+                "joint_index 必须是整数或 None（当前 %r）" % (joint_index,),
+                "传入 0..%d 的整数关节序号（0 基）或 None（全关节）后重跑"
+                % (ARM_DOF - 1),
+                [],
+                sdk_calls=0,
+                applied_scale=None,
+            )
+        if joint_index < 0 or joint_index >= ARM_DOF:
+            return None, error_result(
+                "joint_index=%d 越界（允许范围 0..%d，0 基）"
+                % (joint_index, ARM_DOF - 1),
+                "传入 0..%d 的整数关节序号（0 基）或 None（全关节）后重跑"
+                % (ARM_DOF - 1),
+                [],
+                sdk_calls=0,
+                applied_scale=None,
+            )
+        return [joint_index], None
+
+    def _load_safety_limits(self) -> Tuple[Optional[Dict[str, Any]], Optional[float],
+                                          Optional[str]]:
+        """取声明限值（SI）+ 单位换算因子。
+
+        * 限值**唯一来源** = ``rm_hw_bridge.limits.load_joint_limits()``；
+        * 弧度→度的换算**单点** = ``rm_hw_bridge.bridge.RAD2DEG``
+          （本层不新开换算常量）。
+
+        返回 ``(limits, rad2deg, error)``；``error`` 非空 → blocked。
+        """
+        try:
+            from rm_hw_bridge import bridge as hw_bridge  # 惰性导入硬件层
+            from rm_hw_bridge import limits as hw_limits
+        except Exception as exc:  # noqa: BLE001
+            return None, None, "无法导入 rm_hw_bridge（%s）: %s" % (
+                type(exc).__name__, exc,
+            )
+        try:
+            limits = hw_limits.load_joint_limits(self._ws)
+        except Exception as exc:  # noqa: BLE001
+            return None, None, "读取声明限值失败（%s）: %s" % (
+                type(exc).__name__, exc,
+            )
+        return limits, float(hw_bridge.RAD2DEG), ""
+
+    def set_speed_scale(self, scale: Any, joint_index: Optional[int] = None) -> Dict[str, Any]:
+        """L1 降速（**真机**）：按「声明限值 × scale」逐关节下发。
+
+        * 目标速度 = ``声明限值 max_speed（rad/s）× RAD2DEG × scale``（°/s）；
+        * 限值不可用 → blocked + **0 次 SDK 调用**；
+        * 参数非法 → error + **0 次 SDK 调用**；
+        * 逐关节调 ``ArmLink.set_drive_max_speed(joint_index, deg_s)``
+          （0 基序号、度制），任一关节失败即返回 error 并附上失败原因与
+          可粘贴 next_action。
+        """
+        value, reject = self._checked_scale(scale)
+        if reject is not None:
+            return reject
+        indices, reject = self._checked_joint_index(joint_index)
+        if reject is not None:
+            return reject
+
+        link = self._resolve_link()
+        if link is None:
+            res = self._unavailable("L1 降速")
+            res["applied_scale"] = None
+            return res
+        if not getattr(link, "connected", False):
+            res = self._not_connected(link, "L1 降速")
+            res["applied_scale"] = None
+            return res
+
+        limits, rad2deg, error = self._load_safety_limits()
+        if error:
+            res = blocked_result(
+                "L1 降速无法下发：%s" % error,
+                NEXT_ACTION_LIMITS,
+                [error],
+                sdk_calls=0,
+                applied_scale=None,
+                arm_link_available=True,
+            )
+            return res
+
+        applied: List[Dict[str, Any]] = []
+        evidence: List[str] = []
+        for idx in indices:
+            name = "joint%d" % (idx + 1)
+            item = limits.get(name) if isinstance(limits, dict) else None
+            if not isinstance(item, dict) or "max_speed" not in item:
+                res = blocked_result(
+                    "L1 降速无法下发：声明限值缺关节 %s（限值结构不合法）" % name,
+                    NEXT_ACTION_LIMITS,
+                    evidence + ["声明限值缺关节 %s" % name],
+                    sdk_calls=len(applied),
+                    applied_scale=None,
+                    applied=applied,
+                )
+                return res
+            try:
+                max_speed_rad_s = float(item["max_speed"])
+            except (TypeError, ValueError):
+                res = blocked_result(
+                    "L1 降速无法下发：关节 %s 的 max_speed 非数值（%r）"
+                    % (name, item.get("max_speed")),
+                    NEXT_ACTION_LIMITS,
+                    evidence + ["关节 %s 的 max_speed 非数值" % name],
+                    sdk_calls=len(applied),
+                    applied_scale=None,
+                    applied=applied,
+                )
+                return res
+            target_deg_s = max_speed_rad_s * rad2deg * value
+            try:
+                out = link.set_drive_max_speed(idx, target_deg_s)
+            except Exception as exc:  # noqa: BLE001
+                res = error_result(
+                    "set_drive_max_speed 调用异常（关节 %s，%s）: %s"
+                    % (name, type(exc).__name__, exc),
+                    "确认控制器在线、句柄有效后重跑 `rmctl connect --arm left --json`",
+                    evidence + [repr(exc)],
+                    sdk_calls=len(applied) + 1,
+                    applied_scale=None,
+                    applied=applied,
+                )
+                return res
+            norm = self._normalize(out, "L1 降速（关节 %s）" % name)
+            applied.append({
+                "joint_index": idx,
+                "joint_name": name,
+                "target_deg_s": target_deg_s,
+                "status": norm.get("status"),
+            })
+            if norm.get("status") != "ok":
+                res = error_result(
+                    "L1 降速下发失败（关节 %s）：%s" % (
+                        name, norm.get("reason", "未知原因"),
+                    ),
+                    norm.get("next_action")
+                    or "确认控制器在线、句柄有效（同一 ip:port 只允许一个客户端）后重跑",
+                    evidence + list(norm.get("evidence", []) or []),
+                    sdk_calls=len(applied),
+                    applied_scale=None,
+                    applied=applied,
+                )
+                return res
+            evidence.append(
+                "关节 %s：声明限值 %.6f rad/s × %.4f = %.4f °/s（scale=%.4f）"
+                % (name, max_speed_rad_s, rad2deg, target_deg_s, value)
+            )
+
+        return ok_result(
+            "L1 降速已下发：%d 个关节 × scale=%.4f（声明限值 × scale）"
+            % (len(applied), value),
+            "",
+            evidence,
+            applied_scale=value,
+            joint_index=joint_index,
+            sdk_calls=len(applied),
+            applied=applied,
+        )
+
+    def controller_state(self) -> Dict[str, Any]:
+        """控制器错误态（**真机**）：转发 ``ArmLink.controller_error_state()``。
+
+        * ArmLink 不可用 / 未连接 → blocked + **0 次 SDK 调用**，
+          且三个数据字段全为 ``None``（不伪造）；
+        * SDK 失败 → error，三个数据字段全为 ``None``；
+        * 成功 → 透传 ``arm_err`` / ``arm_current_status`` /
+          ``arm_current_status_name``。
+        """
+        link = self._resolve_link()
+        if link is None:
+            res = self._unavailable("控制器错误状态查询")
+        elif not getattr(link, "connected", False):
+            res = self._not_connected(link, "控制器错误状态查询")
+        else:
+            try:
+                out = link.controller_error_state()
+            except Exception as exc:  # noqa: BLE001
+                res = error_result(
+                    "controller_error_state 调用异常（%s）: %s"
+                    % (type(exc).__name__, exc),
+                    "确认控制器在线、句柄有效后重跑",
+                    [repr(exc)], sdk_calls=1,
+                )
+            else:
+                res = self._normalize(out, "控制器错误状态查询")
+        res.setdefault("arm_err", None)
+        res.setdefault("arm_current_status", None)
+        res.setdefault("arm_current_status_name", None)
+        return res
