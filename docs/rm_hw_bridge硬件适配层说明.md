@@ -17,7 +17,7 @@
 | 连真机看状态快照（R004 全字段） | `python3 -m rmctl connect --arm left --ip <ip> --json` |
 | 复核白/黑名单静态审计 | `python3 -m rm_hw_bridge.audit --repo`（退出码 0 = 零违规，3 = 有违规） |
 | 看 ABI 唯一真值 | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/abi_spec.yaml` |
-| 看符号契约唯一真值（22 核心 + 5 支持 + 黑名单） | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml` |
+| 看符号契约唯一真值（22 核心 + 21 支持 + 黑名单） | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml` |
 | 看生成物（ctypes 绑定 / 布局黄金表） | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/generated/` |
 | 重新生成绑定（改了 abi_spec.yaml 之后） | `python3 -m rm_hw_bridge.codegen --spec dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/abi_spec.yaml --out dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/generated` |
 | 检查生成物是否漂移 | 同上加 `--check`（漂移时 stderr 打印「生成物漂移:」清单） |
@@ -85,11 +85,13 @@ rmctl（体验层：规划 / 基线 / CLI）
 
 ---
 
-## 3. 符号清单（22 核心 + 5 支持）
+## 3. 符号清单（22 核心 + 21 支持）
 
 > **以 `rm_hw_bridge/contract.yaml` 为唯一真值**（下表是它的人类可读快照；
 > 代码里不硬编码任何符号名，装载器与审计器都只读契约文件）。
-> 契约自带自校验：`limits.core_count = 22`、`limits.support_count = 5`。
+> 契约自带自校验：`limits.core_count = 22`、`limits.support_count = 21`。
+> **core 22 个与黑名单 13 个一字未动**（R003 结论原样成立）；本次扩容只动
+> **支持层**（5 → 21）：夹爪快路径 6 + Modbus 主路径 6 + RM Plus 2 + 工具端电压 2。
 
 ### 3.1 核心符号（恰好 22 个，缺一即契约破损）
 
@@ -118,7 +120,7 @@ rmctl（体验层：规划 / 基线 / CLI）
 | 21 | `rm_set_collision_state` | 碰撞检测分级（**安全开关**，0=不检测，8=最灵敏） | 0..8 |
 | 22 | `rm_set_self_collision_enable` | 自碰撞检测使能（**安全开关**） | bool |
 
-### 3.2 支持层符号（5 个，不计入 22，但同样受白名单约束）
+### 3.2 支持层符号（21 个，不计入 22，但同样受白名单约束）
 
 | 符号 | 为什么必须允许 |
 |---|---|
@@ -127,6 +129,32 @@ rmctl（体验层：规划 / 基线 / CLI）
 | `rm_get_robot_info` | 版本矩阵 / 机型（判定控制器固件与机型是否匹配） |
 | `rm_get_realtime_push` | 主动上报配置回读（下发后确认真的生效） |
 | `rm_realtime_arm_state_call_back` | UDP 主动上报回调注册（**进程级全局单例**，见 §8） |
+| **夹爪快路径** | |
+| `rm_set_gripper_route` | 设定夹爪开口行程上下限（0~1000，无量纲） |
+| `rm_set_gripper_release` | 松开夹爪（快路径，block/timeout 阻塞语义） |
+| `rm_set_gripper_pick` | 力控夹取（快路径，夹到判定的主下发接口） |
+| `rm_set_gripper_pick_on` | 持续力控夹取（保持夹持力） |
+| `rm_set_gripper_position` | 夹爪开到指定开口（1~1000，无量纲） |
+| `rm_get_gripper_state` | 读夹爪状态（六类判定的**唯一数据源**） |
+| **Modbus-RTU 主路径** | |
+| `rm_set_modbus_mode` | 打开端口 Modbus RTU 模式（主路径前置，启动后必须先调） |
+| `rm_close_modbus_mode` | 关闭端口 Modbus RTU 模式（关闭后自动切回机械臂控制模式） |
+| `rm_read_holding_registers` | 读保持寄存器（`params` **按值**传递） |
+| `rm_read_input_registers` | 读输入寄存器（`params` **按值**传递） |
+| `rm_write_registers` | 写多个寄存器（`num` ≤ 10，`params` **按值**传递） |
+| `rm_write_single_register` | 写单个寄存器（`params` **按值**传递） |
+| **RM Plus 末端生态协议** | |
+| `rm_set_rm_plus_mode` | 设置末端生态协议模式（0 禁用 / 9600 / 115200 / 256000 / 460800） |
+| `rm_get_rm_plus_mode` | 查询末端生态协议模式（回读，确认真的生效） |
+| **工具端电压** | |
+| `rm_set_tool_voltage` | 设置工具端供电档位（0V / 5V / 12V / 24V） |
+| `rm_get_tool_voltage` | 获取工具端供电档位（回读，确认夹爪供电正常） |
+
+> **两条互斥路径**：厂商手爪控制协议与末端 Modbus 功能**互斥**（同一时刻只能开一条）。
+> 快路径（`rm_set_gripper_*`）走控制器内置手爪协议；通用夹爪走 Modbus-RTU 主路径
+> （`rm_set_modbus_mode` → 读写寄存器 → `rm_close_modbus_mode`）。
+> 两组参数的 `rm_peripheral_read_write_params_t` 都是**按值**传递（与
+> `rm_set_realtime_push` / `rm_movej_canfd` 同写法，见 §2.1 规则 2）。
 
 ### 3.3 黑名单（禁止调用，静态审计按"调用形态"拦截）
 

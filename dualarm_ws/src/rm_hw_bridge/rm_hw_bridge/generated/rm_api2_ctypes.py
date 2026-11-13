@@ -1,7 +1,7 @@
 """RM-API2 ctypes 绑定（**自动生成，请勿手改**）。
 
 源头: rm_hw_bridge/abi_spec.yaml
-abi_spec.yaml sha256: 3c93a05cf713a69aaf5ff24bcbcd32387767d36e5d1d67377b95a61d30a14b2d
+abi_spec.yaml sha256: 55db9ea39fc02e0b1a3b52a4946cf10fb38958eac4e02a225e442c8e95cf2327
 SDK: RM-API2 1.1.7
 
 重新生成: python3 -m rm_hw_bridge.codegen --spec <abi_spec.yaml> --out <dir>
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import ctypes
 
-SPEC_SHA256 = "3c93a05cf713a69aaf5ff24bcbcd32387767d36e5d1d67377b95a61d30a14b2d"
+SPEC_SHA256 = "55db9ea39fc02e0b1a3b52a4946cf10fb38958eac4e02a225e442c8e95cf2327"
 SDK_NAME = "RM-API2"
 SDK_VERSION = "1.1.7"
 
@@ -180,6 +180,29 @@ class rm_arm_all_state_t(ctypes.Structure):
         ("joint_voltage", (ctypes.c_float * 7)),  # 关节电压，单位 V
         ("joint_err_code", (ctypes.c_int * 7)),  # 关节错误码
         ("err", rm_err_t),
+    ]
+
+class rm_gripper_state_t(ctypes.Structure):
+    """夹爪状态（厂商头文件 rm_define.h，7 个 int 字段，顺序逐字一致）"""
+
+    _fields_ = [
+        ("enable_state", ctypes.c_int),  # 夹爪使能标志，0 未使能 / 1 已使能
+        ("status", ctypes.c_int),  # 夹爪在线状态，0 离线 / 1 在线
+        ("error", ctypes.c_int),  # 夹爪错误信息位图：bit0 堵转 bit1 过温 bit2 过流 bit3 驱动器 bit4 内部通信 bit5-7 保留
+        ("mode", ctypes.c_int),  # 工作状态：1 张开最大且空闲 2 闭合最小且空闲 3 停止且空闲 4 正在闭合 5 正在张开 6 闭合中遇力控停止
+        ("current_force", ctypes.c_int),  # 夹爪当前压力，单位 g
+        ("temperature", ctypes.c_int),  # 当前温度，单位 ℃
+        ("actpos", ctypes.c_int),  # 夹爪开口度
+    ]
+
+class rm_peripheral_read_write_params_t(ctypes.Structure):
+    """外设数据读写参数（厂商头文件 rm_define.h，4 个 int 字段，顺序逐字一致）"""
+
+    _fields_ = [
+        ("port", ctypes.c_int),  # 通讯端口：0 控制器 RS485 / 1 末端接口板 RS485 / 3 控制器 ModbusTCP 设备
+        ("address", ctypes.c_int),  # 数据起始地址
+        ("device", ctypes.c_int),  # 外设设备地址
+        ("num", ctypes.c_int),  # 要读/写的数据数量
     ]
 
 class rm_udp_custom_config_t(ctypes.Structure):
@@ -358,6 +381,10 @@ rm_realtime_arm_state_callback_ptr = ctypes.CFUNCTYPE(None, rm_realtime_arm_join
 # ---------------------------------------------------------------- 符号表
 #: 符号名 → {"argtypes": [...], "restype": ...}（可直接喂给 ctypes）
 SYMBOLS = {
+    "rm_close_modbus_mode": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int],
+        "restype": ctypes.c_int,
+    },
     "rm_create_robot_arm": {
         "argtypes": [ctypes.c_char_p, ctypes.c_int],
         "restype": ctypes.POINTER(rm_robot_handle),
@@ -378,6 +405,10 @@ SYMBOLS = {
         "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(rm_current_arm_state_t)],
         "restype": ctypes.c_int,
     },
+    "rm_get_gripper_state": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(rm_gripper_state_t)],
+        "restype": ctypes.c_int,
+    },
     "rm_get_joint_degree": {
         "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(ctypes.c_float)],
         "restype": ctypes.c_int,
@@ -390,8 +421,16 @@ SYMBOLS = {
         "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(rm_realtime_push_config_t)],
         "restype": ctypes.c_int,
     },
+    "rm_get_rm_plus_mode": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(ctypes.c_int)],
+        "restype": ctypes.c_int,
+    },
     "rm_get_robot_info": {
         "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(rm_robot_info_t)],
+        "restype": ctypes.c_int,
+    },
+    "rm_get_tool_voltage": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(ctypes.c_int)],
         "restype": ctypes.c_int,
     },
     "rm_init": {
@@ -406,6 +445,16 @@ SYMBOLS = {
         "argtypes": [ctypes.POINTER(rm_robot_handle), rm_movej_canfd_mode_t],
         "restype": ctypes.c_int,
         "by_value": ['config'],
+    },
+    "rm_read_holding_registers": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), rm_peripheral_read_write_params_t, ctypes.POINTER(ctypes.c_int)],
+        "restype": ctypes.c_int,
+        "by_value": ['params'],
+    },
+    "rm_read_input_registers": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), rm_peripheral_read_write_params_t, ctypes.POINTER(ctypes.c_int)],
+        "restype": ctypes.c_int,
+        "by_value": ['params'],
     },
     "rm_realtime_arm_state_call_back": {
         "argtypes": [rm_realtime_arm_state_callback_ptr],
@@ -435,6 +484,26 @@ SYMBOLS = {
         "argtypes": [ctypes.POINTER(rm_robot_handle)],
         "restype": ctypes.c_int,
     },
+    "rm_set_gripper_pick": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int, ctypes.c_int, ctypes.c_bool, ctypes.c_int],
+        "restype": ctypes.c_int,
+    },
+    "rm_set_gripper_pick_on": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int, ctypes.c_int, ctypes.c_bool, ctypes.c_int],
+        "restype": ctypes.c_int,
+    },
+    "rm_set_gripper_position": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int, ctypes.c_bool, ctypes.c_int],
+        "restype": ctypes.c_int,
+    },
+    "rm_set_gripper_release": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int, ctypes.c_bool, ctypes.c_int],
+        "restype": ctypes.c_int,
+    },
+    "rm_set_gripper_route": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int, ctypes.c_int],
+        "restype": ctypes.c_int,
+    },
     "rm_set_joint_drive_max_acc": {
         "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int, ctypes.c_float],
         "restype": ctypes.c_int,
@@ -455,10 +524,18 @@ SYMBOLS = {
         "argtypes": [rm_log_callback_ptr, ctypes.c_int],
         "restype": None,
     },
+    "rm_set_modbus_mode": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int, ctypes.c_int, ctypes.c_int],
+        "restype": ctypes.c_int,
+    },
     "rm_set_realtime_push": {
         "argtypes": [ctypes.POINTER(rm_robot_handle), rm_realtime_push_config_t],
         "restype": ctypes.c_int,
         "by_value": ['config'],
+    },
+    "rm_set_rm_plus_mode": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int],
+        "restype": ctypes.c_int,
     },
     "rm_set_self_collision_enable": {
         "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_bool],
@@ -467,6 +544,20 @@ SYMBOLS = {
     "rm_set_timeout": {
         "argtypes": [ctypes.c_int],
         "restype": None,
+    },
+    "rm_set_tool_voltage": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.c_int],
+        "restype": ctypes.c_int,
+    },
+    "rm_write_registers": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), rm_peripheral_read_write_params_t, ctypes.POINTER(ctypes.c_int)],
+        "restype": ctypes.c_int,
+        "by_value": ['params'],
+    },
+    "rm_write_single_register": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), rm_peripheral_read_write_params_t, ctypes.c_int],
+        "restype": ctypes.c_int,
+        "by_value": ['params'],
     },
 }
 

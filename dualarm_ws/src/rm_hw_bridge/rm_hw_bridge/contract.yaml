@@ -11,7 +11,7 @@
 #
 # 三个分区的语义：
 #   core     —— **恰好 22** 个核心符号，计入 limits.core_count；缺一即契约破损。
-#   support  —— 工程必需但**不计入 22**，必须显式标注理由；同样受白名单约束。
+#   support  —— 工程必需但**不计入 22**（共 21 个），必须显式标注理由；同样受白名单约束。
 #   blacklist—— **禁止调用**（静态审计按「调用形态」拦截）。
 #
 # forbidden_imports 的 scope 语义：
@@ -148,6 +148,78 @@ support:
     unit: "-"
     argtypes: "realtime_callback: rm_realtime_arm_state_callback_ptr -> void"
 
+  # --- 夹爪快路径（厂商手爪控制协议；与末端 Modbus 互斥）
+  - name: rm_set_gripper_route
+    reason: 设定夹爪开口行程上下限（开合范围边界，夹爪协议初始化必需）
+    unit: "无量纲 0~1000"
+    argtypes: "handle: rm_robot_handle*, min_limit: int, max_limit: int -> int"
+  - name: rm_set_gripper_release
+    reason: 松开夹爪（快路径：开口到最大位）
+    unit: "speed 无量纲 1~1000 / timeout s"
+    argtypes: "handle: rm_robot_handle*, speed: int, block: bool, timeout: int -> int"
+  - name: rm_set_gripper_pick
+    reason: 力控夹取夹爪（快路径：夹到判定的主下发接口）
+    unit: "speed 无量纲 1~1000 / force 无量纲 50~1000 / timeout s"
+    argtypes: "handle: rm_robot_handle*, speed: int, force: int, block: bool, timeout: int -> int"
+  - name: rm_set_gripper_pick_on
+    reason: 持续力控夹取夹爪（快路径：保持夹持力的下发接口）
+    unit: "speed 无量纲 1~1000 / force 无量纲 50~1000 / timeout s"
+    argtypes: "handle: rm_robot_handle*, speed: int, force: int, block: bool, timeout: int -> int"
+  - name: rm_set_gripper_position
+    reason: 夹爪开到指定开口（快路径：半开/指定开度）
+    unit: "position 无量纲 1~1000 / timeout s"
+    argtypes: "handle: rm_robot_handle*, position: int, block: bool, timeout: int -> int"
+  - name: rm_get_gripper_state
+    reason: 读夹爪状态（六类判定：夹到/夹空/堵转/过温/离线 的唯一数据源）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, state: rm_gripper_state_t* -> int"
+
+  # --- Modbus-RTU 主路径（通用夹爪/外设寄存器读写）
+  - name: rm_set_modbus_mode
+    reason: 打开通讯端口 Modbus RTU 模式（主路径前置；机械臂启动后必须先调）
+    unit: "baudrate bps / timeout 百毫秒"
+    argtypes: "handle: rm_robot_handle*, port: int, baudrate: int, timeout: int -> int"
+  - name: rm_close_modbus_mode
+    reason: 关闭通讯端口 Modbus RTU 模式（关闭后自动切回机械臂控制模式，协议生命周期必需）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, port: int -> int"
+  - name: rm_read_holding_registers
+    reason: 读保持寄存器（通用夹爪状态/参数寄存器读取）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, params: rm_peripheral_read_write_params_t, data: int* -> int"
+  - name: rm_read_input_registers
+    reason: 读输入寄存器（通用夹爪输入寄存器读取）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, params: rm_peripheral_read_write_params_t, data: int* -> int"
+  - name: rm_write_registers
+    reason: 写多个寄存器（通用夹爪参数下发）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, params: rm_peripheral_read_write_params_t, data: int* -> int"
+  - name: rm_write_single_register
+    reason: 写单个寄存器（通用夹爪单参数下发）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, params: rm_peripheral_read_write_params_t, data: int -> int"
+
+  # --- RM Plus 末端生态协议
+  - name: rm_set_rm_plus_mode
+    reason: 设置末端生态协议模式（RM Plus 通道波特率协商）
+    unit: "波特率（0 禁用 / 9600 / 115200 / 256000 / 460800）"
+    argtypes: "handle: rm_robot_handle*, mode: int -> int"
+  - name: rm_get_rm_plus_mode
+    reason: 查询末端生态协议模式（RM Plus 通道回读，确认真的生效）
+    unit: "波特率（0 禁用 / 9600 / 115200 / 256000 / 460800）"
+    argtypes: "handle: rm_robot_handle*, mode: int* -> int"
+
+  # --- 工具端电压
+  - name: rm_set_tool_voltage
+    reason: 设置工具端电源输出（夹爪/传感器供电档位：0V/5V/12V/24V）
+    unit: "档位 0/1/2/3（0V/5V/12V/24V）"
+    argtypes: "handle: rm_robot_handle*, voltage_type: int -> int"
+  - name: rm_get_tool_voltage
+    reason: 获取工具端电源输出（供电档位回读，确认夹爪供电正常）
+    unit: "档位 0/1/2/3（0V/5V/12V/24V）"
+    argtypes: "handle: rm_robot_handle*, voltage_type: int* -> int"
+
 # ---------------------------------------------------------------------------
 # 黑名单：**禁止调用**（按调用形态静态拦截；字符串常量不算调用）
 # ---------------------------------------------------------------------------
@@ -225,4 +297,4 @@ rules:
 # ---------------------------------------------------------------------------
 limits:
   core_count: 22
-  support_count: 5
+  support_count: 21

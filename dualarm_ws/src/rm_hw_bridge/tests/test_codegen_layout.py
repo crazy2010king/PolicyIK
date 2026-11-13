@@ -107,13 +107,33 @@ CORE_SYMBOLS = (
     "rm_set_self_collision_enable",
 )
 
-#: 支持层符号
+#: 支持层符号（21 个，不计入 22）
 SUPPORT_SYMBOLS = (
     "rm_set_log_call_back",
     "rm_set_timeout",
     "rm_get_robot_info",
     "rm_get_realtime_push",
     "rm_realtime_arm_state_call_back",
+    # --- 夹爪快路径
+    "rm_set_gripper_route",
+    "rm_set_gripper_release",
+    "rm_set_gripper_pick",
+    "rm_set_gripper_pick_on",
+    "rm_set_gripper_position",
+    "rm_get_gripper_state",
+    # --- Modbus-RTU 主路径
+    "rm_set_modbus_mode",
+    "rm_close_modbus_mode",
+    "rm_read_holding_registers",
+    "rm_read_input_registers",
+    "rm_write_registers",
+    "rm_write_single_register",
+    # --- RM Plus 末端生态协议
+    "rm_set_rm_plus_mode",
+    "rm_get_rm_plus_mode",
+    # --- 工具端电压
+    "rm_set_tool_voltage",
+    "rm_get_tool_voltage",
 )
 
 
@@ -320,7 +340,7 @@ def test_codegen_regenerate_is_byte_identical(spec_path, pkg_root, tmp_path):
 
 
 def test_symbol_table_contains_core_and_support_symbols(generated_module):
-    """22 核心符号 + 5 支持符号必须全部在符号表里。"""
+    """22 核心符号 + 21 支持符号必须全部在符号表里。"""
     symbols = generated_module.SYMBOLS
     for name in CORE_SYMBOLS:
         assert name in symbols, "符号表缺少核心符号 %s" % name

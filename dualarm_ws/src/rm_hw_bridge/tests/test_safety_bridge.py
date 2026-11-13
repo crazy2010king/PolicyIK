@@ -11,7 +11,7 @@
 * **建连期接线** —— ``connect()`` 后 ``rm_set_timeout`` 被调用**一次**且传入
   ``1.0 s``（对外秒 → SDK 毫秒，换算只在 ``rm_hw_bridge.bridge`` 一处）；
   超时设置**失败不阻断连接**（但必须留下证据）；
-* **22 + 5 名单与黑名单不变**（直接读 ``contract.yaml`` 断言）。
+* **22 + 21 名单与黑名单**（直接读 ``contract.yaml`` 断言；core 22 / 黑名单 13 不变）。
 
 只用**注入的假 SDK**，不依赖 ``.deps/``（gitignored）里的真实 ``.so``。
 """
@@ -126,7 +126,7 @@ def link(fake_lib):
     return link_obj
 
 
-# ------------------------------------------------------- 契约名单（22 + 5）
+# ------------------------------------------------------- 契约名单（22 + 21）
 EXPECTED_CORE = {
     "rm_init",
     "rm_create_robot_arm",
@@ -158,6 +158,26 @@ EXPECTED_SUPPORT = {
     "rm_get_robot_info",
     "rm_get_realtime_push",
     "rm_realtime_arm_state_call_back",
+    # --- 夹爪快路径（S05 扩容）
+    "rm_set_gripper_route",
+    "rm_set_gripper_release",
+    "rm_set_gripper_pick",
+    "rm_set_gripper_pick_on",
+    "rm_set_gripper_position",
+    "rm_get_gripper_state",
+    # --- Modbus-RTU 主路径
+    "rm_set_modbus_mode",
+    "rm_close_modbus_mode",
+    "rm_read_holding_registers",
+    "rm_read_input_registers",
+    "rm_write_registers",
+    "rm_write_single_register",
+    # --- RM Plus 末端生态协议
+    "rm_set_rm_plus_mode",
+    "rm_get_rm_plus_mode",
+    # --- 工具端电压
+    "rm_set_tool_voltage",
+    "rm_get_tool_voltage",
 }
 
 EXPECTED_BLACKLIST = {
@@ -178,7 +198,7 @@ EXPECTED_BLACKLIST = {
 
 
 def test_contract_core_support_blacklist_unchanged():
-    """**22 核心 + 5 支持 + 13 黑名单符号 + rm_algo_ 前缀**原样不变。"""
+    """**22 核心 + 21 支持 + 13 黑名单符号 + rm_algo_ 前缀**（核心/黑名单不变）。"""
     contract = loader.load_contract()
     core = loader.core_symbols(contract)
     support = loader.support_symbols(contract)
@@ -187,13 +207,14 @@ def test_contract_core_support_blacklist_unchanged():
 
     assert len(core) == 22, "核心符号数变了：%d" % len(core)
     assert set(core) == EXPECTED_CORE, "核心符号名单变了"
-    assert len(support) == 5, "支持符号数变了：%d" % len(support)
+    assert len(support) == len(EXPECTED_SUPPORT), "支持符号数变了：%d" % len(support)
     assert set(support) == EXPECTED_SUPPORT, "支持符号名单变了"
     assert len(blacklist) == 13, "黑名单符号数变了：%d" % len(blacklist)
     assert set(blacklist) == EXPECTED_BLACKLIST, "黑名单符号名单变了"
     assert prefixes == ["rm_algo_"], "黑名单前缀变了：%r" % (prefixes,)
     assert int((contract.get("limits") or {}).get("core_count")) == 22
-    assert int((contract.get("limits") or {}).get("support_count")) == 5
+    # 支持层数量**按契约读取**（不再写死数字），且与名单严格一致
+    assert int((contract.get("limits") or {}).get("support_count")) == len(support)
 
     # 三个窄接口用到的符号**必须**在既有名单内（不新增 SDK 符号）
     assert "rm_set_joint_drive_max_speed" in core

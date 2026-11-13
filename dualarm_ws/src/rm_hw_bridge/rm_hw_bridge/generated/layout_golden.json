@@ -1,5 +1,5 @@
 {
-  "abi_spec_sha256": "3c93a05cf713a69aaf5ff24bcbcd32387767d36e5d1d67377b95a61d30a14b2d",
+  "abi_spec_sha256": "55db9ea39fc02e0b1a3b52a4946cf10fb38958eac4e02a225e442c8e95cf2327",
   "sdk": {
     "name": "RM-API2",
     "version": "1.1.7"
@@ -47,6 +47,18 @@
       },
       "size": 52
     },
+    "rm_gripper_state_t": {
+      "fields": {
+        "actpos": 24,
+        "current_force": 16,
+        "enable_state": 0,
+        "error": 8,
+        "mode": 12,
+        "status": 4,
+        "temperature": 20
+      },
+      "size": 28
+    },
     "rm_joint_status_t": {
       "fields": {
         "joint_current": 0,
@@ -68,6 +80,15 @@
         "trajectory_mode": 16
       },
       "size": 24
+    },
+    "rm_peripheral_read_write_params_t": {
+      "fields": {
+        "address": 4,
+        "device": 8,
+        "num": 12,
+        "port": 0
+      },
+      "size": 16
     },
     "rm_plus_base_info_t": {
       "fields": {

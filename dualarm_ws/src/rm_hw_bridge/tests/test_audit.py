@@ -185,6 +185,8 @@ def _safety_fixture(repo_root, name, source):
 
 def test_layers_are_declared_in_contract():
     """contract.yaml 必须声明 rules.layers（层 → 包根）。"""
+    from rm_hw_bridge import loader
+
     contract = audit._load_contract()
     layers = (contract.get("rules") or {}).get("layers") or {}
     assert layers.get("hardware") == "rm_hw_bridge"
@@ -192,7 +194,10 @@ def test_layers_are_declared_in_contract():
     assert layers.get("experience") == "rmctl"
     # 核心/支持符号清单不变（R003 结论原样成立）
     assert contract["limits"]["core_count"] == 22
-    assert contract["limits"]["support_count"] == 5
+    # 支持层数量**按契约读取**（不写死数字）
+    assert contract["limits"]["support_count"] == len(
+        loader.support_symbols(contract)
+    )
 
 
 def test_layer_roots_are_resolved(repo_root):
@@ -269,6 +274,8 @@ def test_negative_hardware_layer_imports_rmctl_still_violation(repo_root):
 # ------------------------------------------- 安全层反向依赖红线（S04/T8）
 def test_safety_layer_is_declared_in_contract():
     """contract.yaml 必须声明 safety 层与它的反向依赖禁令。"""
+    from rm_hw_bridge import loader
+
     contract = audit._load_contract()
     rules = contract.get("rules") or {}
     layers = rules.get("layers") or {}
@@ -277,7 +284,9 @@ def test_safety_layer_is_declared_in_contract():
     assert set(targets.get("safety") or []) == {"rmctl", "rm_executor", "tesseract*"}
     # 核心/支持符号清单**不变**（R003 结论原样成立）
     assert contract["limits"]["core_count"] == 22
-    assert contract["limits"]["support_count"] == 5
+    assert contract["limits"]["support_count"] == len(
+        loader.support_symbols(contract)
+    )
 
 
 def test_safety_layer_root_is_resolved(repo_root):
@@ -347,14 +356,15 @@ def test_safety_package_has_no_reverse_dependency(repo_root):
 
 
 def test_symbol_lists_unchanged_after_safety_layer_added():
-    """新增安全层后，22 核心 / 5 支持符号名单与黑名单一律不变。"""
+    """新增安全层后，22 核心 / 21 支持符号名单与黑名单一律不变。"""
     from rm_hw_bridge import loader
 
     contract = audit._load_contract()
     core = loader.core_symbols(contract)
     support = loader.support_symbols(contract)
     assert len(core) == 22
-    assert len(support) == 5
+    # 支持层数量**按契约读取**（不写死数字）
+    assert len(support) == contract["limits"]["support_count"]
     assert contract["limits"]["core_count"] == len(core)
     assert contract["limits"]["support_count"] == len(support)
     symbols, prefixes = audit._blacklist(contract)

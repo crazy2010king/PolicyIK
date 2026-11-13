@@ -95,7 +95,8 @@ def test_core_count_is_exactly_22(core, contract):
 
 
 def test_support_not_counted_in_22(core, support, contract):
-    assert len(support) == contract["limits"]["support_count"] == 5
+    # 支持层数量**按契约读取**（不写死数字）：与 limits.support_count 严格一致
+    assert len(support) == contract["limits"]["support_count"]
     assert not (set(core) & set(support))
     # support 不计入 22
     assert len(core) == 22

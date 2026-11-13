@@ -186,6 +186,25 @@ structs:
       - {name: joint_err_code, type: int, count: 7, doc: "关节错误码"}
       - {name: err, type: rm_err_t}
 
+  rm_gripper_state_t:
+    doc: 夹爪状态（厂商头文件 rm_define.h，7 个 int 字段，顺序逐字一致）
+    fields:
+      - {name: enable_state, type: int, doc: "夹爪使能标志，0 未使能 / 1 已使能"}
+      - {name: status, type: int, doc: "夹爪在线状态，0 离线 / 1 在线"}
+      - {name: error, type: int, doc: "夹爪错误信息位图：bit0 堵转 bit1 过温 bit2 过流 bit3 驱动器 bit4 内部通信 bit5-7 保留"}
+      - {name: mode, type: int, doc: "工作状态：1 张开最大且空闲 2 闭合最小且空闲 3 停止且空闲 4 正在闭合 5 正在张开 6 闭合中遇力控停止"}
+      - {name: current_force, type: int, doc: "夹爪当前压力，单位 g"}
+      - {name: temperature, type: int, doc: "当前温度，单位 ℃"}
+      - {name: actpos, type: int, doc: "夹爪开口度"}
+
+  rm_peripheral_read_write_params_t:
+    doc: 外设数据读写参数（厂商头文件 rm_define.h，4 个 int 字段，顺序逐字一致）
+    fields:
+      - {name: port, type: int, doc: "通讯端口：0 控制器 RS485 / 1 末端接口板 RS485 / 3 控制器 ModbusTCP 设备"}
+      - {name: address, type: int, doc: "数据起始地址"}
+      - {name: device, type: int, doc: "外设设备地址"}
+      - {name: num, type: int, doc: "要读/写的数据数量"}
+
   rm_udp_custom_config_t:
     doc: UDP 主动上报自定义项（每个字段：1 上报 / 0 关闭 / -1 保持原状）
     fields:
@@ -513,3 +532,124 @@ functions:
     args:
       - {name: handle, type: "rm_robot_handle*"}
       - {name: state, type: bool}
+
+  # ------------------------------------------------------------------ 夹爪快路径
+  # 厂商头文件 rm_interface.h 的 GripperControl 组：手爪控制协议与末端 modbus 互斥。
+  rm_set_gripper_route:
+    doc: 设置手爪行程（开口最小/最大值，0~1000 无单位量纲；设置后自动保存）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: min_limit, type: int}
+      - {name: max_limit, type: int}
+  rm_set_gripper_release:
+    doc: 松开手爪（以指定速度运动到开口最大处；block=true 阻塞等待到位，timeout 单位秒）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: speed, type: int}
+      - {name: block, type: bool}
+      - {name: timeout, type: int}
+  rm_set_gripper_pick:
+    doc: 手爪力控夹取（夹持力超过力阈值后停止夹取；block=true 阻塞等待到位，timeout 单位秒）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: speed, type: int}
+      - {name: force, type: int}
+      - {name: block, type: bool}
+      - {name: timeout, type: int}
+  rm_set_gripper_pick_on:
+    doc: 手爪持续力控夹取（与 rm_set_gripper_pick 同参，控制器持续维持力控）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: speed, type: int}
+      - {name: force, type: int}
+      - {name: block, type: bool}
+      - {name: timeout, type: int}
+  rm_set_gripper_position:
+    doc: 手爪运动到指定开口位置（1~1000 无单位量纲；block=true 阻塞等待到位，timeout 单位秒）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: position, type: int}
+      - {name: block, type: bool}
+      - {name: timeout, type: int}
+  rm_get_gripper_state:
+    doc: 查询夹爪状态（首次控制夹爪后才开始更新；开末端 modbus 或控灵巧手后不再更新）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: state, type: "rm_gripper_state_t*"}
+
+  # ------------------------------------------------------------------ Modbus 主路径
+  # 厂商头文件 rm_interface.h 的 ModbusConfig 组：params 结构体**按值**传递。
+  rm_set_modbus_mode:
+    doc: 配置通讯端口 Modbus RTU 模式（波特率 9600/115200/460800；timeout 单位百毫秒，不能为 0）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: port, type: int}
+      - {name: baudrate, type: int}
+      - {name: timeout, type: int}
+  rm_close_modbus_mode:
+    doc: 关闭通讯端口 Modbus RTU 模式（关闭后自动切回机械臂控制模式）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: port, type: int}
+  rm_read_holding_registers:
+    doc: 读保持寄存器（每次只能读 1 个寄存器，params 成员 num 无需设置）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: params, type: rm_peripheral_read_write_params_t, by_value: true}
+      - {name: data, type: "int*"}
+  rm_read_input_registers:
+    doc: 读输入寄存器（每次只能读 1 个寄存器，params 成员 num 无需设置）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: params, type: rm_peripheral_read_write_params_t, by_value: true}
+      - {name: data, type: "int*"}
+  rm_write_registers:
+    doc: 写多个寄存器（每次不超过 10 个，即 params.num <= 10）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: params, type: rm_peripheral_read_write_params_t, by_value: true}
+      - {name: data, type: "int*"}
+  rm_write_single_register:
+    doc: 写单个寄存器（params 成员 num 无需设置）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: params, type: rm_peripheral_read_write_params_t, by_value: true}
+      - {name: data, type: int}
+
+  # ------------------------------------------------------------------ RM Plus / 工具端电压
+  rm_set_rm_plus_mode:
+    doc: 设置末端生态（RM Plus）协议模式（0 禁用；9600/115200/256000/460800 开启）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: mode, type: int}
+  rm_get_rm_plus_mode:
+    doc: 查询末端生态（RM Plus）协议模式
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: mode, type: "int*"}
+  rm_set_tool_voltage:
+    doc: 设置工具端电源输出（0：0V / 1：5V / 2：12V / 3：24V）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: voltage_type, type: int}
+  rm_get_tool_voltage:
+    doc: 获取工具端电源输出（0：0V / 1：5V / 2：12V / 3：24V）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: voltage_type, type: "int*"}
