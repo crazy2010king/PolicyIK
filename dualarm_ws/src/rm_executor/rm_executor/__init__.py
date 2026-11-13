@@ -14,17 +14,23 @@
 T1 交付的是**执行契约骨架**：轨迹 JSON 契约（:mod:`rm_executor.contract`）、
 五级事件模型（:mod:`rm_executor.events`）、指标口径
 （:mod:`rm_executor.metrics`）与工作区路径解析（:mod:`rm_executor.paths`）。
+
+T2 交付的是**时钟与栅格层**：绝对截止时间时钟（:mod:`rm_executor.clock`，
+含真实 ``TickClock`` 与确定性 ``ManualClock``）与 10 ms 栅格重采样
+（:mod:`rm_executor.resample`）。
 """
 from __future__ import annotations
 
-from rm_executor import contract, events, metrics, paths
+from rm_executor import clock, contract, events, metrics, paths, resample
 
 __all__ = [
     "__version__",
+    "clock",
     "contract",
     "events",
     "metrics",
     "paths",
+    "resample",
 ]
 
 __version__ = "0.1.0"
