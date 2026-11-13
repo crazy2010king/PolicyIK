@@ -21,6 +21,12 @@
   取两臂 TCP 在 world 系的位姿，给出「位置偏差 < 阈值（默认 0.5 mm，ROADMAP
   口径）」的 PASS / FAIL 结论；标定未实测时**只能**给「未验证」（绝不冒充
   物理达标）。
+* :mod:`rm75_drake.bimanual.sync_exec` —— **双臂同一 tick 同步执行器**：
+  同一拍内按固定次序（默认 left → right）依次下发两臂，并记录两臂的
+  **下发时间差**（ns + 直方图）。节拍 / 时钟 / 安全七闸 / 直方图口径
+  **全部复用 S03 既有实现**（``device/exec_loop.py`` / ``device/safety.py`` /
+  ``device/metrics.py``），**不新建第二套实时层**。真机「下发时间差 < 1 ms」
+  **标为未验证**（无真机数据，绝不声称已达标）。
 
 **为什么必须走「变体」路线（实测钉死，S04-T01）**
 
@@ -71,12 +77,13 @@ __all__ = [
     "dual_scene",
     "collision_filter",
     "consistency",
+    "sync_exec",
 ]
 
 
 def __getattr__(name: str) -> Any:
     """PEP 562 惰性子模块导入（``dual_scene`` 依赖 pydrake，import 时不拉起）。"""
-    if name in ("dual_scene", "collision_filter", "consistency"):
+    if name in ("dual_scene", "collision_filter", "consistency", "sync_exec"):
         import importlib
 
         module = importlib.import_module(f"{__name__}.{name}")
