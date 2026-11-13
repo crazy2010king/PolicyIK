@@ -8,7 +8,9 @@
 
 * :func:`workspace_root` —— 向上查找仓库根（含 ``dualarm_ws/src`` 与 ``workcell/``）；
 * :func:`baselines_dir` —— 真机基线目录 ``<ws>/workcell/baselines``；
-* :func:`joint_limits_path` —— 关节限值文件（实测优先，回退到 ``joint_limits.yaml``）。
+* :func:`joint_limits_path` —— 关节限值文件（实测优先，回退到 ``joint_limits.yaml``）；
+* :func:`workcell_dir` / :func:`workcell_config_path` —— 工位目录与工位定义文件
+  （``<ws>/workcell/rm_workcell.yaml``，夹爪配置的**唯一来源**）。
 """
 from __future__ import annotations
 
@@ -16,8 +18,11 @@ import os
 
 __all__ = [
     "ENV_WS",
+    "WORKCELL_CONFIG_NAME",
     "baselines_dir",
     "joint_limits_path",
+    "workcell_config_path",
+    "workcell_dir",
     "workspace_root",
 ]
 
@@ -27,6 +32,9 @@ ENV_WS = "RM_WS"
 #: 仓库根的判定：同时含 dualarm_ws/src/rm_description 与 workcell/
 _SRC_MARKER = os.path.join("dualarm_ws", "src", "rm_description")
 _WS_MARKER = "workcell"
+
+#: 工位定义文件名
+WORKCELL_CONFIG_NAME = "rm_workcell.yaml"
 
 
 def _is_repo_root(path: str) -> bool:
@@ -55,6 +63,20 @@ def workspace_root(start: str = None) -> str:
         cur = parent
     # 兜底：从包路径上溯（dualarm_ws/src/rm_hw_bridge/rm_hw_bridge → 仓库根）
     return os.path.abspath(os.path.join(here, "..", "..", "..", ".."))
+
+
+def workcell_dir(ws: str = None) -> str:
+    """工位目录：``<ws>/workcell``。"""
+    return os.path.join(workspace_root(ws), _WS_MARKER)
+
+
+def workcell_config_path(ws: str = None) -> str:
+    """工位定义文件：``<ws>/workcell/rm_workcell.yaml``。
+
+    **夹爪配置的唯一来源**（``gripper:`` 段）——硬件层不得在代码里另立
+    一份夹爪常量源。
+    """
+    return os.path.join(workcell_dir(ws), WORKCELL_CONFIG_NAME)
 
 
 def baselines_dir(ws: str = None) -> str:
