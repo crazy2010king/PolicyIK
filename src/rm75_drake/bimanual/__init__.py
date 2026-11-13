@@ -17,6 +17,10 @@
   本臂掌部放行」四条规则翻译成 Drake 的
   ``CollisionFilterDeclaration`` 并**真正施加到场景图**（碰撞判定结果会变，
   不是只记日志）。
+* :mod:`rm75_drake.bimanual.consistency` —— **共同点一致性判定器**：
+  取两臂 TCP 在 world 系的位姿，给出「位置偏差 < 阈值（默认 0.5 mm，ROADMAP
+  口径）」的 PASS / FAIL 结论；标定未实测时**只能**给「未验证」（绝不冒充
+  物理达标）。
 
 **为什么必须走「变体」路线（实测钉死，S04-T01）**
 
@@ -66,12 +70,13 @@ __all__ = [
     "write_variants",
     "dual_scene",
     "collision_filter",
+    "consistency",
 ]
 
 
 def __getattr__(name: str) -> Any:
     """PEP 562 惰性子模块导入（``dual_scene`` 依赖 pydrake，import 时不拉起）。"""
-    if name in ("dual_scene", "collision_filter"):
+    if name in ("dual_scene", "collision_filter", "consistency"):
         import importlib
 
         module = importlib.import_module(f"{__name__}.{name}")
