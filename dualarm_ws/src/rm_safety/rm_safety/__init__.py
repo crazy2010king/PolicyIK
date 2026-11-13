@@ -22,9 +22,20 @@
 * :mod:`rm_safety.config` —— 安全配置读取（唯一来源 =
   ``workcell/rm_workcell.yaml`` 的 ``safety:`` 段）；
 * :mod:`rm_safety.paths` —— 路径解析（**独立实现**，不反向依赖任何上层）。
+
+执行侧的两个模块
+----------------
+
+* :mod:`rm_safety.actuator` —— **安全动作执行器**（唯一动作权威的执行侧：
+  等级 → 动作 → 调用传输端口；失败留证据并升级到 L4）；
+* :mod:`rm_safety.supervisor` —— **安全监督器**（判据 → 动作 → 事件；
+  等级单调升级，**仅 L1** 允许自动恢复）。
+
+两个模块同样**零反向依赖**：传输端口由调用方注入（鸭子类型）。
 """
 from __future__ import annotations
 
+from rm_safety.actuator import ActionResult, SafetyActuator
 from rm_safety.config import load_safety_config
 from rm_safety.error_codes import ErrorCodeMap, load_error_codes
 from rm_safety.levels import (
@@ -58,8 +69,10 @@ from rm_safety.policy import (
     can_auto_recover,
     evaluate,
 )
+from rm_safety.supervisor import SafetySupervisor
 
 __all__ = [
+    "ActionResult",
     "Decision",
     "ErrorCodeMap",
     "EVENT_L1_SLOWDOWN",
@@ -78,6 +91,8 @@ __all__ = [
     "LEVEL_L2",
     "LEVEL_L3",
     "LEVEL_L4",
+    "SafetyActuator",
+    "SafetySupervisor",
     "SafetyThresholds",
     "can_auto_recover",
     "evaluate",
