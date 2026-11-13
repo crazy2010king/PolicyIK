@@ -17,16 +17,27 @@
     Drake 版本差异的薄封装。
 ``models``
     模型装配层（S01）：解析 ``package://`` URDF、固定基座、位姿求值入口。
+``kinematics``
+    独立运动学层（S01-T03）：官方 MDH 表与纯 numpy 正解，**零 Drake 依赖**，
+    作为 Drake FK 的独立被测对照。
 """
 
 from __future__ import annotations
 
 from . import drake_compat
+from . import kinematics
 from . import models
 from . import package_map
 from . import paths
 
-__all__ = ["__version__", "drake_compat", "models", "package_map", "paths"]
+__all__ = [
+    "__version__",
+    "drake_compat",
+    "kinematics",
+    "models",
+    "package_map",
+    "paths",
+]
 
 
 def _read_baseline_version() -> str:
