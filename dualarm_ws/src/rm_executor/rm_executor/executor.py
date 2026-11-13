@@ -1033,6 +1033,17 @@ class Executor:
         return False
 
     # -------------------------------------------------------------- 报告
+    # ------------------------------------------------------------ 观测接口
+    @property
+    def jitter_samples_ms(self) -> List[float]:
+        """tick 抖动样本（毫秒）——长跑合并统计用（**只读拷贝**）。"""
+        return list(self._jitter_samples)
+
+    @property
+    def follow_errors_deg(self) -> List[float]:
+        """跟随误差样本（度）——长跑合并统计用（**只读拷贝**）。"""
+        return list(self._follow_errors)
+
     def _build_metrics(self, t_start: float) -> Dict[str, Any]:
         """按 :mod:`rm_executor.metrics` 的冻结口径装配 15 个指标。"""
         jitter = metrics_mod.jitter_stats(self._jitter_samples)

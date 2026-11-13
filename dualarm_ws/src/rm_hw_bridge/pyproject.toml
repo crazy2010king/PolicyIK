@@ -1,0 +1,20 @@
+[project]
+name = "rm-hw-bridge"
+version = "0.1.0"
+description = "睿尔曼 RM-API2 硬件适配层（厂商解耦：ABI 规格 + ctypes 绑定生成）"
+requires-python = ">=3.9"
+dependencies = ["pyyaml"]
+
+[project.optional-dependencies]
+numeric = ["numpy"]
+test = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["rm_hw_bridge*"]
+
+[tool.setuptools.package-data]
+rm_hw_bridge = ["abi_spec.yaml", "generated/*.json"]

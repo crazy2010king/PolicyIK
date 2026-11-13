@@ -754,8 +754,63 @@ def cmd_check(args):
     return 0 if report["ok"] else 3
 
 
+def _run_with_rm_executor(args, live=False):
+    """走**新执行器**（rm_executor）：离线 fake 或真机 live。
+
+    与 rm_executor 的 cli 是**同一份代码路径**（不复制实现）：只做参数转译。
+    """
+    try:
+        from rm_executor import cli as exec_cli
+    except ImportError as exc:
+        print("执行层 rm_executor 不可用: %s" % exc, file=sys.stderr)
+        print("→ 下一步: export PYTHONPATH=$PWD/dualarm_ws/src/rm_executor:$PYTHONPATH",
+              file=sys.stderr)
+        return 3
+    argv = ["--traj", args.traj, "--mode", "live" if live else "fake"]
+    ws = getattr(args, "ws", None)
+    if ws:
+        argv += ["--ws", ws]
+    arm = getattr(args, "arm", None) or "left"
+    argv += ["--arm", arm]
+    if getattr(args, "report", None):
+        argv += ["--report", args.report]
+    if live:
+        ip = getattr(args, "ip", None)
+        port = getattr(args, "port", None)
+        udp_port = getattr(args, "udp_port", None)
+        plan = _network_plan(ws or paths.workspace_root())
+        arm_plan = ((plan or {}).get("arms") or {}).get(arm) or {}
+        ip = ip or arm_plan.get("ip")
+        port = port or arm_plan.get("tcp_port")
+        udp_port = udp_port or arm_plan.get("udp_port")
+        if ip:
+            argv += ["--ip", str(ip)]
+        if port:
+            argv += ["--port", str(int(port))]
+        if udp_port:
+            argv += ["--udp-port", str(int(udp_port))]
+    return exec_cli.main(argv)
+
+
 def cmd_run(args):
-    """模拟执行：10 ms 时钟回放（单臂先动起来）。"""
+    """执行一条轨迹。
+
+    三条路径（**验收口径唯一**）：
+
+    * 默认 ``--executor legacy``：**legacy** MockExecutor 回放（保留兼容，
+      **不作验收证据**）；
+    * ``--executor rm_executor``：新 10 ms 执行器的**离线 fake** 路径
+      （与真机同一 Executor、同一报告 schema）；
+    * ``--live``：新执行器的**真机**路径。
+    """
+    kind = getattr(args, "executor", "legacy") or "legacy"
+    if getattr(args, "live", False):
+        kind = "rm_executor"
+    if kind == "rm_executor":
+        return _run_with_rm_executor(args, live=bool(getattr(args, "live", False)))
+
+    print("【legacy】MockExecutor 回放路径：仅供开发自测，**不作验收证据**。")
+    print("        验收请用 `--executor rm_executor`（离线）或 `--live`（真机）。")
     model = _load_model(args)
     data = _load_traj(args.traj)
     ex = MockExecutor(model, period=args.period)
@@ -1226,10 +1281,29 @@ def build_parser():
     s.add_argument("--traj", required=True)
     s.set_defaults(func=cmd_check)
 
-    s = sub.add_parser("run", help="模拟执行回放")
+    s = sub.add_parser("run",
+                       help="执行一条轨迹（默认 legacy 回放；"
+                            "--executor rm_executor / --live 走新执行器）")
     s.add_argument("--traj", required=True)
-    s.add_argument("--period", type=float, default=0.010)
-    s.add_argument("--fast", action="store_true", help="不按真实时钟等待")
+    s.add_argument("--period", type=float, default=0.010,
+                   help="[legacy] 回放周期（秒）")
+    s.add_argument("--fast", action="store_true",
+                   help="[legacy] 不按真实时钟等待")
+    s.add_argument("--executor", choices=["legacy", "rm_executor"],
+                   default="legacy",
+                   help="执行器实现：legacy=旧 MockExecutor 回放（默认，"
+                        "**不作验收证据**）；rm_executor=新 10 ms 执行器")
+    s.add_argument("--live", action="store_true",
+                   help="走新执行器的真机路径（等价 --executor rm_executor + live）")
+    s.add_argument("--report", default=None,
+                   help="[rm_executor] 统一报告 JSON 落盘路径")
+    s.add_argument("--arm", choices=["left", "right"], default="left",
+                   help="[rm_executor] 选哪条臂")
+    s.add_argument("--ip", default=None, help="[rm_executor --live] 控制器 IP")
+    s.add_argument("--port", type=int, default=None,
+                   help="[rm_executor --live] 控制器 TCP 端口")
+    s.add_argument("--udp-port", dest="udp_port", type=int, default=None,
+                   help="[rm_executor --live] 控制器 UDP 主动上报端口")
     s.set_defaults(func=cmd_run)
 
     s = sub.add_parser("ui", help="浏览器可视化（并可播放轨迹）")

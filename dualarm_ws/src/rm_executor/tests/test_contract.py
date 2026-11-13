@@ -435,7 +435,7 @@ def test_duration_s():
 
 
 # ============================================================ 分层红线
-def test_import_rm_executor_does_not_pull_rmctl_or_tesseract(pkg_root):
+def test_import_rm_executor_does_not_pull_rmctl_or_tesseract(executor_pkg_root):
     """import rm_executor 后 sys.modules 不含 rmctl / tesseract*（子进程隔离断言）。"""
     script = (
         "import sys\n"
@@ -449,7 +449,7 @@ def test_import_rm_executor_does_not_pull_rmctl_or_tesseract(pkg_root):
         "print('OK')\n"
     )
     env = dict(os.environ)
-    env["PYTHONPATH"] = pkg_root + os.pathsep + env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = executor_pkg_root + os.pathsep + env.get("PYTHONPATH", "")
     proc = subprocess.run(
         [sys.executable, "-c", script], env=env, capture_output=True, text=True,
     )

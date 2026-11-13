@@ -14,11 +14,15 @@ REPO_ROOT = os.path.abspath(os.path.join(TESTS_DIR, "..", "..", "..", ".."))
 PKG_SRC = os.path.join(REPO_ROOT, "dualarm_ws", "src", "rmctl")
 # 硬件适配层 rm_hw_bridge（体验层 rmctl 依赖硬件层，方向合法）
 HW_SRC = os.path.join(REPO_ROOT, "dualarm_ws", "src", "rm_hw_bridge")
+# 执行层 rm_executor（rmctl run --executor rm_executor / --live 走它，方向合法）
+EXEC_SRC = os.path.join(REPO_ROOT, "dualarm_ws", "src", "rm_executor")
 
 if PKG_SRC not in sys.path:
     sys.path.insert(0, PKG_SRC)
 if HW_SRC not in sys.path:
     sys.path.insert(0, HW_SRC)
+if EXEC_SRC not in sys.path:
+    sys.path.insert(0, EXEC_SRC)
 
 
 @pytest.fixture(scope="session")
