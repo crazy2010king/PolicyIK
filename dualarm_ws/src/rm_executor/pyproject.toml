@@ -1,0 +1,17 @@
+[project]
+name = "rm-executor"
+version = "0.1.0"
+description = "10 ms 单时钟执行器（执行层：契约 / 事件 / 指标，零编译）"
+requires-python = ">=3.9"
+dependencies = ["pyyaml"]
+
+[project.optional-dependencies]
+numeric = ["numpy"]
+test = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["rm_executor*"]
