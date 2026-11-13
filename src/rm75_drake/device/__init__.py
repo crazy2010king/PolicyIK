@@ -17,6 +17,10 @@
   无锁环形缓冲（最近 N 帧）+ 帧完整性校验 + 状态 age。
 * :mod:`rm75_drake.device.state_machine` —— **设备状态机**：
   纯转移表 + 守卫条件（9 状态 / 15 事件），非法转移显式报错。
+* :mod:`rm75_drake.device.metrics` —— **抖动 / 延迟指标**：
+  预分配直方图 + P50 / P99 / P99.9 分位数（唯一口径，单测与真机脚本共用）。
+* :mod:`rm75_drake.device.exec_loop` —— **5 ms 实时执行环**：
+  固定节拍 + 七闸钳位 + 唯一运动通道；时钟 / 睡眠可注入（确定性虚拟时钟）。
 
 本包**零 pydrake 依赖**（只依赖 numpy + 本项目的轨迹/路径层），
 因此安全七闸 / 状态机 / 执行环 / 恢复流程都能在无 SDK、无真机的环境里被测试。
@@ -54,6 +58,28 @@ from .sdk import (
     probe_capabilities,
     rad_to_deg,
     sdk_available,
+)
+from .exec_loop import (
+    PERIOD_S,
+    REASON_COMPLETED,
+    REASON_SAFE_STOP,
+    REASON_TRANSPORT_ERROR,
+    Clock,
+    ExecLoop,
+    ExecLoopConfig,
+    ExecLoopResult,
+    RtSchedulingReport,
+    SystemClock,
+    VirtualClock,
+    apply_realtime_scheduling,
+)
+from .metrics import (
+    DEFAULT_MAX_SAMPLES,
+    PERCENTILE_LABELS,
+    JitterHistogram,
+    LatencyHistogram,
+    MetricHistogram,
+    linear_percentile,
 )
 from .safety import (
     ACTION_CLAMP,
@@ -222,4 +248,24 @@ __all__ = [
     "ACTION_CLAMP",
     "ACTION_SLOW_STOP",
     "ACTION_STOP",
+    # metrics
+    "MetricHistogram",
+    "JitterHistogram",
+    "LatencyHistogram",
+    "linear_percentile",
+    "PERCENTILE_LABELS",
+    "DEFAULT_MAX_SAMPLES",
+    # exec_loop
+    "ExecLoop",
+    "ExecLoopConfig",
+    "ExecLoopResult",
+    "RtSchedulingReport",
+    "Clock",
+    "SystemClock",
+    "VirtualClock",
+    "apply_realtime_scheduling",
+    "PERIOD_S",
+    "REASON_COMPLETED",
+    "REASON_SAFE_STOP",
+    "REASON_TRANSPORT_ERROR",
 ]
