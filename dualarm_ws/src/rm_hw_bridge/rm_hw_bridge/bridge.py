@@ -29,12 +29,13 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from rm_hw_bridge import errors, loader, paths
+from rm_hw_bridge import errors, limits as limits_mod, loader, paths
 from rm_hw_bridge.generated import rm_api2_ctypes as gen
 from rm_hw_bridge.snapshot import (
     ARM_DOF,
@@ -48,6 +49,10 @@ from rm_hw_bridge.snapshot import (
 
 __all__ = [
     "ArmLink",
+    "COLLISION_STAGE_MAX",
+    "COLLISION_STAGE_MIN",
+    "DEG2RAD",
+    "RAD2DEG",
     "REALTIME_CYCLE_MULTIPLE_MS",
     "connect",
     "realtime_state",
@@ -58,6 +63,87 @@ REALTIME_CYCLE_MULTIPLE_MS = 5
 
 #: 默认 TCP 端口
 DEFAULT_TCP_PORT = 8080
+
+# ---------------------------------------------------------------------------
+# 单位换算**单点收敛**：本模块内**只允许**这两处换算常量
+# （与 rmctl/fk_cross.py 的约定一致：内部一律 SI，调用 SDK 前再换算成度制）。
+# ---------------------------------------------------------------------------
+#: 度 → 弧度
+DEG2RAD = math.pi / 180.0
+#: 弧度 → 度
+RAD2DEG = 180.0 / math.pi
+
+#: 碰撞检测等级范围（厂商头文件 rm_interface.h：0=不检测，8=最灵敏）
+COLLISION_STAGE_MIN = 0
+COLLISION_STAGE_MAX = 8
+
+#: 下发限值族 →（SDK 符号名, SDK 单位, SI→SDK 换算类型）
+#: 换算类型："deg"（位置）、"deg_per_s"（速度）、"deg_per_s2"（加速度）
+_LIMIT_DOWNLINK_FIELDS = (
+    ("max_speed", "rm_set_joint_drive_max_speed", "deg_per_s"),
+    ("max_acc", "rm_set_joint_drive_max_acc", "deg_per_s2"),
+    ("min_pos", "rm_set_joint_drive_min_pos", "deg"),
+    ("max_pos", "rm_set_joint_drive_max_pos", "deg"),
+)
+
+#: 各字段的 SI 单位 / SDK 单位（供 diff 输出与自检）
+_LIMIT_UNITS = {
+    "max_speed": ("rad/s", "deg/s"),
+    "max_acc": ("rad/s^2", "deg/s^2"),
+    "min_pos": ("rad", "deg"),
+    "max_pos": ("rad", "deg"),
+    "jerk": ("rad/s^3", "-"),
+}
+
+
+def _to_sdk_unit(value: float, kind: str) -> float:
+    """SI → SDK 单位（**唯一的换算出口**）。"""
+    if kind == "deg":
+        return float(value) * RAD2DEG
+    if kind == "deg_per_s":
+        return float(value) * RAD2DEG
+    if kind == "deg_per_s2":
+        return float(value) * RAD2DEG
+    return float(value)
+
+
+def _joint_index(name: str) -> int:
+    """关节名 → 关节序号（1..7）。"""
+    digits = "".join(ch for ch in str(name) if ch.isdigit())
+    return int(digits) if digits else 0
+
+
+def _joint_order(values: Dict[str, Any]) -> List[str]:
+    """按关节序号排序（joint1..joint7）。"""
+    return sorted(values.keys(), key=_joint_index)
+
+
+def print_diff(diff: List[Dict[str, Any]]) -> None:
+    """打印逐关节限值 diff（当前值 vs 目标值，含单位）。
+
+    只打印，不写文件；结构化数据同时在结果字典的 ``diff`` 字段里。
+    """
+    if not diff:
+        print("[limits] 限值 diff 为空（无可下发项）")
+        return
+    print("[limits] 限值 diff（当前值 → 目标值，含单位）：")
+    for item in diff:
+        target = item.get("target")
+        current = item.get("current")
+        unit = item.get("target_unit")
+        sdk = item.get("sdk_value")
+        sdk_txt = "n/a" if sdk is None else "%.4f %s" % (float(sdk), item.get("sdk_unit"))
+        print(
+            "  %-7s %-9s %s → %s %s   (SDK: %s)"
+            % (
+                item.get("joint"),
+                item.get("field"),
+                "未知" if current is None else ("%.4f" % float(current)),
+                "未知" if target is None else ("%.4f" % float(target)),
+                unit,
+                sdk_txt,
+            )
+        )
 
 
 # --------------------------------------------------------------- 实时上报状态
@@ -342,6 +428,313 @@ class ArmLink:
             "",
             evidence,
             snapshot=payload,
+        )
+
+    # -- 限值下发（R004）
+    def set_joint_limits(self, limits: Dict[str, Any], dry_run: bool = True) -> Dict[str, Any]:
+        """下发关节限值（驱动级生效，适合在线降速）。
+
+        参数
+        ----
+        limits
+            :func:`rm_hw_bridge.limits.load_limit_defaults` 的返回值；
+            **``status="blocked"`` 时拒绝下发**（基线未实测，不得用占位值糊过去）。
+        dry_run
+            ``True``（默认）时**只打印 diff、绝不调用 SDK**；``False`` 才真正下发。
+
+        下发面：``rm_set_joint_drive_max_speed`` / ``_max_acc`` / ``_min_pos`` /
+        ``_max_pos``（各 7 关节）。单位换算只在本模块发生（SI → SDK 度制）。
+
+        任何 SDK 返回非 0 → ``status="error"`` + reason（**接口名 + 返回码**）
+        + next_action，不静默吞掉。
+        """
+        if not self.connected:
+            return errors.result(
+                self.status if self.status != errors.STATUS_OK else errors.STATUS_ERROR,
+                self.reason or "尚未建立连接，无法下发限值",
+                self.next_action,
+                self.evidence,
+            )
+
+        limits = limits or {}
+        limit_status = str(limits.get("status") or "")
+        evidence: List[str] = list(limits.get("evidence") or [])
+        if limit_status == limits_mod.STATUS_BLOCKED:
+            return errors.blocked(
+                limits.get("reason") or "限值来源基线未实测，拒绝下发",
+                limits.get("next_action") or "",
+                evidence,
+                source=limits.get("source", ""),
+                diff=[],
+                applied=[],
+                dry_run=bool(dry_run),
+                sdk_calls=0,
+            )
+
+        values = limits.get("values") or {}
+        current = limits.get("current") or {}
+        if not values:
+            return errors.error(
+                "限值内容为空，拒绝下发",
+                "确认 limits 由 `rm_hw_bridge.limits.load_limit_defaults()` 生成后重跑",
+                evidence,
+                diff=[],
+                applied=[],
+                dry_run=bool(dry_run),
+                sdk_calls=0,
+            )
+
+        # 1) 组装 diff（当前值 = 声明/生效值，目标值 = 待下发值；均带单位）
+        diff: List[Dict[str, Any]] = []
+        for joint_name in _joint_order(values):
+            idx = _joint_index(joint_name)
+            target_item = values.get(joint_name) or {}
+            current_item = current.get(joint_name) or {}
+            for field, _sym, kind in _LIMIT_DOWNLINK_FIELDS:
+                if field not in target_item:
+                    continue
+                si_unit, sdk_unit = _LIMIT_UNITS[field]
+                diff.append({
+                    "joint": joint_name,
+                    "joint_index": idx,
+                    "field": field,
+                    "current": current_item.get(field),
+                    "target": target_item.get(field),
+                    "current_unit": si_unit,
+                    "target_unit": si_unit,
+                    "sdk_value": _to_sdk_unit(target_item[field], kind),
+                    "sdk_unit": sdk_unit,
+                })
+            # jerk 仅供参考（白名单里没有 jerk 下发符号）
+            if "jerk" in target_item:
+                diff.append({
+                    "joint": joint_name,
+                    "joint_index": idx,
+                    "field": "jerk",
+                    "current": current_item.get("jerk"),
+                    "target": target_item.get("jerk"),
+                    "current_unit": "rad/s^3",
+                    "target_unit": "rad/s^3",
+                    "sdk_value": None,
+                    "sdk_unit": "-",
+                    "note": "白名单无 jerk 下发符号，仅记录不下发",
+                })
+
+        print_diff(diff)
+
+        if dry_run:
+            return errors.ok(
+                "dry-run：已生成 %d 条限值 diff，**未调用任何 SDK**（未下发）" % len(diff),
+                "",
+                evidence + ["dry_run=True：SDK 调用数 0"],
+                source=limits.get("source", ""),
+                diff=diff,
+                applied=[],
+                dry_run=True,
+                sdk_calls=0,
+            )
+
+        # 2) 真正下发（驱动级生效）
+        binding = self._bridge.binding
+        handle = self._handle
+        applied: List[Dict[str, Any]] = []
+        for entry in diff:
+            if entry["sdk_value"] is None:
+                continue
+            field = entry["field"]
+            sym, kind = next(
+                (s, k) for (f, s, k) in _LIMIT_DOWNLINK_FIELDS if f == field
+            )
+            fn = getattr(binding, sym, None)
+            if fn is None:
+                return errors.error(
+                    "契约清单缺少符号 %s，无法下发 %s.%s" % (sym, entry["joint"], field),
+                    "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep %s`），"
+                    "重新物化 SDK 后重跑" % sym,
+                    evidence + applied,
+                    source=limits.get("source", ""),
+                    diff=diff,
+                    applied=applied,
+                    dry_run=False,
+                    sdk_calls=len(applied),
+                )
+            try:
+                rc = int(fn(handle, int(entry["joint_index"]), float(entry["sdk_value"])) or 0)
+            except Exception as exc:
+                return errors.error(
+                    "%s 调用异常（%s.%s）：%s" % (
+                        sym, entry["joint"], field, exc,
+                    ),
+                    "确认 .so 与当前架构匹配（file <so>），修复后重跑",
+                    evidence + applied + [repr(exc)],
+                    source=limits.get("source", ""),
+                    diff=diff,
+                    applied=applied,
+                    dry_run=False,
+                    sdk_calls=len(applied),
+                )
+            applied.append({
+                "joint": entry["joint"],
+                "joint_index": entry["joint_index"],
+                "field": field,
+                "symbol": sym,
+                "sdk_value": entry["sdk_value"],
+                "sdk_unit": entry["sdk_unit"],
+                "rc": rc,
+            })
+            if rc != 0:
+                return errors.error(
+                    "%s 返回 %d（下发 %s.%s 失败）" % (
+                        sym, rc, entry["joint"], field,
+                    ),
+                    "确认控制器在线、句柄有效（同一 ip:port 只允许一个客户端），"
+                    "并核对参数范围后重跑",
+                    evidence + ["%s rc=%d" % (sym, rc)],
+                    source=limits.get("source", ""),
+                    diff=diff,
+                    applied=applied,
+                    dry_run=False,
+                    sdk_calls=len(applied),
+                )
+
+        return errors.ok(
+            "限值下发完成：%d 次 SDK 调用（7 关节 × 4 项）" % len(applied),
+            "",
+            evidence + ["下发接口: %s" % ", ".join(sorted({a["symbol"] for a in applied}))],
+            source=limits.get("source", ""),
+            diff=diff,
+            applied=applied,
+            dry_run=False,
+            sdk_calls=len(applied),
+        )
+
+    # -- 安全开关下发（R004）
+    def set_safety(
+        self,
+        collision_stage: Optional[int] = None,
+        self_collision_enable: Optional[bool] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """下发安全开关（碰撞检测等级 / 自碰撞检测使能）。
+
+        * ``collision_stage``：**0–8**（厂商头文件：0=不检测，8=最灵敏）；越界**拒绝**；
+        * ``self_collision_enable``：必须是 bool；
+        * 任何 SDK 返回非 0 → ``status="error"`` + reason（接口名 + 返回码）。
+        """
+        if not self.connected:
+            return errors.result(
+                self.status if self.status != errors.STATUS_OK else errors.STATUS_ERROR,
+                self.reason or "尚未建立连接，无法下发安全开关",
+                self.next_action,
+                self.evidence,
+            )
+
+        if collision_stage is None and self_collision_enable is None:
+            return errors.error(
+                "未指定任何安全开关（collision_stage / self_collision_enable 均为 None）",
+                "至少指定一项：collision_stage（0..8）或 self_collision_enable（bool）后重跑",
+                [],
+                sdk_calls=0,
+            )
+
+        planned: List[Dict[str, Any]] = []
+        if collision_stage is not None:
+            if isinstance(collision_stage, bool) or not isinstance(collision_stage, int):
+                return errors.error(
+                    "collision_stage 必须是整数（当前 %r）" % (collision_stage,),
+                    "传入 0..8 的整数等级后重跑",
+                    [],
+                    sdk_calls=0,
+                )
+            if collision_stage < COLLISION_STAGE_MIN or collision_stage > COLLISION_STAGE_MAX:
+                return errors.error(
+                    "collision_stage=%d 越界（允许范围 %d..%d，0=不检测，8=最灵敏）"
+                    % (collision_stage, COLLISION_STAGE_MIN, COLLISION_STAGE_MAX),
+                    "把碰撞检测等级改到 %d..%d 后重跑" % (
+                        COLLISION_STAGE_MIN, COLLISION_STAGE_MAX,
+                    ),
+                    [],
+                    sdk_calls=0,
+                )
+            planned.append({
+                "symbol": "rm_set_collision_state",
+                "arg": int(collision_stage),
+                "arg_name": "collision_stage",
+            })
+
+        if self_collision_enable is not None:
+            if not isinstance(self_collision_enable, bool):
+                return errors.error(
+                    "self_collision_enable 必须是 bool（当前 %r）" % (self_collision_enable,),
+                    "传入 True / False 后重跑",
+                    [],
+                    sdk_calls=0,
+                )
+            planned.append({
+                "symbol": "rm_set_self_collision_enable",
+                "arg": bool(self_collision_enable),
+                "arg_name": "self_collision_enable",
+            })
+
+        if dry_run:
+            return errors.ok(
+                "dry-run：已生成 %d 条安全开关计划，**未调用任何 SDK**" % len(planned),
+                "",
+                [repr(p) for p in planned],
+                planned=planned,
+                applied=[],
+                dry_run=True,
+                sdk_calls=0,
+            )
+
+        binding = self._bridge.binding
+        handle = self._handle
+        applied: List[Dict[str, Any]] = []
+        for item in planned:
+            sym = item["symbol"]
+            fn = getattr(binding, sym, None)
+            if fn is None:
+                return errors.error(
+                    "契约清单缺少符号 %s，无法下发安全开关" % sym,
+                    "确认所用 .so 为 RM-API2 1.1.7，重新物化 SDK 后重跑",
+                    applied,
+                    applied=applied,
+                    dry_run=False,
+                    sdk_calls=len(applied),
+                )
+            try:
+                rc = int(fn(handle, item["arg"]) or 0)
+            except Exception as exc:
+                return errors.error(
+                    "%s 调用异常（%s=%r）：%s" % (sym, item["arg_name"], item["arg"], exc),
+                    "确认 .so 与当前架构匹配（file <so>），修复后重跑",
+                    applied + [repr(exc)],
+                    applied=applied,
+                    dry_run=False,
+                    sdk_calls=len(applied),
+                )
+            applied.append(dict(item, rc=rc))
+            if rc != 0:
+                return errors.error(
+                    "%s 返回 %d（下发 %s 失败）" % (sym, rc, item["arg_name"]),
+                    "确认控制器在线、句柄有效（同一 ip:port 只允许一个客户端），"
+                    "并核对参数范围后重跑",
+                    applied + ["%s rc=%d" % (sym, rc)],
+                    applied=applied,
+                    dry_run=False,
+                    sdk_calls=len(applied),
+                )
+
+        return errors.ok(
+            "安全开关下发完成：%d 次 SDK 调用（%s）" % (
+                len(applied), ", ".join(a["symbol"] for a in applied),
+            ),
+            "",
+            [repr(a) for a in applied],
+            planned=planned,
+            applied=applied,
+            dry_run=False,
+            sdk_calls=len(applied),
         )
 
     def __repr__(self) -> str:

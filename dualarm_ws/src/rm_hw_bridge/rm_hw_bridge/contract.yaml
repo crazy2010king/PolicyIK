@@ -111,7 +111,7 @@ core:
     argtypes: "handle: rm_robot_handle*, joint_num: int, max_pos: float -> int"
   - name: rm_set_collision_state
     purpose: 设置碰撞检测状态（安全开关）
-    unit: "分级 0..2"
+    unit: "分级 0..8"   # 厂商头文件 rm_interface.h：0=不检测，8=最灵敏
     argtypes: "handle: rm_robot_handle*, collision_stage: int -> int"
   - name: rm_set_self_collision_enable
     purpose: 设置自碰撞检测使能（安全开关）
