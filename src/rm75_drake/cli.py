@@ -22,6 +22,13 @@
 ``replay``
     离线回放：对录制文件做碰撞复检（与 S02-T05 同一 ``edge_step_size``），
     打印逃逸数；**逃逸 > 0 → 退出码 1**。
+``exec``
+    真机执行入口：**Planner（或录制轨迹）→ rm_device 驱动 → 5 ms 执行环**，
+    并产出**全链路运行日志**（独立 schema，见
+    :mod:`rm75_drake.device.run_log`）。
+    ``--dry-run`` 走**传输层替身**（零硬件）；真机不可达时输出
+    ``SKIP(reason=hardware_unreachable)`` 并以 **0** 退出
+    （既不伪装成失败，也不伪装成成功）。
 
 退出码语义
 ----------
@@ -29,7 +36,7 @@
 码    含义
 ====  ==========================================================
 0     成功
-1     业务失败（规划失败 / 回放发现逃逸）
+1     业务失败（规划失败 / 回放发现逃逸 / 安全态触发 / 执行违规）
 2     用法错误（参数非法）或**命令未实现**（bimanual）
 ====  ==========================================================
 
@@ -47,6 +54,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -60,6 +68,8 @@ __all__ = [
     "EXIT_OK",
     "EXIT_FAILURE",
     "EXIT_USAGE",
+    "REASON_HARDWARE_UNREACHABLE",
+    "UNVERIFIED_HARDWARE_METRICS",
     "build_parser",
     "main",
 ]
@@ -74,6 +84,21 @@ EXIT_USAGE = 2
 
 #: 默认场景真相源。
 DEFAULT_SCENARIO = str(paths.scenarios_dir / "single_arm.yaml")
+
+#: 默认**设备（部署）配置**真相源（S03；与场景真相源分开）。
+DEFAULT_DEVICE_CONFIG = str(paths.devices_dir / "single_arm.yaml")
+
+#: ``exec`` 在「真机不可达」时的**稳定原因标签**（脚本与 CI 按它判定 SKIP）。
+REASON_HARDWARE_UNREACHABLE = "hardware_unreachable"
+
+#: 真机不可达时**必须如实列出**的未验证指标（绝不假装通过、绝不省略）。
+UNVERIFIED_HARDWARE_METRICS: Tuple[str, ...] = (
+    "5 ms 透传周期抖动（P50/P99/P99.9/max）",
+    "末端跟踪误差（目标 < 3 mm）",
+    "急停响应时间（目标 < 100 ms）",
+    "100 Hz × 30 min 长稳",
+    "四类故障注入的物理验证（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位）",
+)
 
 #: bimanual 的归属说明（**必须**出现在输出里，便于人工核对路线图）。
 BIMANUAL_MESSAGE = (
@@ -167,8 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python3 -m rm75_drake.cli",
         description=(
-            "RM75-D 规划 CLI 族：single / pick / bimanual / replay。"
-            "退出码：0 成功，1 业务失败（规划失败 / 回放逃逸），"
+            "RM75-D 规划 CLI 族：single / pick / bimanual / replay / exec。"
+            "退出码：0 成功，1 业务失败（规划失败 / 回放逃逸 / 安全态触发），"
             "2 用法错误或命令未实现。"
         ),
     )
@@ -248,6 +273,104 @@ def build_parser() -> argparse.ArgumentParser:
     )
     replay.add_argument("--json", action="store_true", help="以 JSON 输出结果摘要")
 
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="真机执行（Planner → rm_device → 5 ms 执行环 + 全链路运行日志）",
+        description=(
+            "真机执行入口：走 Planner（或 --recording 里的轨迹）→ rm_device 驱动 "
+            "→ 5 ms 执行环，并产出全链路运行日志（独立 schema）。\n"
+            "* --dry-run：走传输层替身（零硬件），用于离线验证执行链路；\n"
+            "* 真机不可达（SDK 缺失 / TCP 不通）且未指定 --dry-run：输出 "
+            "SKIP(reason=hardware_unreachable) 并以 0 退出，同时逐条列出"
+            "**未验证的真机指标**（既不伪装成功，也不伪装失败）。"
+        ),
+    )
+    exec_parser.add_argument(
+        "--device-config",
+        default=DEFAULT_DEVICE_CONFIG,
+        help=f"设备（部署）配置真相源 YAML（默认：{DEFAULT_DEVICE_CONFIG}）",
+    )
+    exec_parser.add_argument(
+        "--scenario",
+        default=DEFAULT_SCENARIO,
+        help=f"场景真相源 YAML（仅规划路径使用；默认：{DEFAULT_SCENARIO}）",
+    )
+    exec_parser.add_argument(
+        "--target-joints",
+        type=float,
+        nargs=7,
+        metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7"),
+        default=None,
+        help="关节空间目标（rad，7 项）；与 --target-xyz / --recording 互斥",
+    )
+    exec_parser.add_argument(
+        "--target-xyz",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help="任务空间目标位置（m，世界系）；与 --target-joints / --recording 互斥",
+    )
+    exec_parser.add_argument(
+        "--target-rpy",
+        type=float,
+        nargs=3,
+        metavar=("ROLL", "PITCH", "YAW"),
+        default=(0.0, 0.0, 0.0),
+        help="任务空间目标姿态（**rad**，默认 0 0 0）",
+    )
+    exec_parser.add_argument(
+        "--start-joints",
+        type=float,
+        nargs=7,
+        metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7"),
+        default=None,
+        help="起点位形（rad，7 项）；默认用场景当前位形",
+    )
+    exec_parser.add_argument(
+        "--recording",
+        default=None,
+        help="录制文件路径（JSON）：直接回放其中的关节序列，**不再规划**",
+    )
+    exec_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="离线执行：使用传输层替身（ScriptedTransport），**不连真机**",
+    )
+    exec_parser.add_argument(
+        "--log-out",
+        default=None,
+        help="全链路运行日志的输出路径（JSON；不给则不落盘）",
+    )
+    exec_parser.add_argument(
+        "--log-max-events",
+        type=int,
+        default=100000,
+        help=(
+            "运行日志的**事件数上限**（默认 100000；超出后停止追加并计数，"
+            "丢弃数写进 summary.dropped_events，不静默丢弃）"
+        ),
+    )
+    exec_parser.add_argument(
+        "--connect-timeout",
+        type=float,
+        default=1.0,
+        help="真机 TCP 指令通道的探测超时（s，默认 1.0）",
+    )
+    exec_parser.add_argument(
+        "--region-spacing",
+        type=float,
+        default=0.15,
+        help="IRIS 区域链种子间距（rad，默认 0.15；仅规划路径使用）",
+    )
+    exec_parser.add_argument(
+        "--iris-samples",
+        type=int,
+        default=None,
+        help="IRIS 碰撞不可行采样数（仅规划路径使用）",
+    )
+    exec_parser.add_argument("--json", action="store_true", help="以 JSON 输出结果摘要")
+
     return parser
 
 
@@ -269,6 +392,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _cmd_bimanual(args)
         if command == "replay":
             return _cmd_replay(args)
+        if command == "exec":
+            return _cmd_exec(args)
     except _UsageError as exc:
         print(f"cli: 参数错误：{exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -399,6 +524,414 @@ def _cmd_replay(args: argparse.Namespace) -> int:
             f"（首个下标 {result.escape_indices[0] if result.escape_indices else '-'}）",
             file=sys.stderr,
         )
+        return EXIT_FAILURE
+    return EXIT_OK
+
+
+# ── exec（真机执行入口）────────────────────────────────────────────────
+def _cmd_exec(args: argparse.Namespace) -> int:
+    """``exec``：Planner / 录制轨迹 → rm_device 驱动 → 5 ms 执行环。
+
+    退出码
+    ------
+    * ``0``：执行成功（``--dry-run`` 离线执行也算成功）**或**真机不可达时的
+      ``SKIP(reason=hardware_unreachable)``；
+    * ``1``：业务失败（规划失败 / 安全态触发 / 传输层失败）；
+    * ``2``：用法错误（参数非法、目标缺失、配置文件缺失等）。
+    """
+    from .device.config import DeviceConfigError, load_device_config
+
+    sources = [
+        ("--target-joints", getattr(args, "target_joints", None) is not None),
+        ("--target-xyz", getattr(args, "target_xyz", None) is not None),
+        ("--recording", getattr(args, "recording", None) is not None),
+    ]
+    given = [name for name, present in sources if present]
+    if len(given) != 1:
+        raise _UsageError(
+            "exec 需要且只需要一个目标来源"
+            "（--target-joints / --target-xyz / --recording），当前给了："
+            f"{given if given else '无'}"
+        )
+
+    config_path = Path(args.device_config)
+    if not config_path.is_file():
+        raise _UsageError(f"设备配置不存在：{config_path}")
+    try:
+        device_config = load_device_config(config_path)
+    except DeviceConfigError as exc:
+        raise _UsageError(f"设备配置非法：{exc}") from exc
+
+    # ── 硬件门控：真机不可达 ⇒ SKIP（退出码 0），绝不伪装成功/失败 ──
+    if not args.dry_run:
+        probe = _probe_hardware(device_config, timeout=float(args.connect_timeout))
+        if not probe["reachable"]:
+            return _emit_exec_skipped(args, device_config, probe)
+
+    # ── 轨迹来源：Planner 或录制文件 ──
+    if args.recording is not None:
+        trajectory = _exec_trajectory_from_recording(args.recording)
+        trajectory_source = "recording"
+    else:
+        plan = _plan_once(args, label="exec", write_output=False)
+        if not plan["success"]:
+            _emit_failure(args, plan)
+            return EXIT_FAILURE
+        trajectory = plan["trajectory"]
+        trajectory_source = "planner"
+
+    result = _exec_run_driver(args, device_config, trajectory)
+    result["trajectory_source"] = trajectory_source
+    return _emit_exec_result(args, device_config, result)
+
+
+def _exec_trajectory_from_recording(path: str) -> Any:
+    """从录制文件构造轨迹（**不再规划**）。
+
+    失败模式
+    --------
+    * 文件不存在 / 录制结构非法 → :class:`_UsageError`（退出码 2）；
+    * 录制内容不满足轨迹不变量（软限位 / 速度 / 加速度）→ :class:`_UsageError`。
+    """
+    from .planning.trajectory import TrajectoryError, trajectory_from_arrays
+    from .recording import RecordingError, load_recording
+
+    recording_path = Path(path)
+    if not recording_path.is_file():
+        raise _UsageError(f"录制文件不存在：{recording_path}")
+    try:
+        recording = load_recording(recording_path)
+    except RecordingError as exc:
+        raise _UsageError(f"录制文件非法：{exc}") from exc
+    try:
+        return trajectory_from_arrays(
+            recording.q_matrix(),
+            t0=recording.samples[0].t_abs,
+            dt=recording.dt,
+            robot_name=recording.robot_name,
+            gripper_schedule=recording.gripper_schedule,
+        )
+    except TrajectoryError as exc:
+        raise _UsageError(f"录制内容不满足轨迹不变量：{exc}") from exc
+
+
+def _probe_hardware(device_config: Any, *, timeout: float) -> Dict[str, Any]:
+    """探测真机是否可达（**不抛异常**，返回可解释的结果字典）。
+
+    返回
+    ----
+    dict：``reachable``（bool）/ ``reason``（稳定标签）/ ``detail``（人类可读原因）。
+    """
+    from .device.sdk import sdk_available
+
+    if not sdk_available():
+        return {
+            "reachable": False,
+            "reason": REASON_HARDWARE_UNREACHABLE,
+            "detail": "厂商 SDK 未安装（robotic-arm），无法建立真机链路",
+        }
+    import socket
+
+    host = str(device_config.arm_ip)
+    port = int(device_config.tcp_port)
+    try:
+        with socket.create_connection((host, port), timeout=max(0.05, float(timeout))):
+            pass
+    except OSError as exc:
+        return {
+            "reachable": False,
+            "reason": REASON_HARDWARE_UNREACHABLE,
+            "detail": f"无法连接 TCP 指令通道 {host}:{port}（{type(exc).__name__}）",
+        }
+    return {"reachable": True, "reason": "", "detail": ""}
+
+
+def _exec_run_driver(
+    args: argparse.Namespace, device_config: Any, trajectory: Any
+) -> Dict[str, Any]:
+    """在 5 ms 执行环里跑完轨迹，返回统一结果字典。
+
+    * ``--dry-run`` ⇒ :class:`ScriptedTransport` + 虚拟时钟（零硬件、确定性）；
+    * 否则 ⇒ :class:`SdkTransport` + 系统时钟（真机）。
+    """
+    from .device.exec_loop import SystemClock, VirtualClock
+    from .device.run_log import RunLogBuilder, metric_payload
+    from .device.safety import safety_limits_from_sources
+    from .device.transport import ScriptedTransport, SdkTransport
+    from .drivers.base import DriverError
+    from .drivers.rm_device import RmDeviceDriver, RmDeviceDriverConfig
+    from .limits import load_joint_limits
+
+    limits = safety_limits_from_sources(load_joint_limits(), device_config)
+    dry_run = bool(args.dry_run)
+    transport = ScriptedTransport() if dry_run else SdkTransport(device_config)
+    clock = VirtualClock() if dry_run else SystemClock()
+    driver = RmDeviceDriver(
+        transport,
+        limits=limits,
+        config=RmDeviceDriverConfig(require_state=not dry_run),
+        clock=clock,
+        dt=float(trajectory.dt),
+    )
+
+    builder = RunLogBuilder(
+        start_ns=time.monotonic_ns(),
+        max_events=int(getattr(args, "log_max_events", 100000) or 100000),
+    )
+    status = "ok"
+    reason = ""
+    message = ""
+    num_commands = 0
+    num_samples = 0
+    final_phase = "idle"
+    driver.open()
+    try:
+        driver.submit_trajectory(trajectory)
+        builder.append(
+            "state_transition",
+            {
+                "from_state": "idle",
+                "to_state": driver.phase,
+                "event": "submit_trajectory",
+                "reason": "",
+            },
+        )
+        while driver.index < driver.num_samples:
+            try:
+                state = driver.step()
+            except DriverError as exc:
+                status = "failed"
+                reason = str(exc.reason)
+                message = str(exc)
+                break
+            num_commands += 1
+            builder.append(
+                "command",
+                {
+                    "seq": int(state.seq),
+                    "t_abs": float(state.t_abs),
+                    "joint_rad": [float(v) for v in state.joint_positions],
+                },
+            )
+            frame = driver.read_device_frame()
+            if frame is not None:
+                builder.append(
+                    "state_frame",
+                    {
+                        "seq": int(state.seq),
+                        "t_abs": float(state.t_abs),
+                        "age_s": float(max(0.0, time.monotonic() - float(frame.received_at))),
+                        "joint_rad": [float(v) for v in frame.joint_positions_rad],
+                        "currents_ma": [float(v) for v in frame.joint_currents_ma],
+                        "enabled": [bool(v) for v in frame.joint_en_flags],
+                        "joint_err_codes": [int(v) for v in frame.joint_err_codes],
+                        "controller_status": int(frame.controller_status),
+                        "gripper_online": bool(frame.gripper_online),
+                        "complete": bool(frame.is_complete),
+                    },
+                )
+        for violation in driver.violations:
+            builder.append(
+                "safety_violation",
+                {
+                    "reason": str(violation.reason),
+                    "gate": str(violation.gate),
+                    "action": str(violation.action),
+                    "severity": str(violation.severity),
+                    "detail": str(violation.detail),
+                    "joints": [int(v) for v in violation.joints],
+                },
+            )
+        for error in driver.errors:
+            builder.append(
+                "note",
+                {"text": f"驱动错误：{error.get('reason', '')} {error.get('message', '')}".strip()},
+            )
+        builder.append(
+            "state_transition",
+            {
+                "from_state": "streaming",
+                "to_state": driver.phase,
+                "event": "finished",
+                "reason": reason,
+            },
+        )
+        builder.append("metric", metric_payload("jitter", driver.jitter))
+        # 关闭前先取快照（close() 会清空轨迹引用并把相位复位为 idle）
+        num_samples = int(driver.num_samples)
+        final_phase = driver.phase
+    finally:
+        driver.close()
+
+    jitter = driver.jitter.summary()
+    return {
+        "status": status,
+        "reason": reason,
+        "message": message,
+        "num_commands": num_commands,
+        "num_samples": num_samples,
+        "violations": [
+            {
+                "reason": str(v.reason),
+                "gate": str(v.gate),
+                "action": str(v.action),
+                "severity": str(v.severity),
+                "detail": str(v.detail),
+            }
+            for v in driver.violations
+        ],
+        "jitter": jitter,
+        "run_log": builder,
+        "phase": final_phase,
+    }
+
+
+def _emit_exec_skipped(
+    args: argparse.Namespace, device_config: Any, probe: Dict[str, Any]
+) -> int:
+    """真机不可达：输出 ``SKIP(reason=hardware_unreachable)`` 并以 **0** 退出。
+
+    同时**逐条列出未验证的真机指标**（绝不假装通过、绝不省略）。
+    """
+    from .device.run_log import RunLogBuilder, build_run_log
+
+    builder = RunLogBuilder(start_ns=time.monotonic_ns())
+    builder.append(
+        "note",
+        {"text": f"SKIP(reason={probe['reason']})：{probe['detail']}"},
+    )
+    run_log = build_run_log(
+        builder.events,
+        meta={
+            "command": "exec",
+            "mode": "hardware",
+            "device_name": device_config.name,
+            "arm_ip": device_config.arm_ip,
+            "scenario_path": str(args.scenario),
+            "recording_path": str(args.recording) if args.recording else "",
+            "robot_name": "rm75",
+            "dry_run": False,
+        },
+        summary={
+            "status": "skipped",
+            "reason": probe["reason"],
+            "num_samples": 0,
+            "num_violations": 0,
+            "jitter": None,
+            "notes": [probe["detail"]],
+            "unverified_metrics": list(UNVERIFIED_HARDWARE_METRICS),
+        },
+    )
+    log_path = _write_exec_run_log(args, run_log)
+
+    payload = {
+        "command": "exec",
+        "status": "skipped",
+        "success": False,
+        "skipped": True,
+        "reason": probe["reason"],
+        "detail": probe["detail"],
+        "unverified_metrics": list(UNVERIFIED_HARDWARE_METRICS),
+        "run_log_path": log_path,
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"[exec] SKIP(reason={probe['reason']})：{probe['detail']}")
+        print("[exec] 以下真机指标**未验证**（不得当作通过）：")
+        for item in UNVERIFIED_HARDWARE_METRICS:
+            print(f"[exec]   - {item}")
+        if log_path:
+            print(f"[exec] 运行日志：{log_path}")
+    return EXIT_OK
+
+
+def _write_exec_run_log(args: argparse.Namespace, run_log: Any) -> Optional[str]:
+    """按 ``--log-out`` 写运行日志（不给则不落盘；返回路径或 ``None``）。"""
+    output = getattr(args, "log_out", None)
+    if not output:
+        return None
+    from .device.run_log import write_run_log
+
+    write_run_log(run_log, output)
+    return str(Path(output))
+
+
+def _emit_exec_result(
+    args: argparse.Namespace, device_config: Any, result: Dict[str, Any]
+) -> int:
+    """打印 exec 结果摘要（JSON 或人类可读），返回退出码。"""
+    builder = result["run_log"]
+    run_log = builder.build(
+        meta={
+            "command": "exec",
+            "mode": "dry_run" if args.dry_run else "hardware",
+            "device_name": device_config.name,
+            "arm_ip": device_config.arm_ip,
+            "scenario_path": str(args.scenario),
+            "recording_path": str(args.recording) if args.recording else "",
+            "robot_name": "rm75",
+            "dry_run": bool(args.dry_run),
+        },
+        summary={
+            "status": result["status"],
+            "reason": result["reason"],
+            "num_samples": result["num_samples"],
+            "num_violations": len(result["violations"]),
+            "jitter": result["jitter"],
+            "notes": [result["message"]] if result["message"] else [],
+            "unverified_metrics": (
+                [] if args.dry_run else list(UNVERIFIED_HARDWARE_METRICS)
+            ),
+        },
+    )
+    log_path = _write_exec_run_log(args, run_log)
+
+    payload = {
+        "command": "exec",
+        "status": result["status"],
+        "success": result["status"] == "ok",
+        "skipped": False,
+        "reason": result["reason"],
+        "message": result["message"],
+        "mode": "dry_run" if args.dry_run else "hardware",
+        "trajectory_source": result.get("trajectory_source"),
+        "num_samples": result["num_samples"],
+        "num_commands": result["num_commands"],
+        "phase": result["phase"],
+        "num_violations": len(result["violations"]),
+        "violations": result["violations"],
+        "jitter": result["jitter"],
+        "run_log_path": log_path,
+        "run_log_events": len(run_log.events),
+        "dropped_events": int(run_log.summary.get("dropped_events") or 0),
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        print(f"[exec] 状态：{result['status']}（模式：{payload['mode']}）")
+        print(
+            f"[exec] 下发点数：{result['num_commands']} / {result['num_samples']}"
+            f"（相位：{result['phase']}）"
+        )
+        print(f"[exec] 安全违规数：{len(result['violations'])}")
+        dropped = int(run_log.summary.get("dropped_events") or 0)
+        if dropped:
+            print(
+                f"[exec] 运行日志事件数已达上限：丢弃 {dropped} 条"
+                "（summary.dropped_events；不静默丢弃）",
+                file=sys.stderr,
+            )
+        jitter = result["jitter"] or {}
+        print(
+            f"[exec] 抖动：count={jitter.get('count')} p50={jitter.get('p50')} "
+            f"p99={jitter.get('p99')} p99.9={jitter.get('p999')} max={jitter.get('max')}"
+        )
+        if result["message"]:
+            print(f"[exec] 失败原因（{result['reason']}）：{result['message']}", file=sys.stderr)
+        if log_path:
+            print(f"[exec] 运行日志：{log_path}")
+    if result["status"] != "ok":
         return EXIT_FAILURE
     return EXIT_OK
 

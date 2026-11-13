@@ -91,7 +91,7 @@ def _write_recording(path: Path, samples, *, scenario_path: Path) -> Path:
 
 
 # ── --help ──────────────────────────────────────────────────────────────
-@pytest.mark.parametrize("command", ["single", "pick", "bimanual", "replay"])
+@pytest.mark.parametrize("command", ["single", "pick", "bimanual", "replay", "exec"])
 def test_subcommand_help_exits_zero(command):
     """正例：四个子命令的 --help 退出码 0。"""
     result = _run_module(command, "--help")
@@ -103,7 +103,7 @@ def test_top_level_help_exits_zero():
     """正例：顶层 --help 退出码 0。"""
     result = _run_module("--help")
     assert result.returncode == 0, result.stdout + result.stderr
-    for command in ("single", "pick", "bimanual", "replay"):
+    for command in ("single", "pick", "bimanual", "replay", "exec"):
         assert command in result.stdout
 
 
@@ -300,3 +300,257 @@ def test_pick_includes_open_gripper_action(tmp_path, capsys):
     action = recording.gripper_schedule[0]
     assert action.kind == "open"
     assert action.position == 1000
+
+
+# ══════════════════════════════════════════════════════════════════════
+# exec（真机执行入口，S03-T07）
+# ══════════════════════════════════════════════════════════════════════
+#: 设备配置模板（测试夹具）：围栏放宽到「零位附近也可执行」，
+#: 其余字段与 devices/single_arm.yaml 同构。
+DEVICE_CONFIG_TEMPLATE = """schema_version: 1
+name: rm75_single_arm
+arm_ip: "192.168.1.18"
+tcp_port: 8080
+udp_port: 8080
+udp_cycle: 1
+joint_zero_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+accel_limits:
+  measured: false
+  values: [6.0, 6.0, 8.0, 8.0, 8.0, 8.0, 8.0]
+current_thresholds:
+  calibrated: false
+  values: [1500.0, 1500.0, 1200.0, 1200.0, 1000.0, 1000.0, 1000.0]
+fence:
+  table_height_m: {table_height_m}
+  singularity_radius_m: {singularity_radius_m}
+"""
+
+#: 围栏收紧（复现仓库默认配置）：奇异圆柱半径 0.15 m ⇒ 零位附近必然越界。
+FENCE_TIGHT = {"table_height_m": 0.75, "singularity_radius_m": 0.15}
+#: 围栏放宽（测试用）：TCP 高度与离轴距离都能通过。
+FENCE_LOOSE = {"table_height_m": 0.5, "singularity_radius_m": 0.01}
+
+
+def _write_device_config(path: Path, *, fence=FENCE_LOOSE) -> Path:
+    """写一份设备（部署）配置 YAML（测试夹具）。"""
+    path.write_text(
+        DEVICE_CONFIG_TEMPLATE.format(
+            table_height_m=fence["table_height_m"],
+            singularity_radius_m=fence["singularity_radius_m"],
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _ramp_samples(base, *, count: int = 20, accel: float = 1.0):
+    """生成一段**平滑起步**的关节序列（满足速度 / 加速度不变量）。"""
+    dt = 0.005
+    rows = []
+    for index in range(count):
+        t = index * dt
+        q = list(base)
+        q[0] = base[0] + 0.5 * accel * t * t
+        rows.append(q)
+    return rows
+
+
+def test_exec_help_exits_zero():
+    """正例：exec 的 --help 退出码 0。"""
+    result = _run_module("exec", "--help")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "exec" in result.stdout
+
+
+def test_exec_without_target_is_usage_error(tmp_path, capsys):
+    """负例：不给任何目标 → 用法错误（退出码 2）。"""
+    code = cli_mod.main(["exec", "--dry-run"])
+    capsys.readouterr()
+    assert code == 2
+
+
+def test_exec_with_conflicting_sources_is_usage_error(tmp_path, capsys):
+    """负例：同时给 --target-joints 与 --recording → 用法错误（退出码 2）。"""
+    recording = _write_recording(
+        tmp_path / "rec.json", [START_Q], scenario_path=SCENARIO_PATH
+    )
+    code = cli_mod.main(
+        [
+            "exec",
+            "--dry-run",
+            "--recording",
+            str(recording),
+            "--target-joints",
+            *["0.0"] * 7,
+        ]
+    )
+    capsys.readouterr()
+    assert code == 2
+
+
+def test_exec_with_missing_device_config_is_usage_error(tmp_path, capsys):
+    """负例：设备配置不存在 → 用法错误（退出码 2）。"""
+    recording = _write_recording(
+        tmp_path / "rec.json", [START_Q], scenario_path=SCENARIO_PATH
+    )
+    code = cli_mod.main(
+        [
+            "exec",
+            "--dry-run",
+            "--recording",
+            str(recording),
+            "--device-config",
+            str(tmp_path / "no-such-device.yaml"),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "device" in (captured.out + captured.err).lower()
+
+
+def test_exec_dry_run_produces_trajectory_and_run_log(tmp_path, capsys):
+    """正例：--dry-run（替身传输层）产出轨迹下发与运行日志，退出码 0。"""
+    from rm75_drake.device.run_log import load_run_log
+
+    config = _write_device_config(tmp_path / "device.yaml")
+    recording = _write_recording(
+        tmp_path / "rec.json",
+        _ramp_samples((0.3, -0.6, 0.0, 0.9, 0.0, 0.5, 0.0)),
+        scenario_path=SCENARIO_PATH,
+    )
+    log_path = tmp_path / "run_log.json"
+    code = cli_mod.main(
+        [
+            "exec",
+            "--dry-run",
+            "--recording",
+            str(recording),
+            "--device-config",
+            str(config),
+            "--log-out",
+            str(log_path),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 0, captured.out + captured.err
+    assert log_path.is_file()
+
+    run_log = load_run_log(log_path)
+    kinds = [event.kind for event in run_log.events]
+    assert "command" in kinds
+    assert "metric" in kinds
+    assert run_log.summary["status"] == "ok"
+    assert run_log.summary["num_samples"] == 20
+    commands = [e for e in run_log.events if e.kind == "command"]
+    assert len(commands) == 20
+    # 首拍指令 = 轨迹首点（**未修改**轨迹内容）
+    assert commands[0].payload["joint_rad"][0] == pytest.approx(0.3)
+
+
+def test_exec_dry_run_json_summary_is_parseable(tmp_path, capsys):
+    """正例：--json 输出可被解析，且给出抖动统计。"""
+    config = _write_device_config(tmp_path / "device.yaml")
+    recording = _write_recording(
+        tmp_path / "rec.json",
+        _ramp_samples((0.3, -0.6, 0.0, 0.9, 0.0, 0.5, 0.0)),
+        scenario_path=SCENARIO_PATH,
+    )
+    code = cli_mod.main(
+        [
+            "exec",
+            "--dry-run",
+            "--recording",
+            str(recording),
+            "--device-config",
+            str(config),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 0, captured.out + captured.err
+    payload = json.loads(captured.out)
+    assert payload["command"] == "exec"
+    assert payload["status"] == "ok"
+    assert payload["success"] is True
+    assert payload["num_commands"] == 20
+    assert payload["jitter"]["count"] > 0
+
+
+def test_exec_fence_violation_triggers_safe_state_and_exit_one(tmp_path, capsys):
+    """负例：围栏闸触发安全态 → 退出码 1（不静默成功）。"""
+    config = _write_device_config(tmp_path / "device.yaml", fence=FENCE_TIGHT)
+    recording = _write_recording(
+        tmp_path / "rec.json", [START_Q], scenario_path=SCENARIO_PATH
+    )
+    code = cli_mod.main(
+        [
+            "exec",
+            "--dry-run",
+            "--recording",
+            str(recording),
+            "--device-config",
+            str(config),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 1, captured.out + captured.err
+    assert "fence" in (captured.out + captured.err)
+
+
+def test_exec_without_hardware_reports_skip_and_exits_zero(tmp_path, capsys):
+    """正例：真机不可达 ⇒ SKIP(reason=hardware_unreachable) + 退出码 0 + 未验证清单。"""
+    config = _write_device_config(tmp_path / "device.yaml")
+    recording = _write_recording(
+        tmp_path / "rec.json", [START_Q], scenario_path=SCENARIO_PATH
+    )
+    log_path = tmp_path / "run_log.json"
+    code = cli_mod.main(
+        [
+            "exec",
+            "--recording",
+            str(recording),
+            "--device-config",
+            str(config),
+            "--connect-timeout",
+            "0.2",
+            "--log-out",
+            str(log_path),
+        ]
+    )
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert code == 0, combined
+    assert "SKIP" in combined
+    assert "hardware_unreachable" in combined
+    # 未验证指标必须**逐条列出**（不得省略）
+    from rm75_drake.cli import UNVERIFIED_HARDWARE_METRICS
+
+    for item in UNVERIFIED_HARDWARE_METRICS:
+        assert item in combined
+
+    from rm75_drake.device.run_log import load_run_log
+
+    run_log = load_run_log(log_path)
+    assert run_log.summary["status"] == "skipped"
+    assert run_log.summary["reason"] == "hardware_unreachable"
+    assert run_log.summary["unverified_metrics"]
+
+
+def test_exec_invalid_recording_is_usage_error(tmp_path, capsys):
+    """负例：录制文件结构非法 → 用法错误（退出码 2）。"""
+    config = _write_device_config(tmp_path / "device.yaml")
+    broken = tmp_path / "broken.json"
+    broken.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+    code = cli_mod.main(
+        [
+            "exec",
+            "--dry-run",
+            "--recording",
+            str(broken),
+            "--device-config",
+            str(config),
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "录制" in (captured.out + captured.err)

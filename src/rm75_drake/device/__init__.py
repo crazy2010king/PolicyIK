@@ -21,6 +21,9 @@
   预分配直方图 + P50 / P99 / P99.9 分位数（唯一口径，单测与真机脚本共用）。
 * :mod:`rm75_drake.device.exec_loop` —— **5 ms 实时执行环**：
   固定节拍 + 七闸钳位 + 唯一运动通道；时钟 / 睡眠可注入（确定性虚拟时钟）。
+* :mod:`rm75_drake.device.run_log` —— **全链路运行日志**（**独立 schema**，
+  ``schema_version=1``；不修改 S02 的 ``recording.py``）：事件序列 + 校验和
+  （篡改可检出）。
 
 本包**零 pydrake 依赖**（只依赖 numpy + 本项目的轨迹/路径层），
 因此安全七闸 / 状态机 / 执行环 / 恢复流程都能在无 SDK、无真机的环境里被测试。
@@ -136,6 +139,26 @@ from .state_source import (
     StateSource,
     StateSourceError,
 )
+from .run_log import (
+    EVENT_KINDS as RUN_LOG_EVENT_KINDS,
+    EVENT_KEYS as RUN_LOG_EVENT_KEYS,
+    META_KEYS as RUN_LOG_META_KEYS,
+    PAYLOAD_KEYS as RUN_LOG_PAYLOAD_KEYS,
+    SUMMARY_KEYS as RUN_LOG_SUMMARY_KEYS,
+    TOP_LEVEL_KEYS as RUN_LOG_TOP_LEVEL_KEYS,
+    RUN_LOG_SCHEMA_VERSION,
+    RunLog,
+    RunLogBuilder,
+    RunLogError,
+    RunLogEvent,
+    build_run_log,
+    compute_checksum,
+    load_run_log,
+    metric_payload,
+    run_log_from_dict,
+    verify_run_log,
+    write_run_log,
+)
 from .state_machine import (
     ALL_EVENTS,
     ALL_STATES,
@@ -221,6 +244,25 @@ __all__ = [
     "MISSED_CYCLES_UNBOUNDED",
     "REASON_FRAME_INCOMPLETE",
     "REASON_INVALID_FRAME",
+    # run_log
+    "RunLog",
+    "RunLogEvent",
+    "RunLogBuilder",
+    "RunLogError",
+    "RUN_LOG_SCHEMA_VERSION",
+    "RUN_LOG_TOP_LEVEL_KEYS",
+    "RUN_LOG_META_KEYS",
+    "RUN_LOG_SUMMARY_KEYS",
+    "RUN_LOG_EVENT_KEYS",
+    "RUN_LOG_EVENT_KINDS",
+    "RUN_LOG_PAYLOAD_KEYS",
+    "build_run_log",
+    "run_log_from_dict",
+    "write_run_log",
+    "load_run_log",
+    "verify_run_log",
+    "compute_checksum",
+    "metric_payload",
     # state_machine
     "DeviceStateMachine",
     "DeviceState",
