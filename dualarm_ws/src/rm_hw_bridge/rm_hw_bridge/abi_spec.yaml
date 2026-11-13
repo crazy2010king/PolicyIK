@@ -1,0 +1,515 @@
+# RM-API2 1.1.7 ABI 规格（唯一真值 / single source of truth）
+#
+# 本文件是 rm_hw_bridge 层对厂商 C ABI 的机器可读描述。
+# codegen.py 读取本文件生成 ctypes 绑定（generated/rm_api2_ctypes.py）与
+# 布局黄金表（generated/layout_golden.json）。
+#
+# 字段名 / 字段顺序 / 类型逐字来自 RM-API2 1.1.7 头文件：
+#   rm_define.h / rm_interface.h / rm_version.h（vendor/rm_api2/include/）
+# 上游来源与 sha256 见 vendor/rm_api2/PROVENANCE.md。
+#
+# ABI 关键规则（写进生成物注释，任何改动都不得违反）：
+#   1. rm_create_robot_arm 失败时仍返回非空指针，但 handle.id == -1；
+#      必须读取 id 判定失败，不能只判 NULL。达到最大连接数 5 时返回 NULL。
+#   2. rm_set_realtime_push / rm_movej_canfd 的结构体是**按值传递**（非指针）。
+#   3. rm_movej_canfd_mode_t.joint 是 float*（非数组）：调用方必须保证
+#      缓冲在调用返回前存活。
+#   4. rm_realtime_arm_state_call_back 是**全局注册**（进程级单例），
+#      同一进程无法同时接收两路臂的主动上报。
+#   5. rm_realtime_push_config_t.ip 是 char[28]，赋值必须用 bytes。
+#   6. 单位：关节角 °；rm_set_joint_drive_max_speed °/s；
+#      rm_set_joint_drive_max_acc °/s²；
+#      rm_set_joint_drive_min_pos / rm_set_joint_drive_max_pos °。
+#   7. rm_movej 是阻塞式调用（单线程阻塞模式）。
+
+sdk:
+  name: RM-API2
+  version: "1.1.7"
+  headers:
+    - rm_define.h
+    - rm_interface.h
+    - rm_version.h
+
+# ---------------------------------------------------------------------------
+# 常量
+# ---------------------------------------------------------------------------
+constants:
+  ARM_DOF:
+    value: 7
+    doc: 机械臂自由度（关节数）
+
+# ---------------------------------------------------------------------------
+# 枚举（全部按 int 尺寸参与布局；枚举值不影响内存布局）
+# ---------------------------------------------------------------------------
+enums:
+  rm_thread_mode_e:
+    doc: SDK 线程模式
+    values:
+      RM_SINGLE_MODE_E: 0
+      RM_DUAL_MODE_E: 1
+      RM_TRIPLE_MODE_E: 2
+  rm_arm_current_trajectory_e:
+    doc: 当前机械臂规划类型
+    values:
+      RM_NO_PLANNING_E: 0
+      RM_JOINT_SPACE_PLANNING_E: 1
+      RM_CARTESIAN_LINEAR_PLANNING_E: 2
+      RM_CARTESIAN_ARC_PLANNING_E: 3
+      RM_SPLINE_CURVE_MOTION_PLANNING_E: 4
+      RM_TRAJECTORY_REPLAY_PLANNING_E: 5
+      RM_BLEND_TRAJECTORY_PLANNING_E: 6
+  rm_udp_arm_current_status_e:
+    doc: UDP 主动上报中的机械臂状态
+    values:
+      RM_IDLE_E: 0
+      RM_MOVE_L_E: 1
+      RM_MOVE_J_E: 2
+      RM_MOVE_C_E: 3
+      RM_MOVE_S_E: 4
+      RM_MOVE_THROUGH_JOINT_E: 5
+      RM_MOVE_THROUGH_POSE_E: 6
+      RM_MOVE_THROUGH_FORCE_POSE_E: 7
+      RM_MOVE_THROUGH_CURRENT_E: 8
+      RM_STOP_E: 9
+      RM_SLOW_STOP_E: 10
+      RM_PAUSE_E: 11
+      RM_CURRENT_DRAG_E: 12
+      RM_SENSOR_DRAG_E: 13
+      RM_TECH_DEMONSTRATION_E: 14
+      RM_TRAJECTORY_REPRODUCTON_E: 15
+      RM_MOVE_INIT_POSITION_E: 16
+      RM_MOVEV_CANFD_E: 17
+  rm_robot_arm_model_e:
+    doc: 机械臂型号
+    values:
+      RM_MODEL_RM_65_E: 0
+      RM_MODEL_RM_75_E: 1
+      RM_MODEL_RM_63_I_E: 2
+      RM_MODEL_RM_63_II_E: 3
+      RM_MODEL_RM_63_III_E: 4
+      RM_MODEL_ECO_65_E: 5
+      RM_MODEL_ECO_62_E: 6
+      RM_MODEL_GEN_72_E: 7
+      RM_MODEL_ECO_63_E: 8
+      RM_MODEL_UNIVERSAL_E: 9
+      RM_MODEL_ZM7L_E: 10
+      RM_MODEL_ZM7R_E: 11
+      RM_MODEL_RXL75_E: 12
+      RM_MODEL_RXR75_E: 13
+      RM_MODEL_ZPFL74_E: 14
+      RM_MODEL_ZPFR74_E: 15
+      RM_MODEL_RXL75II_E: 16
+      RM_MODEL_RXR75II_E: 17
+      RM_MODEL_RXL75T_E: 18
+      RM_MODEL_RXR75T_E: 19
+  rm_force_type_e:
+    doc: 末端力传感器版本
+    values:
+      RM_MODEL_RM_B_E: 0
+      RM_MODEL_RM_ZF_E: 1
+      RM_MODEL_RM_SF_E: 2
+      RM_MODEL_RM_ISF_E: 3
+      RM_MODEL_RM_BV_E: 4
+      RM_MODEL_RM_ISFV_E: 5
+
+# ---------------------------------------------------------------------------
+# 结构体
+#   type 语法：基元 | 结构体名 | 枚举名 | 指针（"float*" / "const char*"）
+#   count：数组长度（可选）
+# ---------------------------------------------------------------------------
+structs:
+  rm_robot_handle:
+    doc: 机械臂控制句柄
+    fields:
+      - {name: id, type: int, doc: "句柄 id，连接成功 >0，连接失败 -1"}
+
+  rm_position_t:
+    doc: 位置坐标（单位 m）
+    fields:
+      - {name: x, type: float}
+      - {name: y, type: float}
+      - {name: z, type: float}
+
+  rm_quat_t:
+    doc: 四元数
+    fields:
+      - {name: w, type: float}
+      - {name: x, type: float}
+      - {name: y, type: float}
+      - {name: z, type: float}
+
+  rm_euler_t:
+    doc: 欧拉角（单位 rad）
+    fields:
+      - {name: rx, type: float}
+      - {name: ry, type: float}
+      - {name: rz, type: float}
+
+  rm_pose_t:
+    doc: 位置姿态
+    fields:
+      - {name: position, type: rm_position_t, doc: "位置，单位 m"}
+      - {name: quaternion, type: rm_quat_t}
+      - {name: euler, type: rm_euler_t, doc: "欧拉角，单位 rad"}
+
+  rm_err_t:
+    doc: 错误代码结构体
+    fields:
+      - {name: err_len, type: uint8, doc: "错误代码个数"}
+      - {name: err, type: int, count: 24, doc: "错误代码数组"}
+
+  rm_current_arm_state_t:
+    doc: 机械臂当前状态
+    fields:
+      - {name: pose, type: rm_pose_t, doc: "机械臂当前位姿"}
+      - {name: joint, type: float, count: 7, doc: "机械臂当前关节角度，单位 °"}
+      - {name: err, type: rm_err_t}
+
+  rm_joint_status_t:
+    doc: 机械臂关节状态参数
+    fields:
+      - {name: joint_current, type: float, count: 7, doc: "关节电流，单位 mA"}
+      - {name: joint_en_flag, type: bool, count: 7, doc: "关节使能状态"}
+      - {name: joint_err_code, type: uint16, count: 7, doc: "关节错误码"}
+      - {name: joint_position, type: float, count: 7, doc: "关节角度，单位 °"}
+      - {name: joint_temperature, type: float, count: 7, doc: "关节温度，单位 ℃"}
+      - {name: joint_voltage, type: float, count: 7, doc: "关节电压，单位 V"}
+      - {name: joint_speed, type: float, count: 7, doc: "关节速度，单位 °/s"}
+
+  rm_arm_all_state_t:
+    doc: 机械臂所有状态参数
+    fields:
+      - {name: joint_current, type: float, count: 7, doc: "关节电流，单位 mA"}
+      - {name: joint_en_flag, type: int, count: 7, doc: "关节使能状态"}
+      - {name: joint_temperature, type: float, count: 7, doc: "关节温度，单位 ℃"}
+      - {name: joint_voltage, type: float, count: 7, doc: "关节电压，单位 V"}
+      - {name: joint_err_code, type: int, count: 7, doc: "关节错误码"}
+      - {name: err, type: rm_err_t}
+
+  rm_udp_custom_config_t:
+    doc: UDP 主动上报自定义项（每个字段：1 上报 / 0 关闭 / -1 保持原状）
+    fields:
+      - {name: joint_speed, type: int}
+      - {name: lift_state, type: int}
+      - {name: expand_state, type: int}
+      - {name: hand_state, type: int}
+      - {name: arm_current_status, type: int}
+      - {name: aloha_state, type: int}
+      - {name: plus_base, type: int}
+      - {name: plus_state, type: int}
+
+  rm_realtime_push_config_t:
+    doc: 机械臂主动上报接口配置
+    fields:
+      - {name: cycle, type: int, doc: "广播周期，5ms 的倍数"}
+      - {name: enable, type: bool, doc: "是否主动上报"}
+      - {name: port, type: int, doc: "广播端口号"}
+      - {name: force_coordinate, type: int, doc: "系统外受力数据坐标系"}
+      - {name: ip, type: char, count: 28, doc: "上报目标 IP（bytes 赋值）"}
+      - {name: custom_config, type: rm_udp_custom_config_t}
+
+  rm_movej_canfd_mode_t:
+    doc: 角度透传模式结构体（按值传入 rm_movej_canfd）
+    fields:
+      - {name: joint, type: "float*", doc: "关节角度指针，单位 °（缓冲须在调用期间存活）"}
+      - {name: expand, type: float, doc: "扩展关节角度"}
+      - {name: follow, type: bool, doc: "true 高跟随 / false 低跟随"}
+      - {name: trajectory_mode, type: int, doc: "0 完全透传 / 1 曲线拟合 / 2 滤波"}
+      - {name: radio, type: int, doc: "平滑系数 0-1000"}
+
+  rm_force_sensor_t:
+    doc: UDP 主动上报力传感器数据
+    fields:
+      - {name: force, type: float, count: 6, doc: "原始力，0.001N / 0.001Nm"}
+      - {name: zero_force, type: float, count: 6, doc: "系统外受力，0.001N / 0.001Nm"}
+      - {name: coordinate, type: int, doc: "受力坐标系"}
+
+  rm_udp_lift_state_t:
+    doc: 升降机构状态
+    fields:
+      - {name: height, type: int, doc: "高度，单位 mm"}
+      - {name: pos, type: float, doc: "角度，单位 °"}
+      - {name: current, type: int, doc: "驱动电流，单位 mA"}
+      - {name: err_flag, type: int}
+      - {name: en_flag, type: int}
+
+  rm_udp_expand_state_t:
+    doc: 扩展关节状态
+    fields:
+      - {name: pos, type: float, doc: "角度，单位 °"}
+      - {name: current, type: int, doc: "驱动电流，单位 mA"}
+      - {name: err_flag, type: int}
+      - {name: en_flag, type: int}
+      - {name: joint_id, type: int}
+      - {name: mode, type: int}
+
+  rm_udp_hand_state_t:
+    doc: 灵巧手状态
+    fields:
+      - {name: hand_pos, type: int, count: 6}
+      - {name: hand_angle, type: int, count: 6}
+      - {name: hand_force, type: int, count: 6}
+      - {name: hand_state, type: int, count: 6}
+      - {name: hand_err, type: int}
+
+  rm_udp_aloha_state_t:
+    doc: aloha 主臂状态
+    fields:
+      - {name: io1_state, type: int}
+      - {name: io2_state, type: int}
+
+  rm_plus_base_info_t:
+    doc: 末端设备基础信息
+    fields:
+      - {name: manu, type: char, count: 10}
+      - {name: type, type: int}
+      - {name: hv, type: char, count: 10}
+      - {name: sv, type: char, count: 10}
+      - {name: bv, type: char, count: 10}
+      - {name: id, type: int}
+      - {name: dof, type: int}
+      - {name: check, type: int}
+      - {name: bee, type: int}
+      - {name: force, type: bool}
+      - {name: touch, type: bool}
+      - {name: touch_num, type: int}
+      - {name: touch_sw, type: int}
+      - {name: hand, type: int}
+      - {name: pos_up, type: int, count: 6}
+      - {name: pos_low, type: int, count: 6}
+      - {name: angle_up, type: int, count: 6}
+      - {name: angle_low, type: int, count: 6}
+      - {name: speed_up, type: int, count: 6}
+      - {name: speed_low, type: int, count: 6}
+      - {name: force_up, type: int, count: 6}
+      - {name: force_low, type: int, count: 6}
+
+  rm_plus_state_info_t:
+    doc: 末端设备实时信息
+    fields:
+      - {name: sys_state, type: int}
+      - {name: dof_state, type: int, count: 6}
+      - {name: dof_err, type: int, count: 6}
+      - {name: pos, type: int, count: 6}
+      - {name: speed, type: int, count: 6}
+      - {name: angle, type: int, count: 6}
+      - {name: current, type: int, count: 6}
+      - {name: normal_force, type: int, count: 18}
+      - {name: tangential_force, type: int, count: 18}
+      - {name: tangential_force_dir, type: int, count: 18}
+      - {name: tsa, type: uint32, count: 12}
+      - {name: tma, type: uint32, count: 12}
+      - {name: touch_data, type: int, count: 18}
+      - {name: force, type: int, count: 6}
+
+  rm_realtime_arm_joint_state_t:
+    doc: UDP 主动上报机械臂信息（回调参数，**按值** 传递）
+    fields:
+      - {name: errCode, type: int, doc: "数据解析错误码"}
+      - {name: arm_ip, type: char, count: 16}
+      - {name: arm_port, type: int}
+      - {name: joint_status, type: rm_joint_status_t}
+      - {name: force_sensor, type: rm_force_sensor_t}
+      - {name: err, type: rm_err_t}
+      - {name: waypoint, type: rm_pose_t}
+      - {name: liftState, type: rm_udp_lift_state_t}
+      - {name: expandState, type: rm_udp_expand_state_t}
+      - {name: handState, type: rm_udp_hand_state_t}
+      - {name: arm_current_status, type: rm_udp_arm_current_status_e}
+      - {name: aloha_state, type: rm_udp_aloha_state_t}
+      - {name: rm_plus_state, type: int}
+      - {name: plus_base_info, type: rm_plus_base_info_t}
+      - {name: plus_state_info, type: rm_plus_state_info_t}
+
+  rm_robot_info_t:
+    doc: 机械臂基本信息
+    fields:
+      - {name: arm_dof, type: uint8}
+      - {name: arm_model, type: rm_robot_arm_model_e}
+      - {name: force_type, type: rm_force_type_e}
+      - {name: robot_controller_version, type: uint8}
+
+# ---------------------------------------------------------------------------
+# 回调函数指针类型
+# ---------------------------------------------------------------------------
+callback_types:
+  rm_realtime_arm_state_callback_ptr:
+    doc: UDP 主动上报回调（**进程级全局注册**，同进程只能收一路臂）
+    ret: void
+    args:
+      - {name: data, type: rm_realtime_arm_joint_state_t}
+  rm_log_callback_ptr:
+    doc: 日志回调（va_list 在 x86-64 SysV 上以寄存器保存，ctypes 侧按 void* 近似传递）
+    ret: void
+    args:
+      - {name: message, type: "const char*"}
+      - {name: args, type: "void*"}
+
+# ---------------------------------------------------------------------------
+# 函数原型
+#   by_value: true 表示结构体**按值**传递（C ABI 传参方式）
+# ---------------------------------------------------------------------------
+functions:
+  rm_init:
+    doc: 初始化 SDK
+    ret: int
+    args:
+      - {name: mode, type: rm_thread_mode_e}
+  rm_set_log_call_back:
+    doc: 注册日志回调
+    ret: void
+    args:
+      - {name: LogCallback, type: rm_log_callback_ptr}
+      - {name: level, type: int}
+  rm_set_timeout:
+    doc: 设置 SDK 超时时间（秒）
+    ret: void
+    args:
+      - {name: timeout, type: int}
+  rm_create_robot_arm:
+    doc: 创建机械臂实例（失败时返回非空指针且 id == -1；达到最大连接数 5 返回 NULL）
+    ret: "rm_robot_handle*"
+    args:
+      - {name: ip, type: "const char*"}
+      - {name: port, type: int}
+  rm_delete_robot_arm:
+    doc: 删除机械臂实例
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+  rm_get_robot_info:
+    doc: 获取机械臂基本信息
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: robot_info, type: "rm_robot_info_t*"}
+  rm_realtime_arm_state_call_back:
+    doc: 注册 UDP 主动上报回调（**全局注册**，同进程仅一路）
+    ret: void
+    args:
+      - {name: realtime_callback, type: rm_realtime_arm_state_callback_ptr}
+  rm_set_joint_drive_max_speed:
+    doc: 设置关节最大速度（驱动器），单位 °/s
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: joint_num, type: int}
+      - {name: max_speed, type: float}
+  rm_set_joint_drive_max_acc:
+    doc: 设置关节最大加速度（驱动器），单位 °/s²
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: joint_num, type: int}
+      - {name: max_acc, type: float}
+  rm_set_joint_drive_min_pos:
+    doc: 设置关节最小限位（驱动器），单位 °
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: joint_num, type: int}
+      - {name: min_pos, type: float}
+  rm_set_joint_drive_max_pos:
+    doc: 设置关节最大限位（驱动器），单位 °
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: joint_num, type: int}
+      - {name: max_pos, type: float}
+  rm_get_joint_err_flag:
+    doc: 获取关节错误与抱闸状态
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: err_flag, type: "uint16*"}
+      - {name: brake_state, type: "uint16*"}
+  rm_set_collision_state:
+    doc: 设置碰撞检测状态
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: collision_stage, type: int}
+  rm_get_current_arm_state:
+    doc: 获取机械臂当前状态
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: state, type: "rm_current_arm_state_t*"}
+  rm_get_joint_degree:
+    doc: 获取关节角度，单位 °
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: joint, type: "float*"}
+  rm_get_arm_all_state:
+    doc: 获取机械臂所有状态
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: state, type: "rm_arm_all_state_t*"}
+  rm_movej:
+    doc: 关节空间运动（阻塞式调用）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: joint, type: "const float*"}
+      - {name: v, type: int}
+      - {name: r, type: int}
+      - {name: trajectory_connect, type: int}
+      - {name: block, type: int}
+  rm_movej_canfd:
+    doc: 角度透传（配置结构体**按值**传递；joint 缓冲须在调用期间存活）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: config, type: rm_movej_canfd_mode_t, by_value: true}
+  rm_set_arm_slow_stop:
+    doc: 缓停
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+  rm_set_arm_stop:
+    doc: 急停
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+  rm_set_arm_pause:
+    doc: 暂停
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+  rm_set_arm_continue:
+    doc: 继续
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+  rm_set_delete_current_trajectory:
+    doc: 删除当前轨迹
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+  rm_get_arm_current_trajectory:
+    doc: 获取当前机械臂规划类型与数据
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: type, type: "rm_arm_current_trajectory_e*"}
+      - {name: data, type: "float*"}
+  rm_set_realtime_push:
+    doc: 设置 UDP 主动上报（配置结构体**按值**传递）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: config, type: rm_realtime_push_config_t, by_value: true}
+  rm_get_realtime_push:
+    doc: 获取 UDP 主动上报配置
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: config, type: "rm_realtime_push_config_t*"}
+  rm_set_self_collision_enable:
+    doc: 设置自碰撞检测使能
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: state, type: bool}

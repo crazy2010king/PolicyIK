@@ -1,0 +1,241 @@
+{
+  "abi_spec_sha256": "3c93a05cf713a69aaf5ff24bcbcd32387767d36e5d1d67377b95a61d30a14b2d",
+  "sdk": {
+    "name": "RM-API2",
+    "version": "1.1.7"
+  },
+  "structs": {
+    "rm_arm_all_state_t": {
+      "fields": {
+        "err": 140,
+        "joint_current": 0,
+        "joint_en_flag": 28,
+        "joint_err_code": 112,
+        "joint_temperature": 56,
+        "joint_voltage": 84
+      },
+      "size": 240
+    },
+    "rm_current_arm_state_t": {
+      "fields": {
+        "err": 68,
+        "joint": 40,
+        "pose": 0
+      },
+      "size": 168
+    },
+    "rm_err_t": {
+      "fields": {
+        "err": 4,
+        "err_len": 0
+      },
+      "size": 100
+    },
+    "rm_euler_t": {
+      "fields": {
+        "rx": 0,
+        "ry": 4,
+        "rz": 8
+      },
+      "size": 12
+    },
+    "rm_force_sensor_t": {
+      "fields": {
+        "coordinate": 48,
+        "force": 0,
+        "zero_force": 24
+      },
+      "size": 52
+    },
+    "rm_joint_status_t": {
+      "fields": {
+        "joint_current": 0,
+        "joint_en_flag": 28,
+        "joint_err_code": 36,
+        "joint_position": 52,
+        "joint_speed": 136,
+        "joint_temperature": 80,
+        "joint_voltage": 108
+      },
+      "size": 164
+    },
+    "rm_movej_canfd_mode_t": {
+      "fields": {
+        "expand": 8,
+        "follow": 12,
+        "joint": 0,
+        "radio": 20,
+        "trajectory_mode": 16
+      },
+      "size": 24
+    },
+    "rm_plus_base_info_t": {
+      "fields": {
+        "angle_low": 152,
+        "angle_up": 128,
+        "bee": 60,
+        "bv": 36,
+        "check": 56,
+        "dof": 52,
+        "force": 64,
+        "force_low": 248,
+        "force_up": 224,
+        "hand": 76,
+        "hv": 16,
+        "id": 48,
+        "manu": 0,
+        "pos_low": 104,
+        "pos_up": 80,
+        "speed_low": 200,
+        "speed_up": 176,
+        "sv": 26,
+        "touch": 65,
+        "touch_num": 68,
+        "touch_sw": 72,
+        "type": 12
+      },
+      "size": 272
+    },
+    "rm_plus_state_info_t": {
+      "fields": {
+        "angle": 100,
+        "current": 124,
+        "dof_err": 28,
+        "dof_state": 4,
+        "force": 532,
+        "normal_force": 148,
+        "pos": 52,
+        "speed": 76,
+        "sys_state": 0,
+        "tangential_force": 220,
+        "tangential_force_dir": 292,
+        "tma": 412,
+        "touch_data": 460,
+        "tsa": 364
+      },
+      "size": 556
+    },
+    "rm_pose_t": {
+      "fields": {
+        "euler": 28,
+        "position": 0,
+        "quaternion": 12
+      },
+      "size": 40
+    },
+    "rm_position_t": {
+      "fields": {
+        "x": 0,
+        "y": 4,
+        "z": 8
+      },
+      "size": 12
+    },
+    "rm_quat_t": {
+      "fields": {
+        "w": 0,
+        "x": 4,
+        "y": 8,
+        "z": 12
+      },
+      "size": 16
+    },
+    "rm_realtime_arm_joint_state_t": {
+      "fields": {
+        "aloha_state": 528,
+        "arm_current_status": 524,
+        "arm_ip": 4,
+        "arm_port": 20,
+        "err": 240,
+        "errCode": 0,
+        "expandState": 400,
+        "force_sensor": 188,
+        "handState": 424,
+        "joint_status": 24,
+        "liftState": 380,
+        "plus_base_info": 540,
+        "plus_state_info": 812,
+        "rm_plus_state": 536,
+        "waypoint": 340
+      },
+      "size": 1368
+    },
+    "rm_realtime_push_config_t": {
+      "fields": {
+        "custom_config": 44,
+        "cycle": 0,
+        "enable": 4,
+        "force_coordinate": 12,
+        "ip": 16,
+        "port": 8
+      },
+      "size": 76
+    },
+    "rm_robot_handle": {
+      "fields": {
+        "id": 0
+      },
+      "size": 4
+    },
+    "rm_robot_info_t": {
+      "fields": {
+        "arm_dof": 0,
+        "arm_model": 4,
+        "force_type": 8,
+        "robot_controller_version": 12
+      },
+      "size": 16
+    },
+    "rm_udp_aloha_state_t": {
+      "fields": {
+        "io1_state": 0,
+        "io2_state": 4
+      },
+      "size": 8
+    },
+    "rm_udp_custom_config_t": {
+      "fields": {
+        "aloha_state": 20,
+        "arm_current_status": 16,
+        "expand_state": 8,
+        "hand_state": 12,
+        "joint_speed": 0,
+        "lift_state": 4,
+        "plus_base": 24,
+        "plus_state": 28
+      },
+      "size": 32
+    },
+    "rm_udp_expand_state_t": {
+      "fields": {
+        "current": 4,
+        "en_flag": 12,
+        "err_flag": 8,
+        "joint_id": 16,
+        "mode": 20,
+        "pos": 0
+      },
+      "size": 24
+    },
+    "rm_udp_hand_state_t": {
+      "fields": {
+        "hand_angle": 24,
+        "hand_err": 96,
+        "hand_force": 48,
+        "hand_pos": 0,
+        "hand_state": 72
+      },
+      "size": 100
+    },
+    "rm_udp_lift_state_t": {
+      "fields": {
+        "current": 8,
+        "en_flag": 16,
+        "err_flag": 12,
+        "height": 0,
+        "pos": 4
+      },
+      "size": 20
+    }
+  }
+}
