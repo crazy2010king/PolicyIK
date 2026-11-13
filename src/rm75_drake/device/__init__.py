@@ -62,6 +62,23 @@ from .sdk import (
     rad_to_deg,
     sdk_available,
 )
+from .hardware_gate import (
+    SKIP_REASON_HARDWARE_UNREACHABLE,
+    UNVERIFIED_HARDWARE_METRICS,
+    HardwareProbe,
+    format_skip,
+    probe_hardware,
+    unverified_lines,
+)
+from .measure_support import (
+    DEFAULT_DEVICE_CONFIG,
+    add_common_arguments,
+    build_safety_limits,
+    measurement_summary,
+    parse_joint_rad,
+    resolve_device_config,
+    run_hold_measurement,
+)
 from .exec_loop import (
     PERIOD_S,
     REASON_COMPLETED,
@@ -343,4 +360,19 @@ __all__ = [
     "STEP_OK",
     "STEP_FAILED",
     "STEP_SKIPPED",
+    # hardware_gate
+    "HardwareProbe",
+    "SKIP_REASON_HARDWARE_UNREACHABLE",
+    "UNVERIFIED_HARDWARE_METRICS",
+    "probe_hardware",
+    "format_skip",
+    "unverified_lines",
+    # measure_support
+    "DEFAULT_DEVICE_CONFIG",
+    "add_common_arguments",
+    "resolve_device_config",
+    "parse_joint_rad",
+    "build_safety_limits",
+    "run_hold_measurement",
+    "measurement_summary",
 ]

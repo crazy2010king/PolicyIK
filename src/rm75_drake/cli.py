@@ -61,6 +61,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import paths
+from .device.hardware_gate import (
+    SKIP_REASON_HARDWARE_UNREACHABLE,
+    UNVERIFIED_HARDWARE_METRICS as _UNVERIFIED_HARDWARE_METRICS,
+    probe_hardware,
+)
 from .gripper import open_action
 from .planning.gcs import DEFAULT_EDGE_STEP_SIZE
 
@@ -89,16 +94,12 @@ DEFAULT_SCENARIO = str(paths.scenarios_dir / "single_arm.yaml")
 DEFAULT_DEVICE_CONFIG = str(paths.devices_dir / "single_arm.yaml")
 
 #: ``exec`` 在「真机不可达」时的**稳定原因标签**（脚本与 CI 按它判定 SKIP）。
-REASON_HARDWARE_UNREACHABLE = "hardware_unreachable"
+#: 真相源 = :mod:`rm75_drake.device.hardware_gate`（CLI 与三个测量脚本共用同一份）。
+REASON_HARDWARE_UNREACHABLE = SKIP_REASON_HARDWARE_UNREACHABLE
 
 #: 真机不可达时**必须如实列出**的未验证指标（绝不假装通过、绝不省略）。
-UNVERIFIED_HARDWARE_METRICS: Tuple[str, ...] = (
-    "5 ms 透传周期抖动（P50/P99/P99.9/max）",
-    "末端跟踪误差（目标 < 3 mm）",
-    "急停响应时间（目标 < 100 ms）",
-    "100 Hz × 30 min 长稳",
-    "四类故障注入的物理验证（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位）",
-)
+#: 真相源同上——禁止在 CLI 里另立第二份清单。
+UNVERIFIED_HARDWARE_METRICS: Tuple[str, ...] = tuple(_UNVERIFIED_HARDWARE_METRICS)
 
 #: bimanual 的归属说明（**必须**出现在输出里，便于人工核对路线图）。
 BIMANUAL_MESSAGE = (
@@ -618,32 +619,14 @@ def _exec_trajectory_from_recording(path: str) -> Any:
 def _probe_hardware(device_config: Any, *, timeout: float) -> Dict[str, Any]:
     """探测真机是否可达（**不抛异常**，返回可解释的结果字典）。
 
+    真相源 = :func:`rm75_drake.device.hardware_gate.probe_hardware`
+    （CLI 与 ``scripts/`` 下的三个测量脚本共用同一份门控实现）。
+
     返回
     ----
     dict：``reachable``（bool）/ ``reason``（稳定标签）/ ``detail``（人类可读原因）。
     """
-    from .device.sdk import sdk_available
-
-    if not sdk_available():
-        return {
-            "reachable": False,
-            "reason": REASON_HARDWARE_UNREACHABLE,
-            "detail": "厂商 SDK 未安装（robotic-arm），无法建立真机链路",
-        }
-    import socket
-
-    host = str(device_config.arm_ip)
-    port = int(device_config.tcp_port)
-    try:
-        with socket.create_connection((host, port), timeout=max(0.05, float(timeout))):
-            pass
-    except OSError as exc:
-        return {
-            "reachable": False,
-            "reason": REASON_HARDWARE_UNREACHABLE,
-            "detail": f"无法连接 TCP 指令通道 {host}:{port}（{type(exc).__name__}）",
-        }
-    return {"reachable": True, "reason": "", "detail": ""}
+    return probe_hardware(device_config, timeout=timeout).to_dict()
 
 
 def _exec_run_driver(

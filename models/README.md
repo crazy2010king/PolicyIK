@@ -311,3 +311,85 @@ bash scripts/ci.sh fast
 | `assets/visual-mesh`（官方 STL → OBJ + 包围盒复测） | **是** | 归档缺失时显式 **SKIP**（不伪装成通过） |
 
 模型本体（URDF）零外部资产依赖，因此碰撞/质量/FK/限位断言**不因上游归档缺失而跳过**。
+
+---
+
+## S04 双臂 URDF 变体：`rm75_drake/{rm75,rmg24}_{left,right}.urdf`（S04-T01 落地）
+
+### 为什么必须是「每臂一份变体」（实测钉死）
+
+Drake 1.51.1 与 1.55.0 的 `Parser.AddModels` 在**同一个 plant** 里对**同一份** URDF
+只允许一个 model instance，第二次调用抛：
+
+```
+RuntimeError: This model already contains a model instance named 'RM75-B'.
+Model instance names must be unique within a given model.
+```
+
+而两档 Drake 的 `AddModels` 都**没有** `simple_name` 参数（签名只有 `file_name` /
+`url` / `file_contents` + `file_type`），**无法在解析时改名**。R005 要求「两臂共享
+同一个 `MultibodyPlant`，臂间碰撞 / 自碰撞 / 相邻体过滤在**同一次碰撞查询**中统一
+判定」，因此唯一可行路线就是**每臂一份重命名 URDF 变体**。
+
+### 变体文件
+
+| 变体 | 源 URDF | `<robot name>` | link | joint | collision |
+|------|---------|----------------|------|-------|-----------|
+| `rm75_left.urdf` | `rm75_drake.urdf` | `RM75-B-left` | 8 | 7 | 8 |
+| `rm75_right.urdf` | `rm75_drake.urdf` | `RM75-B-right` | 8 | 7 | 8 |
+| `rmg24_left.urdf` | `rmg24_drake.urdf` | `RMG24-left` | 4 | 3 | 3 |
+| `rmg24_right.urdf` | `rmg24_drake.urdf` | `RMG24-right` | 4 | 3 | 3 |
+
+### 命名规则（生成器唯一实现：`src/rm75_drake/bimanual/model_variants.py`）
+
+| 对象 | 规则 | 例（rm75 / left） |
+|------|------|-------------------|
+| `<robot name>` | `<基名>-<侧别>` | `RM75-B` → `RM75-B-left` |
+| `<link name>` | `<侧别>_<原名>` | `link_7` → `left_link_7` |
+| `<joint name>` | `<侧别>_<原名>` | `joint_1` → `left_joint_1` |
+| `<collision name>` | `<侧别>_<原名>` | `link_7_collision` → `left_link_7_collision` |
+| `<parent>/<child> @link` | `<侧别>_<原名>` | `base_link` → `left_base_link` |
+| `<drake:disable_collide @link1/@link2>` | `<侧别>_<原名>` | 同上（引用必须同步改名，不能悬空） |
+
+侧别前缀固定为 `left_` / `right_`（**不是** `l_` / `r_`，避免歧义）。
+
+### **不改动**的内容（数值真值，逐字段保持）
+
+* `<inertial>`：质量 / 质心 / 惯量张量；
+* `<limit>`：lower / upper / velocity / effort；
+* `<collision>` 的 `<origin xyz rpy>` 与 `<geometry>`（box 尺寸）；
+* 固定关节（夹爪 `tcp_joint`）的**类型与连接关系**（仅改名）。
+
+### 生成与校验（CI 语义）
+
+```bash
+# 生成四个变体（写入 models/rm75_drake/）
+python3 tools/gen_dual_arm_models.py
+
+# CI 校验：变体缺失或与生成器不一致 → 打印差异，退出码 1
+python3 tools/gen_dual_arm_models.py --check
+```
+
+* 生成器用 **`xml.etree.ElementTree`**（**不是正则**：自闭合标签
+  `<collision .../>` 会被正则打乱，实测报 `XML_ERROR_MISMATCHED_ELEMENT`），
+  并**保留源文件头注释**；
+* 输出**逐字节确定** ⇒ 生成器**幂等**：重跑后与磁盘文件字节级一致，
+  `--check` 退出码 0；
+* `--check` 退出码：**0** = 四个变体与生成器一致；**1** = 缺失或已过期（打印逐个
+  变体的状态：`ok` / `missing` / `stale`）；**2** = 用法 / 环境错误。
+
+### 与「官方 → 改造差异清单」的关系（重要）
+
+**变体是改名，不是新的模型真相源。**
+
+* 模型真值仍然只有 S01 的两份官方改造版 URDF（`rm75_drake.urdf` / `rmg24_drake.urdf`）；
+* 变体由生成器**派生**，`--check` 持续证明「变体 ≡ 源文件改名」，任何手改都会让 CI 变红；
+* 因此上文的「官方 → 改造差异清单」（速度限位、joint_7 限位、box 几何、惯量……）
+  **对四个变体同样成立**，不需要为变体再写一份差异清单。
+
+### 复现本节结论
+
+```bash
+python3 tools/gen_dual_arm_models.py --check
+python3 -m pytest -q tests/test_bimanual_model_variants.py
+```
