@@ -144,6 +144,23 @@ def _validate_common(kind, data):
         issues.append(_err("status_invalid",
                            "status 必须是 %s 之一，实际为 %r" % ("/".join(STATUSES), status),
                            "status"))
+    if status == "blocked":
+        # blocked 必须自证：写明阻塞原因 + 已尝试的门禁动作（禁止空口说被阻塞）
+        blocked = data.get("blocked")
+        if not isinstance(blocked, dict):
+            issues.append(_err("blocked_missing",
+                               "status=blocked 时必须有 blocked 段（reason + attempted_actions）",
+                               "blocked"))
+        else:
+            if _blank(blocked.get("reason")):
+                issues.append(_err("blocked_reason_missing",
+                                   "status=blocked 时 blocked.reason 必须写明阻塞原因",
+                                   "blocked.reason"))
+            actions = blocked.get("attempted_actions")
+            if not isinstance(actions, list) or not actions:
+                issues.append(_err("blocked_actions_missing",
+                                   "status=blocked 时 blocked.attempted_actions 必须列出"
+                                   "已尝试的门禁动作（至少一条）", "blocked.attempted_actions"))
     if "captured_at" not in data:
         issues.append(_err("captured_at_missing", "缺少 captured_at 字段（未实测写 null）",
                            "captured_at"))
@@ -521,6 +538,10 @@ def validate_baseline(kind, data, ws=None, previous=None):
         issues.append(_issue("info", "pending",
                              "%s 尚未实测（status=pending），实测回填后需把 status 改为 measured "
                              "并补齐 source/method/samples" % kind))
+    elif data.get("status") == "blocked":
+        blocked = data.get("blocked") or {}
+        issues.append(_issue("info", "blocked",
+                             "%s 被阻塞（status=blocked）：%s" % (kind, blocked.get("reason") or "")))
     return issues
 
 

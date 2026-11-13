@@ -87,8 +87,25 @@ def test_check_pending_does_not_block(capsys, repo_root):
     """pending 态合法：不阻塞（退出码 0），但必须显式提示未实测。"""
     code, out = _run(capsys, ["--ws", repo_root, "baseline", "check"])
     assert code == 0, out
-    assert "PENDING" in out
-    assert "未实测" in out
+    assert "BLOCKED" in out
+    assert "阻塞" in out
+
+
+def test_check_blocked_does_not_block(capsys, repo_root):
+    """blocked 态（真机窗口不可用）合法：退出码 0，且必须打印阻塞原因。"""
+    code, out = _run(capsys, ["--ws", repo_root, "baseline", "check"])
+    assert code == 0, out
+    assert "基线被阻塞" in out
+    for kind in bl.KINDS:
+        assert kind in out
+
+
+def test_check_blocked_reports_reason(capsys, repo_root):
+    """blocked 条目必须在输出里带出阻塞原因（可见性，不是静默）。"""
+    code, out = _run(capsys, ["--ws", repo_root, "baseline", "check"])
+    assert code == 0, out
+    assert "原因=" in out
+    assert "192.168.1.18" in out
 
 
 # ---------------------------------------------------------------- list / show
@@ -179,6 +196,14 @@ def test_doctor_limits_measured_is_info_not_blocking(capsys, repo_root):
     line = [ln for ln in out.splitlines() if "limits:measured" in ln]
     assert line, out
     assert "[INFO]" in line[0] or "[PASS]" in line[0]
+
+
+def test_doctor_limits_measured_reports_blocked_status(capsys, repo_root):
+    """基线为 blocked 时，doctor 必须如实显示 status=blocked。"""
+    code, out = _run(capsys, ["--ws", repo_root, "doctor"])
+    line = [ln for ln in out.splitlines() if "limits:measured" in ln]
+    assert line, out
+    assert "status=blocked" in line[0]
 
 
 def test_doctor_check_count_increased_by_two(capsys, repo_root):

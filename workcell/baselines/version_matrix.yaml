@@ -6,15 +6,30 @@
 #   - status=measured 表示该矩阵已冻结（每一条都非 null）。
 kind: version_matrix
 schema_version: 1
-version: 1                  # 基线修订号（单调递增）
-status: pending
+version: 2                  # 基线修订号（单调递增）
+status: blocked
 captured_at: null
+blocked:
+  reason: >-
+    控制器固件与示教器版本只能在真机窗口现场读取（示教器界面 / 控制器查询），本次窗口不可用
+    （192.168.1.18 与 192.168.1.19 均 ping 100% 丢包、TCP 8080 超时），故这两个条目仍为 null，
+    整张矩阵**未冻结**（status 保持 blocked，不得声称已冻结）。工具链侧与 SDK 版本已在本机核实并回填。
+  attempted_actions:
+    - "本机实测：rm_api_version() 返回 b'1.1.7'（RM-API2 1.1.7 到位，.deps/rm_api2/libapi_c.so，sha256 396913cc1a839e948ca58e02525f9098e86026e5b0f62d2561acc3de53105aac）"
+    - "本机实测：import tesseract_robotics → __version__ = 0.35.0.8"
+    - "本机实测：python3 -V = 3.10.12；/etc/os-release = Ubuntu 22.04.4 LTS；uname -r = 5.15.0-139-generic x86_64"
+    - "本机实测：.deps/libstdcxx/libstdc++.so.6.0.33 导出最高 GLIBCXX_3.4.33（满足 nanobind 0.35 需要的 3.4.31+）"
+    - "上游复核：/tmp/rmrepo（ros2_rm_robot humble 分支）git describe = humble1.7.1"
+    - "门禁3 网络连通：ping 192.168.1.18 / 192.168.1.19 均 100% 丢包 → 无法读取控制器固件与示教器版本"
+  next_action: >-
+    真机窗口内读取控制器固件版本（示教器"系统信息"或 rm_get_arm_software_info）与示教器版本，
+    回填本文件并把 status 改为 measured（届时全部 9 个条目都必须非 null）
 controller_firmware: null        # 控制器固件版本（真机读数）
 teachpendant: null               # 示教器版本
-rm_api2_sdk: null                # RM-API2 SDK 版本（计划 1.1.7，需 nm -D 复核白名单符号）
-ros2_rm_robot_tag: null          # ros2_rm_robot 源码 tag
-tesseract_robotics_nanobind: "0.35.0.8"   # 仓库 pyproject.toml 锁定值
-libstdcxx: null                  # 需 GLIBCXX_3.4.31+（conda-forge libstdcxx-ng）
-python: null                     # 运行 Python 版本
-os: null                         # 宿主 OS
-container_image: null            # 容器镜像标签（如 ros_dev:ubuntu22.04）
+rm_api2_sdk: "1.1.7"             # RM-API2 SDK 版本（本机实测：rm_api_version() → b'1.1.7'）
+ros2_rm_robot_tag: "humble1.7.1" # ros2_rm_robot 源码 tag（本机复核 /tmp/rmrepo git describe）
+tesseract_robotics_nanobind: "0.35.0.8"   # 仓库 pyproject.toml 锁定值（本机 import 实测一致）
+libstdcxx: "GLIBCXX_3.4.33 (conda-forge libstdcxx-ng, .deps/libstdcxx/libstdc++.so.6.0.33)"
+python: "3.10.12"                # 运行 Python 版本
+os: "Ubuntu 22.04.4 LTS (Linux 5.15.0-139-generic x86_64)"
+container_image: null            # 容器镜像标签（如 ros_dev:ubuntu22.04；本次窗口未取得，机器内无 docker CLI）

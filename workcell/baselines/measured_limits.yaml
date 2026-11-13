@@ -7,10 +7,28 @@
 #   - 重复性 ≠ 绝对精度：官方只标重复定位 ±0.05 mm，不标绝对精度。
 kind: measured_limits
 schema_version: 1
-version: 1                  # 基线修订号（单调递增）
-status: pending            # pending / measured / blocked
+version: 2                  # 基线修订号（单调递增）
+status: blocked            # pending / measured / blocked
 captured_at: null
 arm: left
+blocked:
+  reason: >-
+    真机窗口不可用，acc / jerk 上限与 TCP 重复性均无法实测：机械臂 IP 192.168.1.18 /
+    192.168.1.19 不可达（ping 100% 丢包、TCP 8080 连接超时），SDK 调用
+    rm_get_joint_degree / rm_movej 返回码 -1（未连接到控制器）。本基线**没有任何实测数值**，
+    joint_limits.yaml 中的 acceleration=5.2359 / jerk=30.0 仍是保守占位值，未被改写。
+  attempted_actions:
+    - "门禁1 SDK 到位：RM-API2 1.1.7 已就位（.deps/rm_api2/libapi_c.so，rm_api_version() 返回 b'1.1.7'）"
+    - "门禁2 nm -D 复核：11 个白名单符号全部导出"
+    - "门禁3 网络连通：ping 192.168.1.18 / 192.168.1.19 均 100% 丢包；TCP 8080 连接超时"
+    - "门禁4 UDP 端口：ss -ulnp 未见 8091/8092 占用（本机侧无冲突，非阻塞原因）"
+    - "真机路径实跑：ladder_acc_jerk status=error（rm_get_joint_degree 返回码 -1）、tcp_repeatability status=error（rm_movej 报'机械臂已断开'）"
+    - "回填工具红线复核：apply_measured_limits.py --dry-run 因 baseline_not_measured 拒绝回填（退出码 3），joint_limits.yaml 未被改写"
+  next_action: >-
+    取得真机窗口后执行 python3 -m rmctl.hwcollect ladder_acc_jerk --arm left --trials 3
+    （固定姿态逐关节阶梯速度，多次采样取包络）与 python3 -m rmctl.hwcollect tcp_repeatability
+    --arm left --repeats 30 --target <7 个关节角(度)>；回填本文件（source/method/samples 齐备）、
+    status 改 measured，再用 apply_measured_limits.py（conservative 模式）回填 joint_limits.yaml
 udp_period_ms: 5            # 实时上报周期（5 ms 的倍数；实测取样与限值反推共用该周期）
 joints:
   - name: joint1

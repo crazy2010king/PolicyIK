@@ -183,7 +183,7 @@ def _baseline_report(ws):
 def _baseline_kind_rows(report):
     """把 validate_all 报告拆成逐 kind 的 (kind, level, detail) 行。
 
-    level: OK（齐备）/ PENDING（未实测，不阻塞）/ FAIL（阻塞项）。
+    level: OK（齐备）/ PENDING（未实测，不阻塞）/ BLOCKED（被阻塞，不阻塞）/ FAIL（阻塞项）。
     """
     rows = []
     for kind in bl.KINDS:
@@ -198,6 +198,8 @@ def _baseline_kind_rows(report):
             level = "FAIL"
         elif warns:
             level = "WARN"
+        elif entry.get("status") == "blocked":
+            level = "BLOCKED"
         elif infos:
             level = "PENDING"
         else:
@@ -208,6 +210,14 @@ def _baseline_kind_rows(report):
         else:
             detail.append("version=%s" % entry.get("version"))
             detail.append("status=%s" % (entry.get("status") or "?"))
+            if entry.get("status") == "blocked":
+                reason = ""
+                for issue in issues:
+                    if issue["code"] == "blocked":
+                        reason = issue["message"].split("：", 1)[-1]
+                        break
+                if reason:
+                    detail.append("原因=%s" % reason)
         if errors:
             detail.append("%d 项错误" % len(errors))
         elif warns:
@@ -307,10 +317,15 @@ def cmd_baseline_check(args):
         print("→ 修复: python3 -m rmctl baseline scaffold   # 生成 status=pending 占位基线")
         return 3
     pending = [k for k, lv, _, _ in rows if lv == "PENDING"]
+    blocked = [k for k, lv, _, _ in rows if lv == "BLOCKED"]
+    if blocked:
+        print("基线被阻塞（status=blocked，已附阻塞原因与已尝试动作）: %s" % ", ".join(blocked))
+        print("→ 这些条目**没有**任何实测数值；真机窗口可用后按 "
+              "docs/code_doc/真机基线与实测限值归档说明.md 重新执行并回填")
     if pending:
         print("基线结构齐备，未实测: %s（不阻塞；实测回填后 status 改为 measured）"
               % ", ".join(pending))
-    else:
+    if not pending and not blocked:
         print("基线齐备且均已实测。")
     return 0
 

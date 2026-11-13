@@ -251,6 +251,85 @@ def test_zero_capture_does_not_fabricate_zero_deg():
     assert res["params"]["photos"] == ["photos/j1.jpg"]
 
 
+# ---------------------------------------------------------------- 诚实判定（不得假 ok）
+class _FakeState(object):
+    """假的 rm_arm_current_state_t（仅测试用）。"""
+
+    def __init__(self):
+        self.arm_state = 0
+        self.arm_err = 0
+        self.sys_err = 0
+        self.tcp_pose = [0.0] * 6
+
+
+class _FakeLib(object):
+    """假 SDK：只实现本测试用到的白名单调用。"""
+
+    def __init__(self, push_ret=0, stop_ret=0, state_ret=0):
+        self.push_ret = push_ret
+        self.stop_ret = stop_ret
+        self.state_ret = state_ret
+
+    def rm_set_realtime_push(self, ip, port, push):
+        return self.push_ret
+
+    def rm_set_arm_slow_stop(self, ip):
+        return self.stop_ret
+
+    def rm_set_arm_stop(self, ip):
+        return self.stop_ret
+
+    def rm_get_current_arm_state(self, ip, out):
+        return self.state_ret
+
+
+def _fake_sdk(monkeypatch, lib):
+    monkeypatch.setattr(hwcollect, "load_sdk", lambda *a, **k: (lib, "/fake/libapi_c.so"))
+
+
+def test_udp_verdict_rejects_zero_frames():
+    """0 帧 → 不能报 ok（否则会把“没采到”写成“采到了”）。"""
+    v = hwcollect._udp_verdict(0, push_ret=-1)
+    assert v["ok"] is False
+    assert "frames=0" in v["reason"]
+    assert v["next_action"]
+
+
+def test_udp_verdict_accepts_frames():
+    v = hwcollect._udp_verdict(1000, push_ret=0)
+    assert v["ok"] is True
+    assert v["reason"] is None
+
+
+def test_estop_verdict_rejects_nonzero_return_code():
+    """急停演练返回码非 0 → 演练未真正发生，不能报 ok。"""
+    v = hwcollect._estop_verdict(-1, -1, 0)
+    assert v["ok"] is False
+    assert "rm_set_arm_stop" in v["reason"]
+    v2 = hwcollect._estop_verdict(0, 0, 0)
+    assert v2["ok"] is True
+
+
+def test_udp_stability_reports_error_when_no_frame_arrives(monkeypatch):
+    """真机路径收不到帧 → status=error（不是 ok），并给出可粘贴的下一步。"""
+    _fake_sdk(monkeypatch, _FakeLib(push_ret=-1))
+    res = hwcollect.udp_stability(arm="left", ip="192.168.1.18", duration_s=1, port=8099)
+    assert res["status"] == hwcollect.STATUS_ERROR
+    assert res["summary"]["frames"] == 0
+    assert res["reason"]
+    assert res["next_action"]
+    assert any(e.get("kind") == "error" for e in res["evidence"])
+
+
+def test_estop_drill_reports_error_when_sdk_returns_nonzero(monkeypatch):
+    """急停演练 SDK 返回码非 0 → status=error，drill_performed=False。"""
+    _fake_sdk(monkeypatch, _FakeLib(stop_ret=-1, state_ret=0))
+    res = hwcollect.estop_drill(arm="left", ip="192.168.1.18")
+    assert res["status"] == hwcollect.STATUS_ERROR
+    assert res["summary"]["drill_performed"] is False
+    assert res["reason"]
+
+
 # ---------------------------------------------------------------- CLI
 def test_cli_dry_run_exits_zero_and_writes_file(tmp_path):
     """CLI：dry-run 退出码 0 并落盘。"""

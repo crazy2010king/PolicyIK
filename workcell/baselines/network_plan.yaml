@@ -5,9 +5,25 @@
 #   - 同一 ip:port 只能被一个客户端占用；上一个进程未退干净会静默失败（采集前先确认端口空闲）。
 kind: network_plan
 schema_version: 1
-version: 1                  # 基线修订号（单调递增）
-status: pending
+version: 2                  # 基线修订号（单调递增）
+status: blocked
 captured_at: null
+blocked:
+  reason: >-
+    端口规划值来自官方 RX75 左右臂配置（设计 §5.1），本机侧端口 8091/8092 无占用，但**实连确认**
+    未完成：ping 192.168.1.18 与 192.168.1.19 均 100% 丢包，TCP 8080 连接超时，SDK 侧
+    rm_set_realtime_push 报 "invaild ip"、rm_get_robot_info 报 "handle is NULL"。
+    因此本表**未实测确认**，status 保持 blocked，不得声称连通性已验证。
+  attempted_actions:
+    - "本机端口占用核查：ss -ulnp | grep -E '8091|8092' 无输出（本机侧无冲突）"
+    - "网络连通：ping -c 2 192.168.1.18 → 100% packet loss；ping -c 2 192.168.1.19 → 100% packet loss"
+    - "TCP 连通：/dev/tcp/192.168.1.18/8080 连接超时（5 s 超时，退出码 124）"
+    - "远程主机复核：ssh 172.16.119.199:2224 → REMOTE_OK，但同一网段内 ping 192.168.1.18 同样 100% 丢包"
+    - "真机路径实跑：udp_stability status=error（frames=0，set_realtime_push 失败）、tcp_repeatability status=error（rm_movej 报'机械臂已断开'）"
+  next_action: >-
+    真机窗口内依次执行 ping 192.168.1.18、TCP 8080 连通性检查、ss -ulnp | grep 8091，
+    再跑 python3 -m rmctl.hwcollect udp_stability --arm left --duration-s 600；
+    收到非零帧数且周期落在 5 ms 倍数上后，把 status 改为 measured 并填 captured_at
 arms:
   left:
     ip: "192.168.1.18"
@@ -28,3 +44,4 @@ constraints:
 notes:
   - "UDP 8092 为第二臂预留；单臂窗口不得占用"
   - "端口占用/单客户端约束导致静默失败，采集前用 ss -ulnp 确认端口空闲"
+  - "本次窗口结论：规划值来自官方配置（未经实连验证），status=blocked"

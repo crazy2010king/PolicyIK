@@ -38,18 +38,30 @@ def test_repo_baselines_pass_validation(repo_root):
         assert report["kinds"][kind]["status"] in bl.STATUSES
 
 
-def test_pending_state_is_informational_not_blocking(repo_root):
-    report = bl.validate_all(ws=repo_root)
+def test_pending_state_is_informational_not_blocking(tmp_workspace):
+    """pending 态合法：不阻塞（error_count=0），但必须显式提示未实测。"""
+    for name in sorted(os.listdir(os.path.join(tmp_workspace, "workcell", "baselines"))):
+        if not name.endswith(".yaml"):
+            continue
+        path = os.path.join(tmp_workspace, "workcell", "baselines", name)
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        data["status"] = "pending"
+        data.pop("blocked", None)
+        with open(path, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
+    report = bl.validate_all(ws=tmp_workspace)
     infos = [i for i in report["issues"] if i["code"] == "pending"]
-    assert infos, "pending 基线应带 info 级提示"
+    assert len(infos) == len(KINDS), infos
     assert all(i["level"] == "info" for i in infos)
+    assert report["error_count"] == 0, bl.format_issues(report["issues"])
 
 
 def test_repo_baselines_are_unmeasured_honest(repo_root):
     """未实测项必须是 null（禁止占位数值）。"""
     for kind in KINDS:
         data = bl.load_baseline(kind, repo_root)
-        assert data["status"] == "pending", kind
+        assert data["status"] in ("pending", "blocked"), kind
         if kind == "measured_limits":
             for j in data["joints"]:
                 assert j["acceleration"]["value"] is None
@@ -58,6 +70,30 @@ def test_repo_baselines_are_unmeasured_honest(repo_root):
         if kind == "zero_baseline":
             for j in data["joints"]:
                 assert j["zero_deg"] is None
+
+
+def test_repo_baselines_are_either_measured_or_blocked(repo_root):
+    """S01-T7 的 Done-when：不允许出现 pending 却宣称已完成的中间态。
+
+    四份基线必须是 measured（附证据）或 blocked（附阻塞原因）二者之一。
+    """
+    for kind in KINDS:
+        data = bl.load_baseline(kind, repo_root)
+        assert data["status"] in ("measured", "blocked"), \
+            "%s status=%r 属于中间态" % (kind, data["status"])
+        if data["status"] == "blocked":
+            assert data.get("blocked"), kind
+            assert data["blocked"].get("reason"), kind
+            assert data["blocked"].get("attempted_actions"), kind
+
+
+def test_blocked_baselines_carry_info_issue(repo_root):
+    """blocked 态必须带 info 级说明（不阻塞，但要看得见）。"""
+    report = bl.validate_all(ws=repo_root)
+    infos = [i for i in report["issues"] if i["code"] == "blocked"]
+    assert infos, "blocked 基线应带 info 级提示"
+    assert all(i["level"] == "info" for i in infos)
+    assert report["error_count"] == 0, bl.format_issues(report["issues"])
 
 
 def test_baselines_dir_matches_workcell_layout(repo_root):
@@ -451,7 +487,68 @@ def test_version_matrix_measured_requires_all_entries():
 def test_version_matrix_repo_entry_is_pinned():
     data = bl.load_baseline("version_matrix", paths.workspace_root())
     assert data["tesseract_robotics_nanobind"] == "0.35.0.8"
-    assert data["rm_api2_sdk"] is None  # SDK 未到位，不得编造版本号
+    # RM-API2 版本由 rm_api_version() 实测得来（非编造）；控制器固件/示教器仍 null
+    assert data["rm_api2_sdk"] == "1.1.7"
+    assert data["controller_firmware"] is None
+    assert data["teachpendant"] is None
+    assert data["container_image"] is None
+
+
+# ------------------------------------------------------------------ blocked 语义
+def test_blocked_requires_reason_and_attempted_actions():
+    """blocked 态必须自证：缺 reason 或 attempted_actions 都要报错。"""
+    data = _minimal("measured_limits")
+    data["status"] = "blocked"
+    codes = [i["code"] for i in bl.validate_baseline("measured_limits", data)
+             if i["level"] == "error"]
+    assert "blocked_missing" in codes
+
+    data["blocked"] = {"reason": None, "attempted_actions": []}
+    codes = [i["code"] for i in bl.validate_baseline("measured_limits", data)
+             if i["level"] == "error"]
+    assert "blocked_reason_missing" in codes
+    assert "blocked_actions_missing" in codes
+
+
+def test_blocked_with_reason_and_actions_passes():
+    data = _minimal("measured_limits")
+    data["status"] = "blocked"
+    data["blocked"] = {"reason": "臂不可达", "attempted_actions": ["ping 失败"]}
+    codes = [i["code"] for i in bl.validate_baseline("measured_limits", data)
+             if i["level"] == "error"]
+    assert codes == [], codes
+
+
+def test_blocked_status_emits_info_issue():
+    data = _minimal("measured_limits")
+    data["status"] = "blocked"
+    data["blocked"] = {"reason": "臂不可达", "attempted_actions": ["ping 失败"]}
+    issues = bl.validate_baseline("measured_limits", data)
+    infos = [i for i in issues if i["code"] == "blocked"]
+    assert len(infos) == 1
+    assert infos[0]["level"] == "info"
+    assert "臂不可达" in infos[0]["message"]
+
+
+def test_repo_blocked_baselines_have_no_fabricated_values(repo_root):
+    """blocked 基线不得夹带任何实测数值（禁止用占位值掩盖阻塞）。"""
+    for kind in KINDS:
+        data = bl.load_baseline(kind, repo_root)
+        if data["status"] != "blocked":
+            continue
+        assert data["captured_at"] is None, kind
+        if kind == "measured_limits":
+            for j in data["joints"]:
+                assert j["acceleration"]["value"] is None
+                assert j["jerk"]["value"] is None
+                assert j["acceleration"]["source"] is None
+                assert j["jerk"]["source"] is None
+            assert data["tcp_repeatability"]["value_mm"] is None
+        if kind == "zero_baseline":
+            for j in data["joints"]:
+                assert j["zero_deg"] is None
+            assert data["fk_recheck"]["max_pos_dev_mm"] is None
+            assert data["fk_recheck"]["max_ori_dev_deg"] is None
 
 
 # ------------------------------------------------------------------ 汇总报告

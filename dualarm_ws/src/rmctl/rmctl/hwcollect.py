@@ -392,6 +392,38 @@ class UdpAggregator(object):
         }
 
 
+def _udp_verdict(frames, push_ret=None):
+    """UDP 采集的诚实判定：**一帧都没收到就不能报 ok**。
+
+    臂不可达 / 未开三线程模式 / 同一 ip:port 被别的客户端占用时，
+    SDK 不会抛异常、只能返回 0 帧——若照直报 ok 会把"没采到"写成"采到了"。
+    """
+    if frames <= 0:
+        return {
+            "ok": False,
+            "reason": "未收到任何 UDP 上报帧（frames=0）：控制器不可达、未开三线程模式"
+                      "（RM_TRIPLE_MODE_E），或同一 ip:port 已被其它客户端占用",
+            "next_action": "确认 ping <ip> 通、rm_init(RM_TRIPLE_MODE_E) 已开、"
+                           "ss -lun | grep <port> 端口未被占用后重试",
+            "push_ret": push_ret,
+        }
+    return {"ok": True, "reason": None, "next_action": None, "push_ret": push_ret}
+
+
+def _estop_verdict(soft_ret, stop_ret, state_ret=None):
+    """急停演练的诚实判定：SDK 返回码非 0 一律报 error（演练未真正发生）。"""
+    if soft_ret != 0 or stop_ret != 0 or (state_ret is not None and state_ret != 0):
+        return {
+            "ok": False,
+            "reason": "急停演练未真正执行：rm_set_arm_slow_stop=%r, rm_set_arm_stop=%r, "
+                      "rm_get_current_arm_state=%r（返回码非 0 通常表示未连接到控制器）"
+                      % (soft_ret, stop_ret, state_ret),
+            "next_action": "确认控制器已上电使能且网络可达后重做演练；"
+                           "急停后需示教器清错并重新使能（项目不自动清错）",
+        }
+    return {"ok": True, "reason": None, "next_action": None}
+
+
 def _synthetic_udp_frames(duration_s, period_ms, dropouts=2, seed=7):
     """生成合成上报帧（惰性生成，不一次性堆内存）。"""
     rng = np.random.default_rng(seed)
@@ -445,13 +477,15 @@ def udp_stability(arm="left", duration_s=UDP_DEFAULT_DURATION_S,
     agg = UdpAggregator(period_ms=period_ms)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    push_ret = None
+    push_error = None
     try:
         sock.bind(("0.0.0.0", int(port)))
         sock.settimeout(1.0)
         try:
-            sdkw.set_realtime_push(host, port, True)
+            push_ret = sdkw.set_realtime_push(host, port, True)
         except Exception as exc:                       # noqa: BLE001 —— 记证据不崩
-            agg.sampled.append({"kind": "warn", "detail": "set_realtime_push 失败: %r" % exc})
+            push_error = repr(exc)
         deadline = time.monotonic() + float(duration_s)
         while time.monotonic() < deadline:
             try:
@@ -463,11 +497,22 @@ def udp_stability(arm="left", duration_s=UDP_DEFAULT_DURATION_S,
         sock.close()
     summary = agg.summary(duration_s)
     summary["host"] = host
+    summary["set_realtime_push_ret"] = push_ret
     summary["note"] = "真机采样；只保留聚合统计与抽样帧"
+    verdict = _udp_verdict(agg.frames, push_ret)
+    evidence = [{"kind": "sdk", "path": path, "missing_symbols": sdkw.missing_symbols},
+                {"kind": "udp", "frames": agg.frames, "push_ret": push_ret}]
+    if push_error:
+        evidence.append({"kind": "error", "detail": "set_realtime_push 异常: %s" % push_error})
+    if not verdict["ok"]:
+        evidence.append({"kind": "error", "detail": verdict["reason"],
+                         "next_action": verdict["next_action"]})
+        return _result("udp_stability", arm, "hardware", STATUS_ERROR, params,
+                        agg.sampled, summary, evidence, started,
+                        extra={"reason": verdict["reason"],
+                               "next_action": verdict["next_action"]})
     return _result("udp_stability", arm, "hardware", STATUS_OK, params,
-                    agg.sampled, summary,
-                    [{"kind": "sdk", "path": path, "missing_symbols": sdkw.missing_symbols},
-                     {"kind": "udp", "frames": agg.frames}], started)
+                    agg.sampled, summary, evidence, started)
 
 
 # ------------------------------------------------------------------ 阶梯 acc/jerk
@@ -802,20 +847,34 @@ def estop_drill(arm="left", ip=None, dry_run=False, ws=None, sdk=None):
     try:
         ret_slow = sdkw.set_arm_slow_stop(host)
         ret_state, state = sdkw.get_current_arm_state(host)
-        summary["soft_stop"] = {"ret": ret_slow, "arm_err": int(state.arm_err),
+        summary["soft_stop"] = {"ret": ret_slow, "state_ret": ret_state,
+                                "arm_err": int(state.arm_err),
                                 "sys_err": int(state.sys_err),
                                 "arm_state": int(state.arm_state)}
         ret_stop = sdkw.set_arm_stop(host)
-        ret_state, state = sdkw.get_current_arm_state(host)
-        summary["emergency_stop"] = {"ret": ret_stop, "arm_err": int(state.arm_err),
-                                     "sys_err": int(state.sys_err),
-                                     "arm_state": int(state.arm_state)}
+        ret_state2, state2 = sdkw.get_current_arm_state(host)
+        summary["emergency_stop"] = {"ret": ret_stop, "state_ret": ret_state2,
+                                     "arm_err": int(state2.arm_err),
+                                     "sys_err": int(state2.sys_err),
+                                     "arm_state": int(state2.arm_state)}
     except Exception as exc:                       # noqa: BLE001 —— 真机异常也结构化
         summary["error"] = repr(exc)
         return _result("estop_drill", arm, "hardware", STATUS_ERROR, params, [],
                         summary, [{"kind": "error", "detail": repr(exc)}], started)
     summary["recovery"] = ESTOP_RECOVERY
     summary["safety_checklist"] = list(ESTOP_SAFETY_CHECKLIST)
+    verdict = _estop_verdict(ret_slow, ret_stop, ret_state2)
+    if not verdict["ok"]:
+        summary["drill_performed"] = False
+        return _result("estop_drill", arm, "hardware", STATUS_ERROR, params, [],
+                        summary,
+                        [{"kind": "sdk", "path": path},
+                         {"kind": "error", "detail": verdict["reason"],
+                          "next_action": verdict["next_action"]}],
+                        started,
+                        extra={"reason": verdict["reason"],
+                               "next_action": verdict["next_action"]})
+    summary["drill_performed"] = True
     return _result("estop_drill", arm, "hardware", STATUS_OK, params, [],
                     summary, [{"kind": "sdk", "path": path}], started)
 
