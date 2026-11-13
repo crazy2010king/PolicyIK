@@ -36,6 +36,9 @@ E 收尾       末点保持发送若干拍 → 跟随误差 RMS/峰值 → 限�
 from __future__ import annotations
 
 import math
+import queue
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -47,9 +50,14 @@ from rm_executor import resample
 from rm_executor.clock import Clock, ManualClock, TickClock
 
 __all__ = [
+    "ControllerWatchdog",
     "DEFAULT_ARRIVAL_TIMEOUT_S",
     "DEFAULT_POLL_PERIOD_S",
     "DEFAULT_PRE_POSITION_TIMEOUT_S",
+    "DEFAULT_WATCHDOG_INTERVAL_TICKS",
+    "DEFAULT_WATCHDOG_PERIOD_S",
+    "DEFAULT_WATCHDOG_WAIT_TIMEOUT_S",
+    "EXPECTED_TRAJECTORY_TYPE",
     "Executor",
     "ExecutorConfig",
 ]
@@ -62,6 +70,18 @@ DEFAULT_PRE_POSITION_TIMEOUT_S = 30.0
 
 #: 到位等待上限（秒）—— 超时 → blocked
 DEFAULT_ARRIVAL_TIMEOUT_S = 2.0
+
+#: 控制器「无规划」轨迹类型名（抢轨迹判据的唯一期望值）
+EXPECTED_TRAJECTORY_TYPE = "RM_NO_PLANNING_E"
+
+#: 控制器看门狗自检周期（秒）—— 落在 10–20 ms 区间（计划 §5.7）
+DEFAULT_WATCHDOG_PERIOD_S = 0.015
+
+#: 每多少个 tick 触发一次看门狗检查（2 × 10 ms = 20 ms）
+DEFAULT_WATCHDOG_INTERVAL_TICKS = 2
+
+#: fake 模式下等待看门狗完成一次检查的上限（秒）
+DEFAULT_WATCHDOG_WAIT_TIMEOUT_S = 2.0
 
 
 class _BridgeUnavailable(RuntimeError):
@@ -103,6 +123,187 @@ class ExecutorConfig:
         }
 
 
+class ControllerWatchdog:
+    """控制器抢轨迹看门狗——**独立线程**（绝不进 tick 线程）。
+
+    为什么必须在别的线程：``transport.current_trajectory_type()`` 在真机上
+    是一次 SDK/TCP 往返，放进 tick 线程会把往返延迟直接打进 10 ms 栅格的
+    抖动里（p99 < 2 ms 的红线当场破掉）。因此本类把查询整体搬到一个
+    后台线程，tick 线程**只读一个 Event 标志位**。
+
+    线程模型：
+
+    * 后台线程按 ``period_s``（10–20 ms）自转查询；
+    * tick 线程可以「请求一次检查」（:meth:`request_check`），但 live 模式下
+      **只置事件、不等待**（绝不在 tick 线程里等 SDK 往返）；
+    * fake 模式允许等待（:meth:`wait_check`）——换取**确定性重放**，等待
+      发生在离线假传输上，不产生真机延迟。
+
+    判据：``type_name`` 不是 :data:`EXPECTED_TRAJECTORY_TYPE`
+    → 判为「控制器抢轨迹」→ :attr:`conflict` 置位 + 回调（立即停机）。
+    """
+
+    def __init__(self,
+                 transport: Any,
+                 expected_type_name: str = EXPECTED_TRAJECTORY_TYPE,
+                 period_s: float = DEFAULT_WATCHDOG_PERIOD_S,
+                 on_conflict: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+                 on_query_failed: Optional[Callable[[str, List[str]], None]] = None,
+                 on_unknown: Optional[Callable[[Dict[str, Any]], None]] = None,
+                 max_checks: int = 4096,
+                 ) -> None:
+        self.transport = transport
+        self.expected_type_name = str(expected_type_name)
+        self.period_s = float(period_s)
+        self.on_conflict = on_conflict
+        self.on_query_failed = on_query_failed
+        self.on_unknown = on_unknown
+
+        #: 每次检查的记录（线程名 / 观测到的类型 / 查询状态）——可事后审计
+        #: （**有上限**：长跑不无界增长；总数记在 :attr:`total_checks`）
+        self.checks: List[Dict[str, Any]] = []
+        self.max_checks = max(1, int(max_checks))
+        self.total_checks = 0
+        #: 抢轨迹已确认（线程安全标志位，tick 线程只读）
+        self.conflict = threading.Event()
+        self.last_error = ""
+
+        self._stop = threading.Event()
+        self._trigger = threading.Event()
+        self._lock = threading.Lock()
+        self._check_count = 0
+        self._thread: Optional[threading.Thread] = None
+
+    # -- 线程生命周期 -----------------------------------------------------
+    def start(self) -> None:
+        """启动后台看门狗线程（幂等）。"""
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        thread = threading.Thread(
+            target=self._loop, name="rm-controller-watchdog", daemon=True
+        )
+        self._thread = thread
+        thread.start()
+
+    def stop(self, timeout: float = 1.0) -> None:
+        """停止后台线程（幂等；阻塞等待退出，最长 ``timeout`` 秒）。"""
+        self._stop.set()
+        self._trigger.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+        self._thread = None
+
+    @property
+    def running(self) -> bool:
+        """后台线程是否在跑。"""
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def check_count(self) -> int:
+        """已完成的检查次数（含已被上限淘汰的记录）。"""
+        return self.total_checks
+
+    def request_check(self) -> None:
+        """请求一次检查（**不等**）——tick 线程唯一允许做的动作。"""
+        self._trigger.set()
+
+    def wait_check(self, target_count: int, timeout: float = DEFAULT_WATCHDOG_WAIT_TIMEOUT_S
+                   ) -> bool:
+        """等待检查次数达到 ``target_count``；超时返回 ``False``。
+
+        只在 **fake 模式**（离线确定性重放）使用；live 模式禁止在 tick
+        线程里等待。
+        """
+        deadline = time.monotonic() + float(timeout)
+        while self._check_count < int(target_count):
+            if self._stop.is_set():
+                return self._check_count >= int(target_count)
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.0005)
+        return True
+
+    # -- 检查逻辑 ---------------------------------------------------------
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            self._trigger.wait(timeout=self.period_s)
+            self._trigger.clear()
+            if self._stop.is_set():
+                break
+            try:
+                self.check()
+            except Exception as exc:  # noqa: BLE001 - 看门狗线程绝不能死
+                self.last_error = "看门狗内部异常（%s）: %s" % (type(exc).__name__, exc)
+
+    def check(self) -> Optional[str]:
+        """执行一次查询；返回观测到的轨迹类型名（无 → ``None``）。
+
+        线程安全：所有对 :attr:`checks` 的写入都在锁内。
+        """
+        thread_name = threading.current_thread().name
+        try:
+            result = self.transport.current_trajectory_type()
+        except Exception as exc:  # noqa: BLE001 - SDK 异常不得打死看门狗
+            reason = "current_trajectory_type 调用异常（%s）: %s" % (type(exc).__name__, exc)
+            self.last_error = reason
+            self._record(thread_name, None, "error", reason)
+            if self.on_query_failed:
+                self.on_query_failed(reason, [repr(exc)])
+            return None
+
+        if not isinstance(result, dict):
+            reason = "current_trajectory_type 返回格式不合法（%r）" % type(result).__name__
+            self.last_error = reason
+            self._record(thread_name, None, "error", reason)
+            if self.on_query_failed:
+                self.on_query_failed(reason, [repr(result)])
+            return None
+
+        status = result.get("status")
+        if status != contract.STATUS_OK:
+            reason = result.get("reason") or "current_trajectory_type 查询失败"
+            self.last_error = reason
+            self._record(thread_name, None, str(status), reason)
+            if self.on_query_failed:
+                self.on_query_failed(reason, list(result.get("evidence") or []))
+            return None
+
+        type_name = result.get("type_name", result.get("type"))
+        if type_name is None:
+            reason = "current_trajectory_type 未返回轨迹类型（无法判定是否抢轨迹）"
+            self.last_error = reason
+            self._record(thread_name, None, "unknown", reason)
+            if self.on_unknown:
+                self.on_unknown(result)
+            return None
+
+        observed = str(type_name)
+        self.last_error = ""
+        self._record(thread_name, observed, str(status), "")
+        if observed != self.expected_type_name:
+            self.conflict.set()
+            if self.on_conflict:
+                self.on_conflict(observed, result)
+            return observed
+        return observed
+
+    def _record(self, thread_name: str, type_name: Optional[str],
+                status: str, reason: str) -> None:
+        with self._lock:
+            self.checks.append({
+                "thread": thread_name,
+                "type_name": type_name,
+                "status": status,
+                "reason": reason,
+            })
+            if len(self.checks) > self.max_checks:
+                del self.checks[: len(self.checks) - self.max_checks]
+            self.total_checks += 1
+            self._check_count = self.total_checks
+
+
 class Executor:
     """执行器（阶段 A→E）。
 
@@ -138,6 +339,10 @@ class Executor:
                  pre_position_timeout_s: float = DEFAULT_PRE_POSITION_TIMEOUT_S,
                  arrival_timeout_s: float = DEFAULT_ARRIVAL_TIMEOUT_S,
                  stream_clock_factory: Optional[Callable[[float, float], Clock]] = None,
+                 watchdog_period_s: float = DEFAULT_WATCHDOG_PERIOD_S,
+                 watchdog_interval_ticks: int = DEFAULT_WATCHDOG_INTERVAL_TICKS,
+                 watchdog_wait_timeout_s: float = DEFAULT_WATCHDOG_WAIT_TIMEOUT_S,
+                 expected_trajectory_type: str = EXPECTED_TRAJECTORY_TYPE,
                  ) -> None:
         self.transport = transport
         self.feedback = feedback
@@ -147,6 +352,10 @@ class Executor:
         self.pre_position_timeout_s = float(pre_position_timeout_s)
         self.arrival_timeout_s = float(arrival_timeout_s)
         self._stream_clock_factory = stream_clock_factory
+        self.watchdog_period_s = float(watchdog_period_s)
+        self.watchdog_interval_ticks = max(1, int(watchdog_interval_ticks))
+        self.watchdog_wait_timeout_s = float(watchdog_wait_timeout_s)
+        self.expected_trajectory_type = str(expected_trajectory_type)
 
         self.mode = mode or ("fake" if getattr(transport, "name", "") == "fake"
                              else "live")
@@ -182,6 +391,23 @@ class Executor:
         self._arrival_hold_ms: Optional[float] = None
         self._planned_s: Optional[float] = None
         self._stream_actual_s: Optional[float] = None
+
+        # -- 反馈闭环（T5）------------------------------------------------
+        #: 控制器看门狗（**独立线程**；tick 线程只读 conflict 标志位）
+        self._watchdog: Optional[ControllerWatchdog] = None
+        #: 看门狗线程 → tick 线程的事件交接队列（线程安全）
+        self._pending_events: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+        #: 最近一次观察到的新反馈帧计数（断流判据用）
+        self._last_frames: Optional[int] = None
+        #: 最近一次观察到新帧的时刻（主时钟域；断流 age 的基准）
+        self._last_frame_time: Optional[float] = None
+        #: 跟随误差 / 断流的「一次性」闩锁（避免每拍刷屏）
+        self._follow_warn_active = False
+        self._follow_stop_active = False
+        self._stream_lag_active = False
+        self._stream_lost_active = False
+        #: tick 线程标识（证明 SDK 状态查询不在 tick 线程）
+        self._tick_thread_ident: Optional[int] = None
 
     # ------------------------------------------------------------------ 工具
     def _now(self) -> float:
@@ -260,7 +486,301 @@ class Executor:
                     [], "检查反馈源返回的快照结构后重跑",
                 )
             return None
+        self._track_frame(snapshot)
         return snapshot
+
+    # -------------------------------------------------- 反馈闭环（断流判据）
+    def _track_frame(self, snapshot: Dict[str, Any]) -> None:
+        """记录「是否来了新帧」（断流 age 的基准）。
+
+        判据用**帧计数**而不是时间戳：帧计数与时钟域无关，ManualClock 下
+        也可确定性重放。``_last_frame_time`` 落在**主时钟域**，因此
+        ``age = now − last_frame_time`` 在 fake / live 两种模式下口径一致。
+        """
+        frames = snapshot.get("frames")
+        if isinstance(frames, bool) or not isinstance(frames, int):
+            return
+        if self._last_frames is None or frames != self._last_frames:
+            self._last_frames = frames
+            self._last_frame_time = self._now()
+
+    def _stream_age_ms(self) -> Optional[float]:
+        """距上一次**新帧**的时长（毫秒）；未知 → ``None``。
+
+        口径统一在**主时钟域**：fake 用虚拟时钟，live 用真实墙钟。
+        """
+        if self._last_frame_time is None:
+            return None
+        return max(0.0, (self._now() - self._last_frame_time) * 1000.0)
+
+    def _check_stream_health(self) -> bool:
+        """断流两档：>50 ms → RECOVERABLE；>200 ms → FATAL + 停机。
+
+        返回 ``True`` = 已触发 FATAL 停机（调用方应立即中止执行）。
+        """
+        age_ms = self._stream_age_ms()
+        if age_ms is None:
+            return False
+        if age_ms > contract.STREAM_STOP_MS:
+            if not self._stream_lost_active:
+                self._stream_lost_active = True
+                self._add_event(
+                    "feedback_stream_lost", "FATAL",
+                    "反馈断流：距最后一帧已 %.0f ms（> %.0f ms 停机阈值）"
+                    % (age_ms, contract.STREAM_STOP_MS),
+                    [
+                        "stream_age_ms=%.1f" % age_ms,
+                        "stream_warn_ms=%d" % contract.STREAM_WARN_MS,
+                        "stream_stop_ms=%d" % contract.STREAM_STOP_MS,
+                        "frames=%s" % self._last_frames,
+                    ],
+                    "检查反馈链路（SDK 连接 / UDP 订阅 / 网线）后重跑；"
+                    "执行器已调用 transport.stop()",
+                )
+                self._stop_transport()
+            return True
+        if age_ms > contract.STREAM_WARN_MS:
+            if not self._stream_lag_active:
+                self._stream_lag_active = True
+                self._add_event(
+                    "feedback_stream_lag", "RECOVERABLE",
+                    "反馈滞后：距最后一帧已 %.0f ms（> %.0f ms 预警阈值）"
+                    % (age_ms, contract.STREAM_WARN_MS),
+                    [
+                        "stream_age_ms=%.1f" % age_ms,
+                        "stream_warn_ms=%d" % contract.STREAM_WARN_MS,
+                        "stream_stop_ms=%d" % contract.STREAM_STOP_MS,
+                        "frames=%s" % self._last_frames,
+                    ],
+                    "观察反馈链路是否恢复；若持续超过 %.0f ms 执行器将停机"
+                    % contract.STREAM_STOP_MS,
+                )
+            return False
+        self._stream_lag_active = False
+        return False
+
+    # -------------------------------------------------- 反馈闭环（跟随误差）
+    def _check_follow_error(self, error: float, cmd_deg: Sequence[float],
+                            snapshot: Optional[Dict[str, Any]]) -> bool:
+        """跟随误差两档：>2° → RECOVERABLE；>5° → NEEDS_HUMAN + 暂停。
+
+        返回 ``True`` = 已触发暂停（调用方应立即中止执行）。
+        S03 **不实现降速策略**（降速 / 缓停处置属 S04 安全链路），
+        这里只发事件 + 调 ``transport.pause()``。
+        """
+        actual = self._position_deg(snapshot)
+        evidence = [
+            "follow_error_deg=%.4f" % error,
+            "follow_warn_deg=%.2f" % contract.FOLLOW_WARN_DEG,
+            "follow_stop_deg=%.2f" % contract.FOLLOW_STOP_DEG,
+            "cmd_deg=%s" % ["%.4f" % v for v in cmd_deg],
+            "act_deg=%s" % (["%.4f" % v for v in actual] if actual else "None"),
+        ]
+        if error > contract.FOLLOW_STOP_DEG:
+            if not self._follow_stop_active:
+                self._follow_stop_active = True
+                self._add_event(
+                    "follow_error_exceeded", "NEEDS_HUMAN",
+                    "跟随误差超限：%.3f° > %.1f°（已暂停执行）"
+                    % (error, contract.FOLLOW_STOP_DEG),
+                    evidence,
+                    "立即人工确认机械臂状态（负载 / 碰撞 / 指令可达性）；"
+                    "执行器已调用 transport.pause()，排查后重跑",
+                )
+                self._pause_transport()
+            return True
+        if error > contract.FOLLOW_WARN_DEG:
+            if not self._follow_warn_active:
+                self._follow_warn_active = True
+                self._add_event(
+                    "follow_error_warn", "RECOVERABLE",
+                    "跟随误差预警：%.3f° > %.1f°" % (error, contract.FOLLOW_WARN_DEG),
+                    evidence,
+                    "观察机械臂跟随情况；若持续超过 %.1f° 执行器将暂停"
+                    % contract.FOLLOW_STOP_DEG,
+                )
+            return False
+        self._follow_warn_active = False
+        return False
+
+    # -------------------------------------------------- 安全动作（停机 / 暂停）
+    def _stop_transport(self) -> None:
+        """立即停机（硬红线）并留痕（失败也要留证据）。"""
+        try:
+            result = self.transport.stop()
+        except Exception as exc:  # noqa: BLE001 - 停机异常也要留痕
+            self._add_event(
+                "stop_failed", "FATAL",
+                "紧急停止调用异常（%s）: %s" % (type(exc).__name__, exc),
+                [repr(exc)],
+                "立即人工确认机械臂安全状态并断电",
+            )
+            return
+        if isinstance(result, dict) and result.get("status") != contract.STATUS_OK:
+            self._add_event(
+                "stop_rejected", "FATAL",
+                "紧急停止未成功：%s" % (result.get("reason") or "未知原因"),
+                list(result.get("evidence") or []),
+                result.get("next_action") or "立即人工确认机械臂安全状态并断电",
+            )
+
+    def _pause_transport(self) -> None:
+        """暂停执行（跟随误差超限时的安全动作）；失败 → FATAL + 停机。"""
+        try:
+            result = self.transport.pause()
+        except Exception as exc:  # noqa: BLE001
+            self._add_event(
+                "pause_failed", "FATAL",
+                "暂停调用异常（%s）: %s" % (type(exc).__name__, exc),
+                [repr(exc)],
+                "立即人工确认机械臂安全状态并断电",
+            )
+            self._stop_transport()
+            return
+        if isinstance(result, dict) and result.get("status") != contract.STATUS_OK:
+            self._add_event(
+                "pause_rejected", "FATAL",
+                "暂停未成功：%s" % (result.get("reason") or "未知原因"),
+                list(result.get("evidence") or []),
+                result.get("next_action") or "立即人工确认机械臂安全状态并断电",
+            )
+            self._stop_transport()
+
+    # -------------------------------------------------- 看门狗（独立线程）
+    def _start_watchdog(self) -> None:
+        """启动控制器看门狗线程（**SDK 状态查询只在这里发生**）。"""
+        if self._watchdog is not None:
+            return
+        self._watchdog = ControllerWatchdog(
+            self.transport,
+            expected_type_name=self.expected_trajectory_type,
+            period_s=self.watchdog_period_s,
+            on_conflict=self._on_controller_conflict,
+            on_query_failed=self._on_controller_query_failed,
+            on_unknown=self._on_controller_state_unknown,
+        )
+        self._watchdog.start()
+
+    def _stop_watchdog(self) -> None:
+        """停止看门狗线程（幂等；**对象保留**供事后审计检查记录）。"""
+        if self._watchdog is not None:
+            self._watchdog.stop()
+
+    @property
+    def watchdog_checks(self) -> List[Dict[str, Any]]:
+        """看门狗的检查记录（线程名 / 观测到的轨迹类型）——事后审计用。"""
+        if self._watchdog is None:
+            return []
+        return list(self._watchdog.checks)
+
+    def _enqueue_event(self, type: str, severity: str, reason: str,
+                       evidence: Optional[Sequence[Any]] = None,
+                       next_action: str = "") -> None:
+        """看门狗线程 → tick 线程的事件交接（**不直接改 EventLog**）。"""
+        self._pending_events.put({
+            "type": type,
+            "severity": severity,
+            "t": self._now(),
+            "reason": reason,
+            "evidence": list(evidence or []),
+            "next_action": next_action,
+        })
+
+    def _drain_pending_events(self) -> int:
+        """把看门狗线程产生的事件并入事件日志（返回并入条数）。"""
+        drained = 0
+        while True:
+            try:
+                item = self._pending_events.get_nowait()
+            except queue.Empty:
+                break
+            self._events.add(
+                type=item["type"],
+                severity=item["severity"],
+                t=item["t"],
+                reason=item["reason"],
+                evidence=item["evidence"],
+                next_action=item["next_action"],
+            )
+            drained += 1
+        return drained
+
+    def _on_controller_conflict(self, type_name: str, result: Dict[str, Any]) -> None:
+        """看门狗回调：**控制器抢轨迹** → FATAL + 立即停机。
+
+        本回调运行在**看门狗线程**（停机必须立即发生，不能等 tick 线程）。
+        """
+        evidence = [
+            "expected_type_name=%s" % self.expected_trajectory_type,
+            "observed_type_name=%s" % type_name,
+            "watchdog_thread=%s" % threading.current_thread().name,
+            "tick_thread_ident=%s" % self._tick_thread_ident,
+        ]
+        stop_result = None
+        try:
+            stop_result = self.transport.stop()
+        except Exception as exc:  # noqa: BLE001 - 停机异常也要留痕
+            evidence.append("transport.stop 异常（%s）: %s" % (type(exc).__name__, exc))
+        else:
+            if isinstance(stop_result, dict):
+                evidence.append("transport.stop status=%s" % stop_result.get("status"))
+                if stop_result.get("status") != contract.STATUS_OK:
+                    evidence.append("transport.stop reason=%s"
+                                    % stop_result.get("reason"))
+        self._enqueue_event(
+            "controller_trajectory_conflict", "FATAL",
+            "控制器抢轨迹：当前轨迹类型为 %s（期望 %s）"
+            % (type_name, self.expected_trajectory_type),
+            evidence,
+            "立即人工确认控制器状态并停机后重跑（执行器已调用 transport.stop()）",
+        )
+
+    def _on_controller_query_failed(self, reason: str,
+                                    evidence: List[str]) -> None:
+        """看门狗回调：查询失败 → RECOVERABLE（**不伪造类型**）。"""
+        self._enqueue_event(
+            "controller_trajectory_query_failed", "RECOVERABLE",
+            "控制器轨迹类型查询失败：%s" % reason,
+            list(evidence or []),
+            "检查控制器连接状态后重跑（本次执行无法确认是否抢轨迹）",
+        )
+
+    def _on_controller_state_unknown(self, result: Dict[str, Any]) -> None:
+        """看门狗回调：查询成功但无类型字段 → RECOVERABLE。"""
+        self._enqueue_event(
+            "controller_trajectory_state_unknown", "RECOVERABLE",
+            "控制器轨迹类型查询未返回类型字段（无法判定是否抢轨迹）",
+            [repr(result)],
+            "检查 rm_hw_bridge 的 current_trajectory_type 返回值后重跑",
+        )
+
+    def _watchdog_checkpoint(self) -> bool:
+        """tick 线程里的看门狗检查点。
+
+        live 模式：**只请求、不等待**（绝不在 tick 线程里等 SDK 往返）；
+        fake 模式：允许等待一次检查完成，换取**确定性重放**。
+
+        返回 ``False`` = 看门狗失灵（fake 模式等待超时）→ 调用方应停机。
+        """
+        watchdog = self._watchdog
+        if watchdog is None:
+            return True
+        baseline = watchdog.check_count
+        watchdog.request_check()
+        if self.mode != "fake":
+            return True
+        if watchdog.wait_check(baseline + 1, timeout=self.watchdog_wait_timeout_s):
+            return True
+        self._add_event(
+            "controller_watchdog_failed", "FATAL",
+            "控制器看门狗未在 %.1f s 内完成检查（线程可能已退出）"
+            % self.watchdog_wait_timeout_s,
+            ["watchdog_check_count=%d" % watchdog.check_count,
+             "watchdog_running=%s" % watchdog.running],
+            "立即人工确认机械臂安全状态并断电",
+        )
+        self._stop_transport()
+        return False
 
     @staticmethod
     def _position_deg(snapshot: Optional[Dict[str, Any]]) -> Optional[List[float]]:
@@ -418,7 +938,7 @@ class Executor:
         cfg = self._config
         assert cfg is not None  # run() 已保证
         stream_start = self._now()
-        for row_rad in grid_p:
+        for index, row_rad in enumerate(grid_p):
             # ① 绝对截止时间等待（抖动样本由时钟记录）
             self.stream_clock.tick()  # type: ignore[union-attr]
             # ② 下发本拍指令角（度）
@@ -434,7 +954,22 @@ class Executor:
             error = self._position_error(snapshot, cmd_deg)
             if error is not None:
                 self._follow_errors.append(error)
+                # 跟随误差两档（>2° 预警 / >5° 暂停）
+                if self._check_follow_error(error, cmd_deg, snapshot):
+                    return None
+            # ④ 断流两档（>50 ms 预警 / >200 ms 停机）
+            if self._check_stream_health():
+                return None
+            # ⑤ 看门狗（控制器抢轨迹）：先并入已产生的事件，再看标志位
+            self._drain_pending_events()
+            if self._watchdog is not None and self._watchdog.conflict.is_set():
+                return None
             self._ticks += 1
+            # ⑥ 看门狗检查点（查询发生在**看门狗线程**，不在 tick 线程）
+            if self._watchdog is not None and (
+                    index % self.watchdog_interval_ticks == 0):
+                if not self._watchdog_checkpoint():
+                    return None
         self._stream_actual_s = metrics_mod.duration_s(stream_start, self._now())
         return {}
 
@@ -462,6 +997,10 @@ class Executor:
             position_error = self._position_error(snapshot, goal_deg)
             if position_error is not None:
                 self._follow_errors.append(position_error)
+                if self._check_follow_error(position_error, goal_deg, snapshot):
+                    return False
+            if self._check_stream_health():
+                return False
             now = self._now()
             speed = self._speed_deg_s(snapshot)
             if (position_error is not None and speed is not None
@@ -521,6 +1060,18 @@ class Executor:
     def _finalize(self, t_start: float, evidence: List[str],
                   reason: str = "", next_action: str = "") -> Dict[str, Any]:
         """装配统一报告（**fake / live 同一份生成代码**）。"""
+        watchdog_info = None
+        if self._watchdog is not None:
+            watchdog_info = (
+                "watchdog: checks=%d conflict=%s expected_type_name=%s"
+                % (self._watchdog.check_count, self._watchdog.conflict.is_set(),
+                   self.expected_trajectory_type)
+            )
+            self._stop_watchdog()
+        # 看门狗线程产生的事件在此并入（保证一条不丢）
+        self._drain_pending_events()
+        if watchdog_info:
+            evidence.append(watchdog_info)
         event_list = self._events.to_list()
         status = report_mod.status_from_events(event_list)
         worst = self._events.worst_severity()
@@ -567,7 +1118,19 @@ class Executor:
         self._stream_actual_s = None
         self._feedback_error_logged = False
 
+        # -- 反馈闭环状态重置（T5）-----------------------------------------
+        self._pending_events = queue.Queue()
+        self._watchdog = None
+        self._last_frames = None
+        self._last_frame_time = None
+        self._follow_warn_active = False
+        self._follow_stop_active = False
+        self._stream_lag_active = False
+        self._stream_lost_active = False
+        self._tick_thread_ident = threading.get_ident()
+
         t_start = self._now()
+        self._last_frame_time = t_start  # 断流 age 的起点
         evidence: List[str] = [
             "mode=%s transport=%s" % (self.mode, getattr(self.transport, "name", "?")),
         ]
@@ -614,6 +1177,8 @@ class Executor:
                         % (len(grid_t), self._config.period_s, self._planned_s))
 
         # ---------------- 阶段 B：预就位 ----------------
+        # 控制器看门狗先行启动（**独立线程**：SDK 状态查询不进 tick 线程）
+        self._start_watchdog()
         goal_start_deg = self._to_deg(grid_p[0], factor)
         pre_result = self.transport.preposition(goal_start_deg,
                                                 self._config.pre_position_speed)

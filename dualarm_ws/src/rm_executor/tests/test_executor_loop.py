@@ -11,12 +11,14 @@
 * 时间域限值复检失败 → **0 次 transmit**；
 * 预就位未到位 → blocked 且**未下发任何 tick**；
 * transport 中途报错 → 调用了 ``stop`` 且 status=error；
-* tick 线程**零 SDK 状态查询**（``current_trajectory_type`` 调用数 == 0）。
+* tick 线程**零 SDK 状态查询**（``current_trajectory_type`` 由**独立看门狗
+  线程**周期查，tick 线程内 0 次调用——见 T5）。
 """
 from __future__ import annotations
 
 import math
 import os
+import threading
 
 import pytest
 
@@ -138,8 +140,12 @@ def test_normal_path_ticks_match_grid_and_arrival_ok(write_traj):
     assert rep["metrics"]["rt_factor"] == pytest.approx(1.0, abs=1e-9)
     assert rep["metrics"]["duration_s"] > 0.0
 
-    # tick 线程零 SDK 状态查询
-    assert transport.count("current_trajectory_type") == 0
+    # tick 线程零 SDK 状态查询（T5 起：查询由**独立看门狗线程**完成）
+    assert transport.count("current_trajectory_type") >= 1
+    checks = executor.watchdog_checks
+    assert checks, "看门狗应至少完成一次控制器轨迹类型查询"
+    assert all(c["thread"] != threading.current_thread().name for c in checks), \
+        "current_trajectory_type 不得在 tick 线程内调用"
 
 
 def test_report_schema_has_exact_top_level_and_metric_keys(write_traj):

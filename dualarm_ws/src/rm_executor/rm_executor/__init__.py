@@ -27,6 +27,10 @@ T3 交付的是**传输与反馈抽象**：透传通道接口（:mod:`rm_executo
 T4 交付的是**执行内核**：主循环（:mod:`rm_executor.executor`，阶段
 预校验 → 预就位 → 10 ms tick 流式透传 → 到位判定 → 收尾）与统一报告
 （:mod:`rm_executor.report`，fake 与 live 同一份 schema、同一份生成代码）。
+
+T5 交付的是**反馈闭环异常判定**：跟随误差两档 / 断流两档 / 控制器抢轨迹
+→ 全部转成**五级结构化事件**（S04 的 L1–L4 安全链路直接复用），控制器
+状态查询由**独立看门狗线程**承担（绝不进 tick 线程）。
 """
 from __future__ import annotations
 
