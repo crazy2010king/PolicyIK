@@ -35,6 +35,8 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
 from rm_hw_bridge import errors, limits as limits_mod, loader, paths
 from rm_hw_bridge.generated import rm_api2_ctypes as gen
 from rm_hw_bridge.snapshot import (
@@ -52,6 +54,9 @@ __all__ = [
     "COLLISION_STAGE_MAX",
     "COLLISION_STAGE_MIN",
     "DEG2RAD",
+    "DEFAULT_SDK_TIMEOUT_S",
+    "JOINT_INDEX_MAX",
+    "JOINT_INDEX_MIN",
     "MAX_RETAINED_JOINT_BUFFERS",
     "RAD2DEG",
     "RADIO_RANGE_CURVE_FIT",
@@ -83,6 +88,25 @@ RAD2DEG = 180.0 / math.pi
 #: 碰撞检测等级范围（厂商头文件 rm_interface.h：0=不检测，8=最灵敏）
 COLLISION_STAGE_MIN = 0
 COLLISION_STAGE_MAX = 8
+
+#: 窄接口 ``set_drive_max_speed`` 的**公开关节序号**范围（**0 基**：0..6）
+JOINT_INDEX_MIN = 0
+JOINT_INDEX_MAX = ARM_DOF - 1
+
+#: SDK 通信超时的**默认秒数**（缺 ``workcell/rm_workcell.yaml::safety.sdk_timeout_s``
+#: 或该键非法时使用，并在 evidence 里写明「使用了默认值」，**不静默**）
+DEFAULT_SDK_TIMEOUT_S = 1.0
+
+#: ``rm_set_timeout`` 的 **SDK 单位换算**：厂商头文件
+#: ``rm_interface.h``（``rm_set_timeout``）写明「多数接口默认超时时间为 500ms，
+#: 单位 **ms**」→ 本模块对外用**秒**，调用 SDK 前**在此处**换算成毫秒。
+#:
+#: **注意**：``rm_hw_bridge/abi_spec.yaml`` 里该符号的 doc 串写的是「秒」，
+#: 与厂商头文件矛盾；按仓库的**上游真值链**（vendor 头文件 → abi_spec），
+#: 以厂商头文件为准（500 这个默认值只在「毫秒」解释下合理）。
+SDK_TIMEOUT_MS_PER_S = 1000
+#: 下发给 SDK 的毫秒数下限（避免 0 = 不超时）
+SDK_TIMEOUT_MIN_MS = 1
 
 # ---------------------------------------------------------------------------
 # 关节角透传（rm_movej_canfd）语义常量
@@ -336,6 +360,111 @@ def _find_sdk(ws: Optional[str] = None, env: Optional[Dict[str, str]] = None):
     return path, candidates
 
 
+# ------------------------------------------------------- 安全窄接口的公共助手
+def _is_finite_number(value: Any) -> bool:
+    """是否为有限数值（bool 不算数值）。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    number = float(value)
+    return math.isfinite(number)
+
+
+def _load_sdk_timeout_s(ws: Optional[str] = None) -> Tuple[float, List[str]]:
+    """读取 ``workcell/rm_workcell.yaml::safety.sdk_timeout_s``（**唯一来源**）。
+
+    缺文件 / 缺键 / 值非法 / 解析失败 → 使用默认 ``DEFAULT_SDK_TIMEOUT_S``
+    （1.0 s），并**逐条**写进 evidence（**不静默**）。
+
+    返回 ``(秒数, evidence 行)``。
+    """
+    cfg_path = os.path.join(paths.workspace_root(ws), "workcell", "rm_workcell.yaml")
+    evidence: List[str] = ["workcell: %s" % cfg_path]
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except FileNotFoundError:
+        evidence.append(
+            "缺少 %s → 使用默认 SDK 超时 %.1f s（不静默）" % (
+                cfg_path, DEFAULT_SDK_TIMEOUT_S,
+            )
+        )
+        return DEFAULT_SDK_TIMEOUT_S, evidence
+    except Exception as exc:  # noqa: BLE001 - 读取异常统一降级为默认值
+        evidence.append(
+            "读取 %s 失败（%s）→ 使用默认 SDK 超时 %.1f s（不静默）" % (
+                cfg_path, exc, DEFAULT_SDK_TIMEOUT_S,
+            )
+        )
+        return DEFAULT_SDK_TIMEOUT_S, evidence
+
+    section = data.get("safety") if isinstance(data, dict) else None
+    raw = section.get("sdk_timeout_s") if isinstance(section, dict) else None
+    if raw is None:
+        evidence.append(
+            "缺少 safety.sdk_timeout_s → 使用默认 SDK 超时 %.1f s（不静默）" % (
+                DEFAULT_SDK_TIMEOUT_S,
+            )
+        )
+        return DEFAULT_SDK_TIMEOUT_S, evidence
+    if not _is_finite_number(raw) or float(raw) <= 0:
+        evidence.append(
+            "safety.sdk_timeout_s 非法（%r）→ 使用默认 SDK 超时 %.1f s（不静默）" % (
+                raw, DEFAULT_SDK_TIMEOUT_S,
+            )
+        )
+        return DEFAULT_SDK_TIMEOUT_S, evidence
+    return float(raw), evidence
+
+
+def _call_set_timeout(binding: Any, seconds: float) -> Dict[str, Any]:
+    """调用 ``rm_set_timeout``（**support 5 内**；SDK 侧**全局**生效）。
+
+    * ``rm_set_timeout`` 返回 ``void``（无返回码）→ 成功即认为已下发，
+      **不伪读回值**；
+    * **单位**：对外是**秒**（``workcell`` 的 ``safety.sdk_timeout_s``），
+      SDK 侧是**毫秒**（厂商头文件：默认 500 ms）→ 在本函数里**一次性换算**
+      （本模块唯一换算点）；
+    * 符号缺失 / 抛异常 → ``status="error"`` + 可粘贴 next_action。
+    """
+    sym = "rm_set_timeout"
+    fn = getattr(binding, sym, None)
+    if fn is None:
+        return errors.error(
+            "契约清单缺少符号 %s，无法设置 SDK 超时" % sym,
+            "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep %s`），"
+            "重新物化 SDK 后重跑" % sym,
+            [],
+            sdk_calls=0,
+            timeout_s=float(seconds),
+        )
+    sdk_timeout_ms = max(
+        SDK_TIMEOUT_MIN_MS,
+        int(round(float(seconds) * SDK_TIMEOUT_MS_PER_S)),
+    )
+    try:
+        fn(sdk_timeout_ms)
+    except Exception as exc:  # noqa: BLE001 - SDK 调用异常统一转 error
+        return errors.error(
+            "%s 调用异常：%s" % (sym, exc),
+            "确认 .so 与当前架构匹配（file <so>），修复后重跑",
+            [repr(exc)],
+            sdk_calls=1,
+            timeout_s=float(seconds),
+            sdk_timeout_ms=sdk_timeout_ms,
+        )
+    return errors.ok(
+        "SDK 超时已下发：%d ms（= %.3f s，SDK 侧全局生效，不伪读回值）" % (
+            sdk_timeout_ms, float(seconds),
+        ),
+        "",
+        ["%s(timeout=%d ms)" % (sym, sdk_timeout_ms)],
+        sdk_calls=1,
+        timeout_s=float(seconds),
+        sdk_timeout_ms=sdk_timeout_ms,
+        scope="global",
+    )
+
+
 # --------------------------------------------------------------------- 连接
 class ArmLink:
     """一次机械臂连接（句柄 + 实时上报状态）。
@@ -354,6 +483,7 @@ class ArmLink:
         evidence: Optional[List[Any]] = None,
         realtime_period_ms: Optional[int] = None,
         endpoint: Optional[Dict[str, Any]] = None,
+        sdk_timeout_result: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._bridge = bridge
         self._handle = handle
@@ -364,6 +494,8 @@ class ArmLink:
         self.realtime_period_ms = realtime_period_ms
         self.endpoint = dict(endpoint or {})
         self._closed = False
+        # 建连期 ``rm_set_timeout`` 的结果（成功/失败都留痕，**不静默**）
+        self.sdk_timeout_result = dict(sdk_timeout_result or {})
         # 关节角缓冲的**显式持有**（防止 GC 提前回收）+ **有界**保留
         self._joint_buffers: List[Any] = []
         self._last_transmit: Optional[Dict[str, Any]] = None
@@ -869,6 +1001,238 @@ class ArmLink:
             sdk_calls=len(applied),
         )
 
+    # -- 安全窄接口（L1 降速 / SDK 超时 / 控制器错误状态）
+    def set_drive_max_speed(self, joint_index: Any, deg_s: Any) -> Dict[str, Any]:
+        """按比例下调**单个关节**的驱动最大速度（L1 降速的窄接口）。
+
+        * ``joint_index``：**0 基**关节序号（整数，``0..6``；bool 不算）；
+          内部换算成 SDK 的 **1 基** ``joint_num``（= ``joint_index + 1``）；
+        * ``deg_s``：目标最大速度，单位 **°/s**（SDK 侧单位同为 °/s → **不换算**，
+          本模块也不新开换算点）；
+        * 非法参数 → **0 次 SDK 调用** + ``status="error"`` + 可粘贴 next_action；
+        * SDK 返回非 0 → ``status="error"``，reason 写明**接口名 + 返回码**。
+
+        成功返回的 ``applied`` 含 ``joint_index`` / ``deg_s`` / ``rc``。
+        """
+        if not self.connected:
+            return self._not_connected("set_drive_max_speed")
+
+        if isinstance(joint_index, bool) or not isinstance(joint_index, int):
+            return errors.error(
+                "joint_index 必须是整数（当前 %r）" % (joint_index,),
+                "传入 0..%d 的整数关节序号（0 基）后重跑" % JOINT_INDEX_MAX,
+                [],
+                sdk_calls=0,
+                joint_index=None,
+                deg_s=None,
+            )
+        if joint_index < JOINT_INDEX_MIN or joint_index > JOINT_INDEX_MAX:
+            return errors.error(
+                "joint_index=%d 越界（允许范围 %d..%d，0 基）" % (
+                    joint_index, JOINT_INDEX_MIN, JOINT_INDEX_MAX,
+                ),
+                "把关节序号改到 %d..%d 后重跑" % (JOINT_INDEX_MIN, JOINT_INDEX_MAX),
+                [],
+                sdk_calls=0,
+                joint_index=joint_index,
+                deg_s=None,
+            )
+        if not _is_finite_number(deg_s):
+            return errors.error(
+                "deg_s 必须是有限数值（当前 %r）" % (deg_s,),
+                "传入正的有限速度（°/s，如 15.0）后重跑",
+                [],
+                sdk_calls=0,
+                joint_index=joint_index,
+                deg_s=None,
+            )
+        speed = float(deg_s)
+        if speed <= 0:
+            return errors.error(
+                "deg_s=%r 非法（必须是正的有限速度，°/s）" % (deg_s,),
+                "传入正的有限速度（°/s，如 15.0）后重跑",
+                [],
+                sdk_calls=0,
+                joint_index=joint_index,
+                deg_s=None,
+            )
+
+        sym = "rm_set_joint_drive_max_speed"
+        fn = getattr(self._bridge.binding, sym, None)
+        if fn is None:
+            return errors.error(
+                "契约清单缺少符号 %s，无法下发关节最大速度" % sym,
+                "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep %s`），"
+                "重新物化 SDK 后重跑" % sym,
+                [],
+                sdk_calls=0,
+                joint_index=joint_index,
+                deg_s=speed,
+            )
+        sdk_joint_num = joint_index + 1
+        try:
+            rc = int(fn(self._handle, int(sdk_joint_num), speed) or 0)
+        except Exception as exc:  # noqa: BLE001 - SDK 调用异常统一转 error
+            return errors.error(
+                "%s 调用异常（joint_index=%d, deg_s=%r）：%s" % (
+                    sym, joint_index, speed, exc,
+                ),
+                "确认 .so 与当前架构匹配（file <so>），修复后重跑",
+                [repr(exc)],
+                sdk_calls=1,
+                joint_index=joint_index,
+                deg_s=speed,
+            )
+        applied = {
+            "joint_index": joint_index,
+            "joint": "joint%d" % sdk_joint_num,
+            "sdk_joint_num": sdk_joint_num,
+            "deg_s": speed,
+            "unit": "deg/s",
+            "symbol": sym,
+            "rc": rc,
+        }
+        if rc != 0:
+            return errors.error(
+                "%s 返回 %d（下发 joint%d 的最大速度 %r °/s 失败）" % (
+                    sym, rc, sdk_joint_num, speed,
+                ),
+                "确认控制器在线、句柄有效（同一 ip:port 只允许一个客户端），"
+                "并核对速度范围后重跑",
+                ["%s rc=%d" % (sym, rc)],
+                sdk_calls=1,
+                joint_index=joint_index,
+                deg_s=speed,
+                applied=[applied],
+            )
+        return errors.ok(
+            "关节最大速度已下发：joint%d = %r °/s" % (sdk_joint_num, speed),
+            "",
+            ["%s rc=0 joint_num=%d max_speed=%r °/s" % (sym, sdk_joint_num, speed)],
+            sdk_calls=1,
+            joint_index=joint_index,
+            deg_s=speed,
+            applied=[applied],
+        )
+
+    def set_timeout(self, seconds: Any) -> Dict[str, Any]:
+        """设置 SDK 通信超时（**窄接口**，support 符号 ``rm_set_timeout``）。
+
+        * ``seconds``：秒（正的有限数）；非法 → **0 次 SDK 调用** + error；
+        * 成功 → 注明「SDK 侧**全局**生效」（**不伪读回值**）；
+        * **单位换算**：对外**秒** → SDK 侧**毫秒**（厂商头文件：默认 500 ms），
+          换算只在本模块一处（``_call_set_timeout``）。
+        """
+        if not self.connected:
+            return self._not_connected("set_timeout")
+        if not _is_finite_number(seconds):
+            return errors.error(
+                "seconds 必须是数值（秒，当前 %r）" % (seconds,),
+                "传入正的有限秒数（如 1.0）后重跑",
+                [],
+                sdk_calls=0,
+                timeout_s=None,
+            )
+        value = float(seconds)
+        if value <= 0:
+            return errors.error(
+                "seconds=%r 非法（必须是正的有限秒数）" % (seconds,),
+                "传入正的有限秒数（如 1.0）后重跑",
+                [],
+                sdk_calls=0,
+                timeout_s=None,
+            )
+        return _call_set_timeout(self._bridge.binding, value)
+
+    def controller_error_state(self) -> Dict[str, Any]:
+        """控制器错误状态（安全判据的输入源）。
+
+        返回::
+
+            {
+              "status": "ok" | "error",
+              "reason": str, "next_action": str, "evidence": [...],
+              "arm_err": list[int] | None,          # rm_get_current_arm_state.err
+              "arm_current_status": int | None,      # UDP 实时上报缓存
+              "arm_current_status_name": str | None,
+            }
+
+        * ``arm_err`` 来源：``rm_get_current_arm_state``（**core 22 内**）；
+        * ``arm_current_status`` / ``_name`` 来源：**进程级** UDP 实时上报缓存
+          （**不额外打 SDK**）；**无数据时为 ``None``（不返回 0 冒充）**；
+        * SDK 失败 → ``status="error"``，三个数据字段全为 ``None``（不伪造）。
+        """
+        empty = {
+            "arm_err": None,
+            "arm_current_status": None,
+            "arm_current_status_name": None,
+        }
+        if not self.connected:
+            res = self._not_connected("controller_error_state")
+            res.update(empty)
+            return res
+
+        sym = "rm_get_current_arm_state"
+        fn = getattr(self._bridge.binding, sym, None)
+        if fn is None:
+            res = errors.error(
+                "契约清单缺少符号 %s，无法读取控制器错误状态" % sym,
+                "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep %s`），"
+                "重新物化 SDK 后重跑" % sym,
+                [],
+                sdk_calls=0,
+            )
+            res.update(empty)
+            return res
+
+        cur_state = gen.rm_current_arm_state_t()
+        try:
+            rc = int(fn(self._handle, ctypes.pointer(cur_state)) or 0)
+        except Exception as exc:  # noqa: BLE001 - SDK 调用异常统一转 error
+            res = errors.error(
+                "%s 调用异常：%s" % (sym, exc),
+                "确认控制器在线、句柄有效后重跑 `rmctl connect --arm %s --json`" % (
+                    self.endpoint.get("arm", "left"),
+                ),
+                [repr(exc)],
+                sdk_calls=1,
+            )
+            res.update(empty)
+            return res
+        if rc != 0:
+            res = errors.error(
+                "%s 返回 %d（未连接到控制器 / 通信失败）" % (sym, rc),
+                "确认控制器在线、句柄有效后重跑 `rmctl connect --arm %s --json`" % (
+                    self.endpoint.get("arm", "left"),
+                ),
+                ["%s rc=%d" % (sym, rc)],
+                sdk_calls=1,
+            )
+            res.update(empty)
+            return res
+
+        err_len = int(cur_state.err.err_len)
+        arm_err = [int(v) for v in cur_state.err.err[:err_len]]
+        status_code = _REALTIME.arm_current_status
+        status_name = (
+            UDP_STATUS_ENUM_NAMES.get(int(status_code))
+            if status_code is not None else None
+        )
+        return errors.ok(
+            "控制器错误状态读取成功（臂级错误码 %d 个）" % len(arm_err),
+            "",
+            [
+                "%s rc=0" % sym,
+                "arm_err 来源: rm_get_current_arm_state.err（err_len=%d）" % err_len,
+                "arm_current_status 来源: UDP 实时上报缓存（frames=%d，不额外打 SDK）"
+                % _REALTIME.snapshot(self.realtime_period_ms).get("frames", 0),
+            ],
+            sdk_calls=1,
+            arm_err=arm_err,
+            arm_current_status=(int(status_code) if status_code is not None else None),
+            arm_current_status_name=status_name,
+        )
+
     # ------------------------------------------------------- 关节角透传通道
     def _not_connected(self, action: str) -> Dict[str, Any]:
         """未连接时的统一失败结果（**不伪造任何数值**）。"""
@@ -1351,6 +1715,10 @@ def connect(
         注意：基线 ``network_plan.yaml`` 只记了**臂侧**地址，没有记运行本进程的主机地址；
         真机窗口里若 SDK 报 "invaild ip"，应用 ``--realtime-ip <本机可达IP>`` 覆盖。
 
+    **建连期接线**：句柄建立成功后调用一次 ``rm_set_timeout``，秒数取自
+    ``workcell/rm_workcell.yaml::safety.sdk_timeout_s``（缺文件/缺键 → 默认 1.0 s
+    并写入 evidence）；该调用**失败不阻断连接**（结果留在 ``link.sdk_timeout_result``）。
+
     返回
     ----
     :class:`ArmLink` —— 其 ``status`` 字段为 ``ok`` / ``blocked`` / ``error``。
@@ -1482,6 +1850,16 @@ def connect(
         )
     evidence.append("handle.id=%d" % handle_id)
 
+    # 4.5) SDK 超时（建连期接线；失败**不阻断**连接，但必须留下证据）
+    timeout_s, timeout_evidence = _load_sdk_timeout_s(ws)
+    evidence.extend(timeout_evidence)
+    timeout_result = _call_set_timeout(binding, timeout_s)
+    evidence.extend(timeout_result.get("evidence") or [])
+    if timeout_result.get("status") != errors.STATUS_OK:
+        evidence.append(
+            "SDK 超时设置失败（**不阻断连接**）：%s" % timeout_result.get("reason")
+        )
+
     # 5) UDP 主动上报（下发配置 + 注册全局回调）
     period = int(realtime_period_ms)
     if enable_realtime:
@@ -1547,6 +1925,7 @@ def connect(
         evidence=evidence,
         realtime_period_ms=period if enable_realtime else None,
         endpoint=endpoint,
+        sdk_timeout_result=timeout_result,
     )
 
 
