@@ -10,12 +10,16 @@ import sys
 import time
 
 import numpy as np
+import yaml
 
+from . import baseline as bl
 from . import paths
 from .executor import MockExecutor
 from .model import Model
-from .planner import plan_joint, plan_pose, freespace_profiles
-from .verify import verify
+
+# 注意：planner / verify 在模块顶层 import tesseract_robotics，而 nanobind wheel
+# 需要 GLIBCXX_3.4.31+。为了让 `rmctl baseline` / `rmctl doctor` 在没有厂商库
+# 的机器上也能跑（基线校验只依赖 yaml+numpy），这里改成按需惰性 import。
 
 
 # ---------------------------------------------------------------- helpers
@@ -139,6 +143,26 @@ def cmd_doctor(args):
         add("hardware:connected", False, "未检测到真机连接（原型阶段为模拟执行）",
             "rmctl connect --left <ip> --right <ip>", "INFO")
 
+    # 基线齐备度（基线校验只依赖 yaml+numpy，与厂商库无关）
+    try:
+        report = bl.validate_all(ws)
+        missing = report["missing"]
+        present = len(bl.KINDS) - len(missing)
+        add("baselines:present", not missing,
+            "四类基线 %d/%d 齐备%s" % (present, len(bl.KINDS),
+                                       ("（缺: %s）" % ", ".join(missing)) if missing else ""),
+            "python3 -m rmctl baseline scaffold")
+        ml = report["kinds"].get("measured_limits", {})
+        ml_status = ml.get("status")
+        add("limits:measured", ml_status == "measured",
+            "measured_limits.status=%s（acc/jerk 实测值未回填）" % (ml_status or "缺失"),
+            "真机窗口执行 python3 -m rmctl.hwcollect ladder_acc_jerk "
+            "并回填 workcell/baselines/measured_limits.yaml（见 docs/code_doc/真机基线与实测限值归档说明.md）",
+            "INFO")
+    except Exception as exc:
+        add("baselines:present", False, repr(exc),
+            "python3 -m rmctl baseline scaffold")
+
     ok = sum(1 for c in checks if c["ok"])
     print("体检结果: %d/%d 通过\n" % (ok, len(checks)))
     for c in checks:
@@ -148,6 +172,268 @@ def cmd_doctor(args):
     bad = [c for c in checks if not c["ok"] and c["level"] != "INFO"]
     print("\n%s" % ("全部通过，可以开始规划。" if not bad else "存在 %d 项需处理。" % len(bad)))
     return 0 if not bad else 1
+
+
+# ---------------------------------------------------------------- 基线子命令
+def _baseline_report(ws):
+    """基线结论的唯一来源：baseline.validate_all（不另写一套判定逻辑）。"""
+    return bl.validate_all(ws)
+
+
+def _baseline_kind_rows(report):
+    """把 validate_all 报告拆成逐 kind 的 (kind, level, detail) 行。
+
+    level: OK（齐备）/ PENDING（未实测，不阻塞）/ FAIL（阻塞项）。
+    """
+    rows = []
+    for kind in bl.KINDS:
+        entry = report["kinds"].get(kind, {})
+        issues = entry.get("issues", [])
+        errors = [i for i in issues if i["level"] == "error"]
+        warns = [i for i in issues if i["level"] == "warn"]
+        infos = [i for i in issues if i["level"] == "info"]
+        if not entry.get("present"):
+            level = "FAIL"
+        elif errors:
+            level = "FAIL"
+        elif warns:
+            level = "WARN"
+        elif infos:
+            level = "PENDING"
+        else:
+            level = "OK"
+        detail = []
+        if not entry.get("present"):
+            detail.append("文件缺失")
+        else:
+            detail.append("version=%s" % entry.get("version"))
+            detail.append("status=%s" % (entry.get("status") or "?"))
+        if errors:
+            detail.append("%d 项错误" % len(errors))
+        elif warns:
+            detail.append("%d 项警告" % len(warns))
+        rows.append((kind, level, " ".join(detail), issues))
+    return rows
+
+
+def _workcell_seam(ws):
+    """校验 workcell/rm_workcell.yaml 与 baselines/ 的接缝。
+
+    返回 (issues, notes)：issues 是阻塞项（声明路径与实际文件不一致），
+    notes 是说明性信息（如 workcell 文件缺失）。
+    """
+    issues, notes = [], []
+    wc = paths.workcell_dir(ws)
+    yml = os.path.join(wc, "rm_workcell.yaml")
+    if not os.path.exists(yml):
+        notes.append("workcell 定义缺失: %s（跳过接缝校验）" % yml)
+        return issues, notes
+    try:
+        with open(yml, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception as exc:
+        issues.append("workcell/rm_workcell.yaml 解析失败: %r" % exc)
+        return issues, notes
+    robot = data.get("robot") or {}
+    declared_dir = robot.get("baselines_dir")
+    actual_dir = os.path.abspath(paths.baselines_dir(ws))
+    if not declared_dir:
+        issues.append("workcell/rm_workcell.yaml 缺 robot.baselines_dir（基线目录入口）")
+    else:
+        resolved = os.path.abspath(os.path.join(wc, declared_dir))
+        if resolved != actual_dir:
+            issues.append("robot.baselines_dir=%r 解析到 %s，与 paths.baselines_dir=%s 不一致"
+                          % (declared_dir, resolved, actual_dir))
+    calibration = data.get("calibration") or {}
+    for kind in bl.KINDS:
+        rel = calibration.get(kind)
+        if not rel:
+            issues.append("workcell/rm_workcell.yaml 缺 calibration.%s（基线声明路径）" % kind)
+            continue
+        resolved = os.path.abspath(os.path.join(wc, rel))
+        expected = os.path.abspath(os.path.join(actual_dir, "%s.yaml" % kind))
+        if resolved != expected:
+            issues.append("calibration.%s=%r 解析到 %s，与实际基线文件 %s 不一致"
+                          % (kind, rel, resolved, expected))
+        elif not os.path.exists(resolved):
+            issues.append("calibration.%s=%r 指向的基线文件不存在: %s" % (kind, rel, resolved))
+    return issues, notes
+
+
+def cmd_baseline(args):
+    """`rmctl baseline [action]`：action = check（默认）/ list / show / scaffold。"""
+    action = getattr(args, "action", None) or "check"
+    if action == "check":
+        return cmd_baseline_check(args)
+    if action == "list":
+        return cmd_baseline_list(args)
+    if action == "show":
+        if not args.kind:
+            print("show 需要基线类型：rmctl baseline show <%s>" % "|".join(bl.KINDS))
+            return 2
+        return cmd_baseline_show(args)
+    if action == "scaffold":
+        return cmd_baseline_scaffold(args)
+    print("未知 action: %s" % action)
+    return 2
+
+
+def cmd_baseline_check(args):
+    """`rmctl baseline check`：逐 kind 输出存在性/版本/一致性结论与分级 level。"""
+    ws = args.ws or paths.workspace_root()
+    report = _baseline_report(ws)
+    rows = _baseline_kind_rows(report)
+    print("基线检查: %s" % report["baselines_dir"])
+    blocking = []
+    for kind, level, detail, issues in rows:
+        print("  [%-7s] %-16s %s" % (level, kind, detail))
+        for issue in issues:
+            if issue["level"] in ("error", "warn"):
+                loc = ("[%s] " % issue["path"]) if issue.get("path") else ""
+                print("        %s %s%s: %s" % (issue["level"].upper(), loc,
+                                              issue["code"], issue["message"]))
+        if level == "FAIL":
+            blocking.append(kind)
+    # workcell 接缝（声明路径 vs 实际文件）
+    seam_issues, seam_notes = _workcell_seam(ws)
+    for note in seam_notes:
+        print("  [NOTE  ] %s" % note)
+    for issue in seam_issues:
+        print("  [FAIL  ] workcell 接缝: %s" % issue)
+        blocking.append("workcell")
+    print("")
+    if blocking:
+        print("阻塞项 %d 个（%s）。" % (len(blocking), ", ".join(blocking)))
+        print("→ 修复: python3 -m rmctl baseline scaffold   # 生成 status=pending 占位基线")
+        return 3
+    pending = [k for k, lv, _, _ in rows if lv == "PENDING"]
+    if pending:
+        print("基线结构齐备，未实测: %s（不阻塞；实测回填后 status 改为 measured）"
+              % ", ".join(pending))
+    else:
+        print("基线齐备且均已实测。")
+    return 0
+
+
+def cmd_baseline_list(args):
+    """`rmctl baseline list`：列出四类基线与 status。"""
+    ws = args.ws or paths.workspace_root()
+    report = _baseline_report(ws)
+    print("%-16s %-10s %-8s %s" % ("kind", "status", "version", "path"))
+    for kind in bl.KINDS:
+        entry = report["kinds"].get(kind, {})
+        path = os.path.join(report["baselines_dir"], "%s.yaml" % kind)
+        print("%-16s %-10s %-8s %s" % (
+            kind, entry.get("status") or "-", entry.get("version") or "-",
+            path if entry.get("present") else path + "  (缺失)"))
+    return 0
+
+
+def cmd_baseline_show(args):
+    """`rmctl baseline show <kind>`：打印单份基线内容。"""
+    ws = args.ws or paths.workspace_root()
+    kind = args.kind
+    if kind not in bl.KINDS:
+        print("未知基线类型: %s（可选: %s）" % (kind, ", ".join(bl.KINDS)))
+        return 2
+    try:
+        data = bl.load_baseline(kind, ws)
+    except bl.BaselineError as exc:
+        print(str(exc))
+        return 3
+    print(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+    return 0
+
+
+def _scaffold_payload(kind):
+    """占位基线的最小合法内容（status=pending，未实测项一律 null）。
+
+    结构对齐 baseline schema：生成后必须能通过 baseline.validate_all，
+    避免"占位文件本身就是坏基线"。
+    """
+    if kind == "zero_baseline":
+        return {
+            "kind": kind, "schema_version": 1, "version": 1, "status": "pending",
+            "captured_at": None, "arm": "left", "firmware": None,
+            "teachpendant_version": None,
+            "joints": [{"name": n, "zero_deg": None, "unit": bl.ANGLE_UNIT,
+                        "groove_photo": None} for n in bl.JOINT_NAMES],
+            "groove_photos": [],
+            "fk_recheck": {"method": None, "max_pos_dev_mm": None,
+                           "max_ori_dev_deg": None, "conclusion": None,
+                           "controller_pose_usage": bl.CONTROLLER_POSE_USAGE},
+            "recalibration_triggers": ["换电池", "拆装后", "机械冲击后", "固件升级后"],
+        }
+    if kind == "measured_limits":
+        def item(unit):
+            return {"value": None, "unit": unit, "source": None, "method": None,
+                    "samples": None}
+        return {
+            "kind": kind, "schema_version": 1, "version": 1, "status": "pending",
+            "captured_at": None, "arm": "left", "udp_period_ms": bl.UDP_PERIOD_MS,
+            "joints": [{"name": n, "acceleration": item(bl.ACCELERATION_UNIT),
+                        "jerk": item(bl.JERK_UNIT)} for n in bl.JOINT_NAMES],
+            "tcp_repeatability": {"value_mm": None, "unit": bl.LENGTH_UNIT,
+                                  "source": None, "method": None, "samples": None},
+        }
+    if kind == "version_matrix":
+        return {
+            "kind": kind, "schema_version": 1, "version": 1, "status": "pending",
+            "captured_at": None, "controller_firmware": None, "teachpendant": None,
+            "rm_api2_sdk": None, "ros2_rm_robot_tag": None,
+            "tesseract_robotics_nanobind": None, "libstdcxx": None, "python": None,
+            "os": None, "container_image": None,
+        }
+    if kind == "network_plan":
+        return {
+            "kind": kind, "schema_version": 1, "version": 1, "status": "pending",
+            "captured_at": None,
+            "arms": {"left": {"ip": "192.168.1.18", "tcp_port": 8080, "udp_port": 8091},
+                     "right": {"ip": "192.168.1.19", "tcp_port": 8080, "udp_port": 8092}},
+            "realtime_report": {"period_ms": bl.UDP_PERIOD_MS,
+                                "cycle_multiple_ms": bl.UDP_PERIOD_MS,
+                                "mode": "triple_thread"},
+            "constraints": {"single_client_per_endpoint": True,
+                            "triple_thread_mode": True, "wired_direct": True},
+        }
+    raise ValueError("未知基线类型: %s" % kind)
+
+
+def cmd_baseline_scaffold(args):
+    """`rmctl baseline scaffold`：缺失时生成 status=pending 占位基线。"""
+    ws = args.ws or paths.workspace_root()
+    bdir = paths.baselines_dir(ws)
+    os.makedirs(bdir, exist_ok=True)
+    created, skipped = [], []
+    for kind in bl.KINDS:
+        path = os.path.join(bdir, "%s.yaml" % kind)
+        if os.path.exists(path) and not args.force:
+            skipped.append((kind, path))
+            continue
+        payload = _scaffold_payload(kind)
+        # 自检：占位文件本身必须是合法基线（否则 scaffold 产出的是坏文件）
+        issues = bl.validate_baseline(kind, payload, ws=ws)
+        errors = [i for i in issues if i["level"] == "error"]
+        if errors:
+            print("占位模板自检失败（%s）: %s" % (kind, bl.format_issues(errors)))
+            return 3
+        header = ("# %s（占位骨架，由 `rmctl baseline scaffold` 生成）\n"
+                  "# status=pending：未实测项一律 null，禁止填写占位数值。\n"
+                  "# 实测回填后把 status 改为 measured 并补齐 source/method/samples。\n"
+                  % kind)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(header)
+            yaml.safe_dump(payload, fh, allow_unicode=True, sort_keys=False,
+                           default_flow_style=False)
+        created.append((kind, path))
+    for kind, path in created:
+        print("  [新建] %-16s %s" % (kind, path))
+    for kind, path in skipped:
+        print("  [已存在] %-16s %s（加 --force 覆盖）" % (kind, path))
+    print("")
+    print("已生成 %d 份占位基线（status=pending），实测后回填并改 status=measured。"
+          % len(created))
+    return 0
 
 
 def cmd_fk(args):
@@ -187,6 +473,8 @@ def cmd_ik(args):
 
 
 def cmd_plan(args):
+    from .planner import plan_joint, plan_pose, freespace_profiles
+    from .verify import verify
     model = _load_model(args)
     start = np.asarray(_parse_floats(args.start) or model.home_state())
     goal = _parse_floats(args.goal)
@@ -232,6 +520,7 @@ def cmd_plan(args):
 
 
 def cmd_check(args):
+    from .verify import verify
     model = _load_model(args)
     data = _load_traj(args.traj)
     report = verify(model, data["points"], data["times"])
@@ -276,6 +565,7 @@ def cmd_ui(args):
 
 def cmd_bench(args):
     """规划性能基准（自建场景集 S1 的一部分）。"""
+    from .planner import plan_joint, freespace_profiles
     model = _load_model(args)
     from .verify import check_discrete
     rng = np.random.default_rng(args.seed)
@@ -326,6 +616,8 @@ def cmd_bench(args):
 
 def cmd_repl(args):
     """交互式会话：提示符里直接 fk / ik / plan / exec。"""
+    from .planner import plan_joint, freespace_profiles
+    from .verify import verify
     model = _load_model(args)
     print("rmctl 会话 —— 关节(%s)" % ",".join(model.joint_names))
     print("命令: fk <q> | ik <x y z r p y> | plan <q...> | run <q...> | home | q | help | quit")
@@ -384,8 +676,9 @@ version: 1
 robot:
   description: rm_description
   urdf: urdf/rm75_clean.urdf
-  srdf: srdf/rm75.srdf
+  srdf: rm75.srdf
   joint_limits: config/joint_limits.yaml
+  baselines_dir: baselines   # 四类真机基线目录（相对本文件所在目录）
   groups:
     - name: rm75_arm
       base: base_link
@@ -410,8 +703,13 @@ gripper:                   # 待接：型号、供电、协议
   power: external_24v     # 法兰供电上限 1.5A < 额定 1.9A，必须外部供电
   protocol: modbus_rtu
 calibration:
-  tcp: null
-  base_to_base: null
+  tcp: null               # 未标定：不得伪造
+  base_to_base: null      # 未标定：不得伪造
+  # 四类真机基线（相对 workcell/ 目录；文件本体在 baselines/）
+  zero_baseline: baselines/zero_baseline.yaml
+  measured_limits: baselines/measured_limits.yaml
+  version_matrix: baselines/version_matrix.yaml
+  network_plan: baselines/network_plan.yaml
 """
 
 
@@ -428,6 +726,15 @@ def build_parser():
 
     s = sub.add_parser("doctor", help="一条命令体检")
     s.set_defaults(func=cmd_doctor)
+
+    s = sub.add_parser("baseline", help="真机基线：check / list / show / scaffold")
+    s.add_argument("action", nargs="?", default="check",
+                   choices=["check", "list", "show", "scaffold"],
+                   help="默认 check")
+    s.add_argument("kind", nargs="?", default=None,
+                   help="show 用的基线类型（%s）" % "/".join(bl.KINDS))
+    s.add_argument("--force", action="store_true", help="scaffold 覆盖已存在文件")
+    s.set_defaults(func=cmd_baseline)
 
     s = sub.add_parser("fk", help="正解（自研 FK vs Tesseract 交叉校验）")
     s.add_argument("--joints", default=None)

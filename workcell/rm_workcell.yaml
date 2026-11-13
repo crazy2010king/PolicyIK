@@ -4,8 +4,9 @@ version: 1
 robot:
   description: rm_description
   urdf: urdf/rm75_clean.urdf
-  srdf: srdf/rm75.srdf
+  srdf: rm75.srdf
   joint_limits: config/joint_limits.yaml
+  baselines_dir: baselines   # 四类真机基线目录（相对本文件所在目录）
   groups:
     - name: rm75_arm
       base: base_link
@@ -30,5 +31,10 @@ gripper:                   # 待接：型号、供电、协议
   power: external_24v     # 法兰供电上限 1.5A < 额定 1.9A，必须外部供电
   protocol: modbus_rtu
 calibration:
-  tcp: null
-  base_to_base: null
+  tcp: null               # 未标定：不得伪造
+  base_to_base: null      # 未标定：不得伪造
+  # 四类真机基线（相对 workcell/ 目录；文件本体在 baselines/）
+  zero_baseline: baselines/zero_baseline.yaml
+  measured_limits: baselines/measured_limits.yaml
+  version_matrix: baselines/version_matrix.yaml
+  network_plan: baselines/network_plan.yaml
