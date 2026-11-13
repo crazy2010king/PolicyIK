@@ -13,6 +13,10 @@
   离线替身 :class:`~rm75_drake.device.transport.ScriptedTransport`。
 * :mod:`rm75_drake.device.safety` —— **安全七闸**（纯函数）：
   输入 = 上一拍指令 + 本拍状态，输出 = 钳位后指令 + 违规列表。
+* :mod:`rm75_drake.device.state_source` —— **UDP 状态源**：
+  无锁环形缓冲（最近 N 帧）+ 帧完整性校验 + 状态 age。
+* :mod:`rm75_drake.device.state_machine` —— **设备状态机**：
+  纯转移表 + 守卫条件（9 状态 / 15 事件），非法转移显式报错。
 
 本包**零 pydrake 依赖**（只依赖 numpy + 本项目的轨迹/路径层），
 因此安全七闸 / 状态机 / 执行环 / 恢复流程都能在无 SDK、无真机的环境里被测试。
@@ -79,6 +83,34 @@ from .safety import (
     load_safety_limits,
     safety_limits_from_sources,
 )
+from .state_source import (
+    DEFAULT_CAPACITY,
+    MISSED_CYCLES_UNBOUNDED,
+    REASON_FRAME_INCOMPLETE,
+    REASON_INVALID_FRAME,
+    FrameRing,
+    StateSample,
+    StateSource,
+    StateSourceError,
+)
+from .state_machine import (
+    ALL_EVENTS,
+    ALL_STATES,
+    REASON_ESTOP_STATUS,
+    REASON_GUARD_REJECTED,
+    REASON_ILLEGAL_TRANSITION,
+    REASON_JOINT_ERROR,
+    REASON_SYSTEM_ERROR,
+    DeviceEvent,
+    DeviceState,
+    DeviceStateMachine,
+    GuardRejectedError,
+    IllegalTransitionError,
+    StateMachineError,
+    Transition,
+    detect_fault,
+    transition_table,
+)
 from .transport import (
     REASON_CLOSED,
     REASON_GRIPPER_OFFLINE,
@@ -137,6 +169,32 @@ __all__ = [
     "REASON_LINK_DOWN",
     "REASON_INVALID_INPUT",
     "REASON_GRIPPER_OFFLINE",
+    # state_source
+    "StateSource",
+    "StateSourceError",
+    "StateSample",
+    "FrameRing",
+    "DEFAULT_CAPACITY",
+    "MISSED_CYCLES_UNBOUNDED",
+    "REASON_FRAME_INCOMPLETE",
+    "REASON_INVALID_FRAME",
+    # state_machine
+    "DeviceStateMachine",
+    "DeviceState",
+    "DeviceEvent",
+    "ALL_STATES",
+    "ALL_EVENTS",
+    "Transition",
+    "StateMachineError",
+    "IllegalTransitionError",
+    "GuardRejectedError",
+    "detect_fault",
+    "transition_table",
+    "REASON_ILLEGAL_TRANSITION",
+    "REASON_GUARD_REJECTED",
+    "REASON_ESTOP_STATUS",
+    "REASON_JOINT_ERROR",
+    "REASON_SYSTEM_ERROR",
     # safety
     "SafetyLimits",
     "SafetyState",
