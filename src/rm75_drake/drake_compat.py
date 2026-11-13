@@ -13,6 +13,18 @@
 5. ``DifferentialInverseKinematicsParameters(num_positions, num_velocities)``——
    老版本允许 ``num_velocities=None``，新版本必须显式给出。
 6. ``DiffIKResult.status`` 的判定方式随版本变化（新版返回枚举，旧版可能是布尔/字符串）。
+
+## 反模式（差异项 0 的翻版）：解析前不得预预留 model instance 槽位
+
+T02 早期版本提供过 ``prepare_plant_for_parsing()``，在解析前往 plant 里塞若干空
+model instance 槽位，想规避 ``detail_collision_filter_group_resolver.cc:27`` 的
+``minimum_model_instance_index_ > world`` abort。**该变通本身就是缺陷**：
+``minimum_model_instance_index_`` 取自 ``plant->num_model_instances()``，预预留把
+它抬到大于 world 之后，Drake 反而**确定性**触发该 DEMAND。
+
+实测对照（唯一变量 = 是否预预留）：基线 Drake 1.55.0 预预留 0/20 成功、不预预留
+20/20 成功；降级 Drake 1.51.1 预预留 0/10 成功、不预预留 10/10 成功。
+因此该函数**已删除**，model instance 的分配交还 Drake Parser 管理。
 """
 
 from __future__ import annotations
@@ -22,7 +34,6 @@ import sys
 from typing import Any, List, Optional, Sequence, Tuple
 
 __all__ = [
-    "prepare_plant_for_parsing",
     "drake_version",
     "drake_version_tuple",
     "baseline_profile",
@@ -58,46 +69,6 @@ def drake_version_tuple() -> Tuple[int, ...]:
 def baseline_profile() -> str:
     """按当前解释器版本返回 versions.lock 中的档位名（``py312`` / ``py310``）。"""
     return "py312" if sys.version_info >= (3, 12) else "py310"
-
-
-# ── 差异项 0：解析前的 plant 预备（Drake 1.51.1 的坑）────────────────
-def prepare_plant_for_parsing(
-    plant,
-    slot_name: str = "rm75_drake_reserved_slot",
-    slots: int = 8,
-):
-    """在解析模型**之前**为 plant 预留若干个空的 model instance 槽位。
-
-    为什么需要（Drake 1.51.1 实测，fallback 档）：
-    ``Parser.AddModels`` 内部会构造 ``CollisionFilterGroupResolver``，其构造函数里有
-    ``DRAKE_DEMAND(minimum_model_instance_index_ > world)``，其中
-    ``minimum_model_instance_index_ = plant->num_model_instances()``，
-    ``world = plant->world_body().model_instance()``。
-    **未 finalize 的 plant 上，world body 的 model instance 不可靠**（Python 侧
-    ``plant.world_body().model_instance()`` 恒显示 0，但 C++ 侧读到的值随堆布局变化）。
-    于是该 DEMAND 变成**间歇性**失败并直接 abort 进程
-    （``detail_collision_filter_group_resolver.cc:27``，
-    ``condition 'minimum_model_instance_index_ > world' failed``）。
-
-    本函数把 ``num_model_instances()`` 抬到足够高，**降低**触发概率，但在本机实测
-    **不能保证 100% 消除**（pytest 进程内仍会失败）。因此
-    ``tests/test_package_map.py`` 的模型加载用例把解析放在**独立子进程**里跑：
-    abort 只影响子进程，pytest 会话不会被打挂。
-
-    TODO(S01)：在 Drake 1.55（受支持基线）上复核该 DEMAND 是否仍存在；
-    若已修复，应删除本函数并简化调用方。
-    """
-    add_model_instance = getattr(plant, "AddModelInstance", None)
-    if add_model_instance is None:  # pragma: no cover - 极老版本
-        return None
-    reserved = []
-    for i in range(max(0, int(slots))):
-        name = slot_name if i == 0 else f"{slot_name}_{i}"
-        try:
-            reserved.append(add_model_instance(name))
-        except Exception:  # 槽位已存在（重复调用）
-            continue
-    return reserved
 
 
 # ── 差异项 1：位姿求值 ────────────────────────────────────────────────

@@ -2,7 +2,10 @@
 
 覆盖：
 * ``build_package_map()`` 能解析占位 URDF 的 ``package://rm75_drake/...``；
-* ``Parser.AddModels(url=...)`` 能成功加载占位模型；
+* ``Parser.AddModels(url=...)`` 能**真实加载**占位模型——加载失败一律判红，
+  **不允许**用 ``pytest.skip`` 把 abort/失败藏起来（T02 返工硬性要求）；
+* **不预预留** model instance 槽位（回归守卫：预预留会确定性触发 Drake 的
+  ``CollisionFilterGroupResolver`` DEMAND abort）；
 * **value 语义回归**：``PopulateFromFolder`` 与 ``AddPackageXml`` 两种注册方式的
   ``ResolveUrl`` 结果一致（差异仅在 ``GetPath`` 的尾斜杠）——这是 T02 钉死的结论，
   一旦 Drake 行为变化必须立刻暴露；
@@ -22,7 +25,7 @@ PLACEHOLDER_URL = "package://rm75_drake/placeholder.urdf"
 
 
 def _make_parser():
-    """创建已绑定 package:// 的 Parser（含 Drake 1.51.1 的 model instance 槽位预留）。"""
+    """创建已绑定 package:// 的 Parser（不预预留 model instance 槽位）。"""
     parser, _pkg_map = package_map.make_parser()
     return parser
 
@@ -46,13 +49,14 @@ def test_resolve_placeholder_url():
 
 
 def test_parser_add_models_from_package_url():
-    """Drake 真正加载 ``package://rm75_drake/placeholder.urdf``。
+    """Drake 真正加载 ``package://rm75_drake/placeholder.urdf``（失败即判红）。
 
-    Drake 1.51.1（fallback 档）在 ``Parser.AddModels`` 内部构造
-    ``CollisionFilterGroupResolver`` 时有一条不稳定的 DEMAND
-    （``minimum_model_instance_index_ > world``），失败会直接 abort 整个进程。
-    为了不让 abort 打断 pytest 会话，本用例把解析放进**独立子进程**执行；
-    子进程若命中该已知 abort，用例显式 skip 并说明原因（不是假绿灯）。
+    加载放在**独立子进程**里执行：Drake 的 ``CollisionFilterGroupResolver``
+    DEMAND 失败时会直接 abort 进程，放在子进程里可以给出可读的失败信息，
+    而不是打挂整个 pytest 会话。
+
+    **T02 返工硬性要求**：本用例**不得**在加载失败时 ``pytest.skip``——
+    失败必须让用例变红（基线 Drake 1.55.0 与降级 Drake 1.51.1 均实测通过）。
     """
     import subprocess
     import sys
@@ -78,14 +82,10 @@ def test_parser_add_models_from_package_url():
         cwd=str(paths.REPO_ROOT),
     )
     combined = (proc.stdout or "") + (proc.stderr or "")
-    if "minimum_model_instance_index_ > world" in combined:
-        pytest.skip(
-            "已知环境限制：Drake 1.51.1（fallback 档）在解析时的 "
-            "CollisionFilterGroupResolver DEMAND 上不稳定 abort；"
-            "受支持基线 Drake 1.55（py312）需复核。"
-        )
-    assert proc.returncode == 0, combined
-    assert "LOADED_OK" in combined
+    assert proc.returncode == 0, (
+        f"package:// 加载失败（退出码 {proc.returncode}）：\n{combined}"
+    )
+    assert "LOADED_OK" in combined, combined
 
 
 def test_placeholder_urdf_is_wellformed_xml():
@@ -102,10 +102,51 @@ def test_placeholder_urdf_is_wellformed_xml():
     assert joints[0].find("parent").get("link") in {link.get("name") for link in links}
 
 
-def test_make_parser_reserves_model_instance_slot():
-    """Drake 1.51.1：解析前必须预留 model instance 槽位（见 drake_compat 文档）。"""
+def test_make_parser_does_not_prereserve_model_instances():
+    """回归守卫：解析前**不得**预预留 model instance 槽位。
+
+    预预留（``plant.AddModelInstance(...)``）会把 ``num_model_instances()`` 抬高，
+    反而**确定性**触发 Drake 的 ``CollisionFilterGroupResolver`` DEMAND
+    （``minimum_model_instance_index_ > world``）并 abort 进程。
+    因此 ``make_parser()`` 创建的 plant 上不得出现任何本项目自造的槽位，
+    实例数必须与新建的空 plant 一致（world + default 两个）。
+    """
+    from pydrake.multibody.plant import MultibodyPlant
+
     parser, _ = package_map.make_parser()
-    assert parser.plant().num_model_instances() >= 2
+    plant = parser.plant()
+    baseline = MultibodyPlant(0.0).num_model_instances()
+    assert plant.num_model_instances() == baseline, (
+        f"解析前不应预预留 model instance，实际 {plant.num_model_instances()}"
+        f"（新建空 plant 为 {baseline}）"
+    )
+
+
+def test_make_parser_keeps_plant_alive():
+    """回归守卫：Drake ``Parser`` 不保活 plant，``make_parser()`` 必须代为保活。
+
+    Drake 的 C++ ``Parser`` 只持有 ``MultibodyPlant*`` 裸指针。若 plant 在
+    ``make_parser()`` 的局部作用域里被 GC 销毁，parser 就悬垂，后续
+    ``AddModels()`` 会直接 SIGSEGV（而不是抛可读的异常）。
+    """
+    import gc
+
+    parser, _ = package_map.make_parser()
+    gc.collect()
+    plant = package_map.plant_for_parser(parser)
+    assert plant is not None, "make_parser() 未登记 plant（会导致 parser 悬垂）"
+    assert parser.plant() is not None
+    # plant 必须仍然可用：加入一个 model instance 不应崩溃
+    plant.AddModelInstance("rm75_drake_test_slot")
+    assert plant.num_model_instances() >= 3
+
+
+def test_package_map_module_does_not_expose_prepare_plant_for_parsing():
+    """``prepare_plant_for_parsing`` 已删除（它是自引入缺陷的变通）。"""
+    from rm75_drake import drake_compat
+
+    assert not hasattr(drake_compat, "prepare_plant_for_parsing")
+    assert "prepare_plant_for_parsing" not in drake_compat.__all__
 
 
 def test_value_semantics_are_identical_for_both_registration_styles():

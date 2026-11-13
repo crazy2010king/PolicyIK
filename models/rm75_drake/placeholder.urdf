@@ -3,10 +3,10 @@
   占位模型（T02）：单个 box 立方体 link + 一个 fixed 关节。
   官方 RM75-B 资产属 S01，本文件**不使用**任何官方资产。
 
-  注意：关节的 parent 必须是**本 URDF 内的 link**，不能写 link="world"。
-  Drake 1.51.1 在解析挂到 world 的关节时会触发
-  detail_collision_filter_group_resolver.cc:27 的 CHECK 失败
-  （'minimum_model_instance_index_ > world' failed），导致进程 abort。
+  注意：关节的 parent 使用**本 URDF 内的 link**（模型自包含约定）。
+  挂到世界（parent link="world"）在 Drake 上本身可行（实测加载成功），
+  但本项目约定用场景层的 base_extrinsics 表达挂载位姿（S02 填充），
+  因此 URDF 不直接挂 world。
 -->
 <robot name="rm75_drake_placeholder">
   <link name="base_link">

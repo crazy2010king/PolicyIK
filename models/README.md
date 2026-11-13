@@ -28,7 +28,10 @@ models/
 * 官方资产改造后仍归入本项目包（`rm75_drake`），**不**另建包名，以免 `package://`
   前缀分叉。
 
-## `package://` 解析语义（实测结论，T02 在 Drake 1.51.1 上实测并钉死）
+## `package://` 解析语义（实测结论，T02 钉死）
+
+实测环境：受支持基线 Drake 1.55.0（py312）+ 降级档 Drake 1.51.1（py310），
+两档结论一致。
 
 | 注册方式 | key | value（`GetPath` 返回） |
 |---|---|---|
@@ -42,27 +45,39 @@ models/
 * 本项目统一**只走 `PopulateFromFolder`**（`rm75_drake.package_map.build_package_map()`），
   **禁止**在同一张 map 上混用两种注册方式。
 
-### 另三个必须记住的 Drake 陷阱
+### 另四个必须记住的 Drake 陷阱
 
 1. `Parser.AddModels` 的 URL 形式是**关键字参数**：
    `parser.AddModels(url="package://rm75_drake/placeholder.urdf")`。
    写成位置参数会被当成普通文件名，相对 cwd 拼接后报 `XML_ERROR_FILE_NOT_FOUND`。
-2. URDF 里关节的 `parent link` 必须是**本 URDF 内的 link**，不能写 `link="world"`：
-   Drake 1.51.1 会触发
-   `detail_collision_filter_group_resolver.cc:27` 的 CHECK 失败
-   （`'minimum_model_instance_index_ > world' failed`）并 abort 进程。
-3. **空 plant 上直接解析模型会间歇性 abort**（同上 CHECK）：
-   `Parser.AddModels` 内部构造的 `CollisionFilterGroupResolver` 要求
-   `plant->num_model_instances() > world`，而未 finalize 的 plant 上
-   `world_body().model_instance()` 不可靠（Python 侧恒显示 0，C++ 侧读到的值随堆布局变化），
-   于是该 DEMAND 变成间歇性失败并 abort 进程。
-   规避方式：解析前预留若干空的 model instance 槽位——
-   `rm75_drake.drake_compat.prepare_plant_for_parsing(plant)`，
-   或直接用 `rm75_drake.package_map.make_parser()`（内部已调用）。
-   注意：本机（Drake 1.51.1 / fallback 档）实测**不能 100% 消除**，
-   因此 `tests/test_package_map.py` 的模型加载用例把解析放在**独立子进程**中执行，
-   abort 只会让该用例显式 skip，不会打挂 pytest 会话。
-   TODO(S01)：在受支持基线 Drake 1.55（py312）上复核该 DEMAND 是否仍存在。
+2. **不得**在解析前预预留 model instance 槽位（**反模式**，T02 返工钉死）。
+   曾经的变通是 `plant.AddModelInstance(...)` 先塞若干空槽位，想规避
+   `detail_collision_filter_group_resolver.cc:27` 的
+   `'minimum_model_instance_index_ > world' failed` abort。
+   **结论反转**：该 abort 正是这个变通自己引入的——
+   `minimum_model_instance_index_` 取自 `plant->num_model_instances()`，
+   预预留把 `num_model_instances()` 抬到大于 world 之后，Drake 反而**确定性** abort。
+   唯一变量对照（同一台机器、同一份代码）：
+   - 基线 Drake 1.55.0：预预留 **0/20** 成功；不预预留 **20/20** 成功；
+   - 降级 Drake 1.51.1：预预留 **0/10** 成功；不预预留 **10/10** 成功。
+
+   因此：model instance 的分配**交还 Drake Parser 管理**，解析前不要动 plant 的
+   槽位；`rm75_drake.package_map.make_parser()` 内部**不做**任何预留
+   （原 `drake_compat.prepare_plant_for_parsing()` 已删除）。
+3. URDF 的关节 `parent link` 写成 `world` 并**不会**触发上面的 abort（已实测：
+   挂到 world 的模型加载成功）。本项目仍约定 URDF **自包含**（关节 parent 用
+   本 URDF 内的 link），而“挂到世界”的位姿用场景层的 `base_extrinsics` 表达
+   （S02 填充）——这是**项目约定**，不是 Drake 的硬性限制。
+   同理，`tests/test_package_map.py` 的模型加载用例不再用 `pytest.skip`
+   掩盖失败：加载失败一律判红。
+4. **Drake 的 `Parser` 不保活 plant**（C++ 侧只持有 `MultibodyPlant*` 裸指针）。
+   若 plant 是在某个函数作用域里创建的（例如 `make_parser()` 的局部变量），
+   函数返回后 plant 立刻被 Python GC 销毁，parser 就变成悬垂指针——后续
+   `AddModels()` 直接 **SIGSEGV**（段错误，而不是可读的异常）。
+   本项目的做法：`rm75_drake.package_map.make_parser()` 把 plant 登记到
+   `plant_for_parser(parser)` 可查的弱引用保活表里（parser 活着 → plant 活着），
+   调用方也可以用 `plant_for_parser(parser)` 显式持有 plant。
+   **回归守卫**：`tests/test_package_map.py::test_make_parser_keeps_plant_alive`。
 
 ## 复现本文档结论的最小实验
 
