@@ -19,7 +19,7 @@
 #   hardware  —— **仅硬件层包 rm_hw_bridge/ 内禁止**；rmctl 侧允许
 #                import tesseract_robotics（那是规划内核，合规）。
 #   <层名>    —— 除 repo / hardware 外，scope 也可写 rules.layers 里声明的层名
-#                （如 executor），audit.py 按层目录判定（见 rules.layers）。
+#                （如 executor / safety），audit.py 按层目录判定（见 rules.layers）。
 #
 # rules.*_must_not_import 是**层反向依赖禁令**（独立于 forbidden_imports）：
 #   命中即报 reverse-dependency 违规。
@@ -193,16 +193,27 @@ forbidden_imports:
 rules:
   # 层 → 包根的**声明式映射**（audit.py 按层判定，不再硬编码 HARDWARE_ROOT）
   #   hardware   —— 硬件层（唯一允许直接接触 SDK 的层）
+  #   safety     —— 安全层（rm_safety：失效安全停机四级链路；判据纯函数）
   #   executor   —— 执行层（10 ms 单时钟执行器，只允许依赖 hardware 层）
-  #   experience —— 体验层（rmctl，可依赖 hardware / executor）
+  #   experience —— 体验层（rmctl，可依赖 hardware / safety / executor）
   layers:
     hardware: rm_hw_bridge
+    safety: rm_safety
     executor: rm_executor
     experience: rmctl
 
   # 硬件层不得反向依赖体验层（rmctl），否则厂商解耦失效
   hardware_must_not_import:
     - rmctl
+
+  # 安全层不得反向依赖体验层（rmctl）/ 执行层（rm_executor）/ 规划内核（tesseract*）
+  # —— 「安全判据独立于规划器 / 独立于执行层」这条红线的**代码层强制**：
+  #    安全层只允许被下游消费（rm_executor / rmctl 都 import rm_safety），
+  #    绝不允许反向 import 它们（否则判据会被执行层/体验层的实现细节污染）。
+  safety_must_not_import:
+    - rmctl
+    - rm_executor
+    - "tesseract*"
 
   # 执行层不得反向依赖体验层（rmctl），也不得依赖规划内核（tesseract*）
   executor_must_not_import:

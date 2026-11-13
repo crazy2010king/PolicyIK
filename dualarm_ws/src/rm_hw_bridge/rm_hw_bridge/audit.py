@@ -11,8 +11,13 @@
     scope 也可写 ``contract.yaml`` 的 ``rules.layers`` 里声明的**层名**
     （如 ``executor``）——**按层判定**，不再硬编码硬件层根目录。
 (c) **层反向依赖** —— 按 ``rules.<层>_must_not_import`` 判定：
-    硬件层不得反向依赖体验层（rmctl）；执行层不得反向依赖体验层（rmctl）
-    与规划内核（tesseract*）。
+    硬件层不得反向依赖体验层（rmctl）；**安全层**不得反向依赖体验层（rmctl）、
+    执行层（rm_executor）与规划内核（tesseract*）；执行层不得反向依赖体验层
+    （rmctl）与规划内核（tesseract*）。
+
+    层的增删**只改 ``contract.yaml`` 的 ``rules.layers``**，本审计器零改动
+    即可覆盖新层（``layer_roots`` / ``layer_of`` / ``_layer_reverse_targets``
+    均为声明式读取）。
 
 CLI::
 
@@ -150,9 +155,19 @@ def _forbidden_imports(contract: Dict[str, Any]) -> List[Dict[str, str]]:
     return out
 
 
-def _reverse_dep_targets(contract: Dict[str, Any]) -> List[str]:
-    rules = contract.get("rules") or {}
-    return _names(rules.get("hardware_must_not_import"))
+def _reverse_dep_targets(contract: Dict[str, Any],
+                         roots: Optional[Dict[str, str]] = None) -> Dict[str, List[str]]:
+    """层 → 该层禁止 import 的模块清单（**声明式**，按 ``rules.layers`` 泛化）。
+
+    早期版本只读 ``rules.hardware_must_not_import``（单层硬编码）；现在改为
+    按 ``rules.layers`` 声明的**每个层**读 ``rules.<层>_must_not_import``
+    ——新增一层（如 ``safety``）只需改 ``contract.yaml``，审计器零改动。
+
+    命中即报 ``reverse-dependency`` 违规（见 :func:`_scan_file` 的 (c) 段）。
+    """
+    if roots is None:
+        roots = layer_roots(contract)
+    return _layer_reverse_targets(contract, roots)
 
 
 # ------------------------------------------------------------------ 分层

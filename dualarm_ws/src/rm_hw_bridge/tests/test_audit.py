@@ -66,6 +66,27 @@ EXECUTOR_CLEAN_SOURCE = '''\
 CONST = 1
 '''
 
+# --- 安全层负例（S04/T8）：安全层不得反向依赖体验层 / 执行层 / 规划内核 ---
+SAFETY_RM_EXECUTOR_SOURCE = '''\
+from rm_executor import executor
+'''
+
+SAFETY_RMCTL_SOURCE = '''\
+from rmctl import hwcollect
+'''
+
+SAFETY_TESSERACT_SOURCE = '''\
+import tesseract_robotics.planning
+'''
+
+SAFETY_CLEAN_SOURCE = '''\
+"""干净的安全层文件（零反向依赖）。"""
+
+from rm_safety import levels
+
+CONST = levels.LEVEL_L1
+'''
+
 
 @pytest.fixture()
 def bad_file(tmp_path):
@@ -140,6 +161,22 @@ def _executor_fixture(repo_root, name, source):
     """在执行层包目录里放一个临时文件（模拟执行层源码），返回路径。"""
     target_dir = os.path.join(repo_root, "dualarm_ws", "src", "rm_executor",
                               "rm_executor")
+    target = os.path.join(target_dir, name)
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(source)
+    return target
+
+
+def _safety_fixture(repo_root, name, source):
+    """在安全层包目录里放一个临时文件（模拟安全层源码），返回路径。
+
+    安全层的层根是 ``dualarm_ws/src/rm_safety``（见 ``rules.layers``），
+    因此放在包内的 ``tests/`` 下即可被判为「safety 层」。
+    """
+    target_dir = os.path.join(repo_root, "dualarm_ws", "src", "rm_safety",
+                              "tests")
+    if not os.path.isdir(target_dir):
+        os.makedirs(target_dir, exist_ok=True)
     target = os.path.join(target_dir, name)
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(source)
@@ -227,6 +264,102 @@ def test_negative_hardware_layer_imports_rmctl_still_violation(repo_root):
     finally:
         if os.path.exists(target):
             os.remove(target)
+
+
+# ------------------------------------------- 安全层反向依赖红线（S04/T8）
+def test_safety_layer_is_declared_in_contract():
+    """contract.yaml 必须声明 safety 层与它的反向依赖禁令。"""
+    contract = audit._load_contract()
+    rules = contract.get("rules") or {}
+    layers = rules.get("layers") or {}
+    assert layers.get("safety") == "rm_safety"
+    targets = audit._reverse_dep_targets(contract)
+    assert set(targets.get("safety") or []) == {"rmctl", "rm_executor", "tesseract*"}
+    # 核心/支持符号清单**不变**（R003 结论原样成立）
+    assert contract["limits"]["core_count"] == 22
+    assert contract["limits"]["support_count"] == 5
+
+
+def test_safety_layer_root_is_resolved(repo_root):
+    """安全层的层根目录解析正确（dualarm_ws/src/rm_safety）。"""
+    roots = audit.layer_roots()
+    assert roots["safety"].endswith(os.path.join("src", "rm_safety"))
+    assert audit.layer_of(os.path.join(roots["safety"], "rm_safety", "levels.py"),
+                          roots) == "safety"
+
+
+def test_negative_safety_layer_imports_rm_executor(repo_root):
+    """安全层 import rm_executor → 反向依赖违规（CLI 退出码 3）。"""
+    target = _safety_fixture(repo_root, "_tmp_audit_safety_exec.py",
+                             SAFETY_RM_EXECUTOR_SOURCE)
+    try:
+        violations = audit.scan_paths([target])
+        assert any(v.kind == audit.KIND_REVERSE_DEPENDENCY for v in violations)
+        assert audit.main(["--paths", target]) == 3
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+def test_negative_safety_layer_imports_rmctl(repo_root):
+    """安全层 import rmctl → 反向依赖违规（CLI 退出码 3）。"""
+    target = _safety_fixture(repo_root, "_tmp_audit_safety_rmctl.py",
+                             SAFETY_RMCTL_SOURCE)
+    try:
+        violations = audit.scan_paths([target])
+        assert any(v.kind == audit.KIND_REVERSE_DEPENDENCY for v in violations)
+        assert audit.main(["--paths", target]) == 3
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+def test_negative_safety_layer_imports_tesseract(repo_root):
+    """安全层 import tesseract*（规划内核）→ 反向依赖违规（CLI 退出码 3）。"""
+    target = _safety_fixture(repo_root, "_tmp_audit_safety_tesseract.py",
+                             SAFETY_TESSERACT_SOURCE)
+    try:
+        violations = audit.scan_paths([target])
+        assert any(v.kind == audit.KIND_REVERSE_DEPENDENCY for v in violations)
+        assert audit.main(["--paths", target]) == 3
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+def test_positive_clean_safety_file(repo_root):
+    """干净的安全层文件 → 0 违规（退出码 0）。"""
+    target = _safety_fixture(repo_root, "_tmp_audit_safety_clean.py",
+                             SAFETY_CLEAN_SOURCE)
+    try:
+        assert audit.scan_paths([target]) == []
+        assert audit.main(["--paths", target]) == 0
+    finally:
+        if os.path.exists(target):
+            os.remove(target)
+
+
+def test_safety_package_has_no_reverse_dependency(repo_root):
+    """真实安全层包内零反向依赖（不 import rm_executor / rmctl / tesseract*）。"""
+    pkg_dir = os.path.join(repo_root, "dualarm_ws", "src", "rm_safety")
+    violations = audit.scan_paths([pkg_dir])
+    assert violations == [], "安全层包内存在违规: %s" % [str(v) for v in violations]
+
+
+def test_symbol_lists_unchanged_after_safety_layer_added():
+    """新增安全层后，22 核心 / 5 支持符号名单与黑名单一律不变。"""
+    from rm_hw_bridge import loader
+
+    contract = audit._load_contract()
+    core = loader.core_symbols(contract)
+    support = loader.support_symbols(contract)
+    assert len(core) == 22
+    assert len(support) == 5
+    assert contract["limits"]["core_count"] == len(core)
+    assert contract["limits"]["support_count"] == len(support)
+    symbols, prefixes = audit._blacklist(contract)
+    assert len(symbols) == 13
+    assert prefixes == ["rm_algo_"]
 
 
 # ------------------------------------------------------------------ 正例
