@@ -48,6 +48,8 @@ __all__ = [
     "GRIPPER_URDF_URL",
     "RM75_LINK_NAMES",
     "RM75_JOINT_NAMES",
+    "RM75_DOF",
+    "RM75_TOTAL_MASS_KG",
     "RM75_BASE_LINK",
     "RM75_TIP_LINK",
     "GRIPPER_BASE_LINK",
@@ -103,6 +105,12 @@ RM75_LINK_NAMES: Tuple[str, ...] = (
 
 #: 全部关节名（顺序 = 关节序号）。
 RM75_JOINT_NAMES: Tuple[str, ...] = tuple(f"joint_{i}" for i in range(1, 8))
+
+#: 固定基座后的可动关节数（= 7）。
+RM75_DOF = 7
+
+#: 改造版 RM75-B 的总质量（kg）——官方 URDF 逐 link 质量之和。
+RM75_TOTAL_MASS_KG = 7.776
 
 
 def make_plant(time_step: float = 0.0):

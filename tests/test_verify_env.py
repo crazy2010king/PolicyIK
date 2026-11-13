@@ -30,6 +30,7 @@ from tools import verify_env  # noqa: E402
 VERIFY = REPO_ROOT / "tools" / "verify_env.py"
 SETUP = REPO_ROOT / "tools" / "setup_env.sh"
 LOCK_PATH = REPO_ROOT / "versions.lock"
+LIMITS_PATH = REPO_ROOT / "models" / "rm75_drake" / "joint_limits.yaml"
 
 
 def run_verify(*args: str) -> subprocess.CompletedProcess:
@@ -248,6 +249,79 @@ def test_package_map_smoke():
     result = run_verify("--package-map")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "package://rm75_drake/placeholder.urdf" in result.stdout
+
+
+# --------------------------------------------------------------------------- #
+# --model（模型自检，S01-T06）
+# --------------------------------------------------------------------------- #
+def test_model_check_exits_zero():
+    """模型自检在真实模型上必须退出 0，并打印 DoF / 质量 / 零位高度 / 7 条限位。"""
+    pytest.importorskip("pydrake")
+    result = run_verify("--model")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "DoF=7" in result.stdout
+    assert "7.776" in result.stdout
+    assert "0.8505" in result.stdout
+    for index in range(1, 8):
+        assert f"joint_{index}" in result.stdout
+
+
+def test_model_check_json_summary_is_parseable():
+    pytest.importorskip("pydrake")
+    result = run_verify("--model", "--json")
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is True
+    check = payload["checks"]["model"]
+    assert check["status"] == "PASS"
+    assert check["summary"]["dof"] == 7
+    assert len(check["summary"]["joint_limits"]) == 7
+
+
+def test_model_check_detects_tampered_limits_handoff(tmp_path):
+    """负例：限位交接件被改坏 → --model 必须失败（退出码 1），不得假绿灯。"""
+    pytest.importorskip("pydrake")
+    data = yaml.safe_load(LIMITS_PATH.read_text(encoding="utf-8"))
+    data["joints"][0]["software"]["position_upper_rad"] = data["joints"][0]["hardware"][
+        "position_upper_rad"
+    ]
+    target = tmp_path / "joint_limits.yaml"
+    target.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    result = run_verify("--model", "--joint-limits", str(target))
+    assert result.returncode == 1
+    assert "position_upper_rad" in result.stdout
+
+
+def test_model_check_reports_environment_error_when_drake_is_missing():
+    """负例：Drake 不可用 → 状态 ERROR（环境错误，退出码 2），不得伪装成通过。"""
+    def boom():
+        raise ImportError("No module named 'pydrake'")
+
+    status, problems, _summary = verify_env.check_model(loader=boom)
+    assert status == "ERROR"
+    assert problems
+
+
+def test_model_check_reports_failure_when_model_cannot_be_loaded():
+    """负例：模型加载失败 → 状态 FAIL（检查失败），不得静默通过。"""
+    def boom():
+        raise RuntimeError("URDF 解析失败")
+
+    status, problems, _summary = verify_env.check_model(loader=boom)
+    assert status == "FAIL"
+    assert problems
+
+
+def test_model_check_detects_drifted_joint_limits(tmp_path):
+    """负例：URDF 限位与交接件漂移 → 必须判红。"""
+    pytest.importorskip("pydrake")
+    data = yaml.safe_load(LIMITS_PATH.read_text(encoding="utf-8"))
+    data["joints"][1]["hardware"]["velocity_rad_s"] = 3.14
+    target = tmp_path / "joint_limits.yaml"
+    target.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    result = run_verify("--model", "--joint-limits", str(target))
+    assert result.returncode == 1
+    assert "joint_2" in result.stdout
 
 
 # --------------------------------------------------------------------------- #

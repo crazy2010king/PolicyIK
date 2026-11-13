@@ -1,0 +1,117 @@
+# RM75-B 关节限位真值（S01-T06 交接件）
+#
+# 消费方：S03 安全闸（软限位）、S02 规划（关节采样）、S04 标定（工作空间边界）。
+# 一致性由 `python3 tools/verify_env.py --model` 强制校验：
+#   hardware 段必须逐条等于改造版 URDF（models/rm75_drake/rm75_drake.urdf）的 <limit>；
+#   software 段必须恰好比 hardware 每侧再收紧 margin_rad（4°）。
+# 校验逻辑见 src/rm75_drake/limits.py。
+
+schema_version: 1
+model: RM75-B
+urdf: models/rm75_drake/rm75_drake.urdf
+
+source:
+  official_parameter_table: >-
+    RealMan 官方开发者中心「RM75 产品参数表」：J1/J2 最大角速度 180°/s（3.1416 rad/s），
+    J3–J7 最大角速度 225°/s（3.927 rad/s）；J7 机械行程为 ±360° 连续圈。
+  upstream_repository: https://github.com/RealManRobot/rm_models
+  upstream_commit: cff49bb40f5ed0728505c03bff0e521a0dc21acd
+  upstream_path: RM75/urdf/RM75-B/urdf/RM75-B.urdf
+  effort_source: >-
+    官方 RM75-B URDF 的 <limit effort=...>（官方参数表未逐轴给出力矩上限，
+    本项目沿用官方 URDF 声明值：J1/J2 = 60 N·m，J3/J4 = 30 N·m，J5/J6/J7 = 10 N·m）。
+  control_constraint: >-
+    真机仅支持关节空间位置伺服（R16/R016）：力矩级控制仅用于仿真，
+    因此 effort 在本项目里是**仿真侧的**力矩上限，不是真机可用的控制量。
+
+software_limits:
+  margin_rad: 0.0698132
+  margin_deg: 4.0
+  rule: >-
+    位置限位在硬件限位基础上**每侧**再收紧 4°（0.0698132 rad）；
+    速度限位与 effort 不额外收紧（速度由真机位置伺服内部闭环约束，
+    effort 只在仿真侧生效）。
+  joint_7_reason: >-
+    joint_7 是 ±360°（±6.283185307179586 rad）连续圈，边界处没有机械硬限位，
+    因此同样按 4° 收紧（±6.213372107179586 rad），
+    避免换向/回零指令长时间压在行程边界上。
+
+joints:
+  - name: joint_1
+    hardware:
+      position_lower_rad: -3.106
+      position_upper_rad: 3.106
+      velocity_rad_s: 3.1416
+      effort_nm: 60
+    software:
+      position_lower_rad: -3.0361868
+      position_upper_rad: 3.0361868
+      velocity_rad_s: 3.1416
+      effort_nm: 60
+  - name: joint_2
+    hardware:
+      position_lower_rad: -2.2689
+      position_upper_rad: 2.2689
+      velocity_rad_s: 3.1416
+      effort_nm: 60
+    software:
+      position_lower_rad: -2.1990868
+      position_upper_rad: 2.1990868
+      velocity_rad_s: 3.1416
+      effort_nm: 60
+  - name: joint_3
+    hardware:
+      position_lower_rad: -3.106
+      position_upper_rad: 3.106
+      velocity_rad_s: 3.927
+      effort_nm: 30
+    software:
+      position_lower_rad: -3.0361868
+      position_upper_rad: 3.0361868
+      velocity_rad_s: 3.927
+      effort_nm: 30
+  - name: joint_4
+    hardware:
+      position_lower_rad: -2.356
+      position_upper_rad: 2.356
+      velocity_rad_s: 3.927
+      effort_nm: 30
+    software:
+      position_lower_rad: -2.2861868
+      position_upper_rad: 2.2861868
+      velocity_rad_s: 3.927
+      effort_nm: 30
+  - name: joint_5
+    hardware:
+      position_lower_rad: -3.106
+      position_upper_rad: 3.106
+      velocity_rad_s: 3.927
+      effort_nm: 10
+    software:
+      position_lower_rad: -3.0361868
+      position_upper_rad: 3.0361868
+      velocity_rad_s: 3.927
+      effort_nm: 10
+  - name: joint_6
+    hardware:
+      position_lower_rad: -2.234
+      position_upper_rad: 2.234
+      velocity_rad_s: 3.927
+      effort_nm: 10
+    software:
+      position_lower_rad: -2.1641868
+      position_upper_rad: 2.1641868
+      velocity_rad_s: 3.927
+      effort_nm: 10
+  - name: joint_7
+    hardware:
+      position_lower_rad: -6.283185307179586
+      position_upper_rad: 6.283185307179586
+      velocity_rad_s: 3.927
+      effort_nm: 10
+    software:
+      position_lower_rad: -6.213372107179586
+      position_upper_rad: 6.213372107179586
+      velocity_rad_s: 3.927
+      effort_nm: 10
+    note: ±360° 连续圈；软件每侧再收 4°（见 software_limits.joint_7_reason）。

@@ -70,3 +70,27 @@ def test_ci_fast_tier_passes_in_current_repo():
     assert "[PASS]" in combined
     assert "[FAIL]" not in combined
     assert "汇总" in combined
+
+
+def test_ci_fast_tier_runs_model_regression_and_model_check():
+    """fast 档必须纳入模型回归与 verify_env --model（防止模型悄悄漂移）。"""
+    result = run_ci("fast")
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "tests/model" in combined
+    assert "model/verify-env" in combined
+    assert "assets/visual-mesh" in combined
+    try:
+        import pydrake  # noqa: F401
+    except ImportError:
+        return  # 环境无 Drake：模型项按设计 SKIP
+    # 模型本体零外部资产依赖 → Drake 可用时模型回归必须恒跑，不得 SKIP
+    assert "[SKIP] tests/model" not in combined
+    assert "[SKIP] model/verify-env" not in combined
+
+
+def test_ci_usage_mentions_model_regression():
+    """--help 必须说明 fast 档已含模型回归（避免"以为没跑"）。"""
+    result = run_ci("--help", timeout=60)
+    assert result.returncode == 0
+    assert "模型回归" in result.stdout

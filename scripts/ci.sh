@@ -40,7 +40,8 @@ usage() {
 三档含义与耗时预期
   fast      目标 < 10 min。内容：lint（ruff，缺失时退回 py_compile 兜底）、
             骨架单测（路径层 / 锁 / 禁用名单扫描器）、versions.lock 自洽性、
-            厂商解算接口禁用名单静态扫描。
+            厂商解算接口禁用名单静态扫描、**模型回归**（碰撞/质量/FK/限位/夹爪，
+            模型本体零外部资产依赖 → 恒跑；Drake 不可用时显式 SKIP）。
   medium    在 fast 之上追加：constraints ↔ versions.lock 依赖锁一致性、
             package:// 解析测试、wheel 离线归档 sha256 校验（归档缺失时 SKIP）。
   nightly   在 medium 之上追加：规划统计与长稳占位。当前为**明确标注的 no-op**
@@ -163,11 +164,39 @@ run_check "lock/consistency" "versions.lock 自洽性" -- \
 run_check "forbidden/apis" "禁用接口静态扫描（src tools scripts）" -- \
     "$PYTHON" scripts/scan_forbidden_apis.py src tools scripts
 
+# 5) 模型回归（S01-T06 接入）。
+#    模型本体（URDF）零外部资产依赖 → 碰撞/质量/FK/限位断言**恒跑**，不得因
+#    上游归档缺失而跳过；只有 Drake 本身不可用时才显式 SKIP（环境未就绪）。
+MODEL_TESTS=(
+    tests/test_model_load.py
+    tests/test_model_regression.py
+    tests/test_mdh_fk.py
+    tests/test_gripper.py
+    tests/test_joint_limits.py
+)
+if "$PYTHON" -c "import pydrake" >/dev/null 2>&1; then
+    run_check "tests/model" "模型回归单测（碰撞/质量/FK/限位/夹爪）" -- \
+        "$PYTHON" -m pytest -q "${MODEL_TESTS[@]}"
+    run_check "model/verify-env" "模型自检（verify_env --model）" -- \
+        "$PYTHON" tools/verify_env.py --model
+else
+    record_skip "tests/model" "Drake（pydrake）不可用：模型回归断言跳过（环境未就绪）"
+    record_skip "model/verify-env" "Drake（pydrake）不可用：模型自检跳过（环境未就绪）"
+fi
+
+# 6) 网格工具单测（合成夹具部分与上游归档无关 → 恒跑；归档依赖用例内部 SKIP）
+run_check "tests/mesh-tools" "网格工具单测（STL 解析 / OBJ 写出 / 包围盒）" -- \
+    "$PYTHON" -m pytest -q tests/test_mesh_tools.py
+
+# 7) 视觉网格回归（**依赖上游归档** → 缺失时显式 SKIP，不伪装成通过）
+run_check_skippable "assets/visual-mesh" "官方 STL → OBJ 转换与包围盒复测（需上游归档）" -- \
+    "$PYTHON" scripts/convert_meshes.py --print-boxes
+
 # --------------------------------------------------------------------------- #
 # medium 档
 # --------------------------------------------------------------------------- #
 if [ "$TIER" = "medium" ] || [ "$TIER" = "nightly" ]; then
-    # 5) 依赖锁一致性：constraints ↔ versions.lock。
+    # 8) 依赖锁一致性：constraints ↔ versions.lock。
     #    verify_env --lock-only 已做钉版比对；这里再加 PyPI 元数据比对
     #    （仅在本机缓存存在时进行，缺失则明确 SKIP）。
     if [ -d vendor/.pypi-cache ]; then
@@ -177,11 +206,11 @@ if [ "$TIER" = "medium" ] || [ "$TIER" = "nightly" ]; then
         record_skip "lock/constraints" "无本地 PyPI 元数据缓存（vendor/.pypi-cache），跳过元数据比对"
     fi
 
-    # 6) package:// 解析测试
+    # 9) package:// 解析测试
     run_check "tests/package_map" "package:// 解析测试" -- \
         "$PYTHON" -m pytest -q tests/test_package_map.py
 
-    # 7) wheel 离线归档 sha256 校验（归档本机镜像，不入 git；缺失 → SKIP）
+    # 10) wheel 离线归档 sha256 校验（归档本机镜像，不入 git；缺失 → SKIP）
     run_check_skippable "wheels/archive" "vendor/wheels 归档 sha256 校验" -- \
         "$PYTHON" tools/verify_env.py --wheels
 fi
@@ -190,7 +219,7 @@ fi
 # nightly 档
 # --------------------------------------------------------------------------- #
 if [ "$TIER" = "nightly" ]; then
-    # 8) 规划统计与长稳：S02/S07 才填充真实负载，当前是**明确标注的 no-op**。
+    # 11) 规划统计与长稳：S02/S07 才填充真实负载，当前是**明确标注的 no-op**。
     #    刻意不做任何"假装跑过"的事情——占位就是占位。
     record_skip "nightly/plan-stats" "规划统计占位：S02 场景构建后填充真实负载（当前 no-op）"
     record_skip "nightly/soak" "长稳测试占位：S07 golden-file 回归后填充（当前 no-op）"

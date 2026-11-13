@@ -23,6 +23,9 @@
 ``kinematics``
     独立运动学层（S01-T03）：官方 MDH 表与纯 numpy 正解，**零 Drake 依赖**，
     作为 Drake FK 的独立被测对照。
+``limits``
+    限位交接层（S01-T06）：读取并校验 ``models/rm75_drake/joint_limits.yaml``
+    （硬件限位 = 官方参数表；软件限位 = 硬件每侧再收 4°）。
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ from __future__ import annotations
 from . import drake_compat
 from . import gripper
 from . import kinematics
+from . import limits
 from . import models
 from . import package_map
 from . import paths
@@ -39,6 +43,7 @@ __all__ = [
     "drake_compat",
     "gripper",
     "kinematics",
+    "limits",
     "models",
     "package_map",
     "paths",

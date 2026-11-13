@@ -22,8 +22,14 @@
     --forbidden     确认 versions.lock:forbidden_apis 名单存在、覆盖核心禁用接口、
                     与 allowed_apis 不冲突，且（若扫描脚本已存在）扫描脚本确实以锁为名单来源。
     --package-map   PackageMap 解析冒烟：复用 rm75_drake.package_map.build_package_map()。
+    --model         模型自检（S01-T06）：复用 rm75_drake.models 加载改造版 RM75-B，
+                    输出 DoF / 总质量 / 零位末端高度 / 7 条限位摘要，
+                    并校验 models/rm75_drake/joint_limits.yaml 与 URDF 一致。
+                    该子检查**依赖 Drake**，因此不进入"未指定子检查时的默认全跑"集合，
+                    需显式指定（CI 由 scripts/ci.sh fast 档调用）。
 
-退出码：0 通过 / 1 检查失败 / 2 运行期错误（锁文件不可读、包映射构建失败等）。
+退出码：0 通过 / 1 检查失败 / 2 运行期错误（锁文件不可读、包映射构建失败、
+Drake 不可用等）。
 """
 
 from __future__ import annotations
@@ -336,6 +342,151 @@ def check_package_map() -> Tuple[str, List[str]]:
 
 
 # --------------------------------------------------------------------------- #
+# 模型自检（--model）
+# --------------------------------------------------------------------------- #
+#: 零位末端高度的容差（m）——官方 URDF 的 rpy=1.5708 舍入引入的残差为 ~2.24e-6 m，
+#: 故高度用 1e-6、横向用 1e-5。
+TIP_HEIGHT_TOL_M = 1e-6
+TIP_LATERAL_TOL_M = 1e-5
+MASS_TOL_KG = 1e-6
+LIMIT_TOL = 1e-6
+
+
+def _load_model_facts() -> Dict[str, Any]:
+    """加载改造版 RM75-B 并提取自检事实。
+
+    失败语义：Drake 不可用 → :class:`ImportError`（环境错误，退出码 2）；
+    模型本身有问题 → 其它异常（检查失败，退出码 1）。
+    """
+    src_dir = REPO_ROOT / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+    from rm75_drake import models as m
+    from rm75_drake.kinematics import mdh
+
+    plant, _model_index, _parser = m.load_rm75()
+    plant.Finalize()
+    context = plant.CreateDefaultContext()
+    pose = m.eval_link_pose_in_world(plant, context, m.RM75_TIP_LINK)
+    translation = pose.translation()
+    return {
+        "dof": int(plant.num_positions()),
+        "expected_dof": int(m.RM75_DOF),
+        "total_mass_kg": float(plant.CalcTotalMass(context)),
+        "expected_total_mass_kg": float(m.RM75_TOTAL_MASS_KG),
+        "tip_position_m": [float(v) for v in translation],
+        "expected_tip_height_m": float(mdh.MDH_ZERO_HEIGHT_M),
+        "joint_limits": m.joint_limits_from_plant(plant),
+        "urdf_limits": m.joint_limits_from_urdf(),
+    }
+
+
+def check_model(
+    limits_path: Optional[Path] = None,
+    loader: Optional[Any] = None,
+) -> Tuple[str, List[str], Dict[str, Any]]:
+    """模型自检，返回 ``(status, problems, summary)``。
+
+    status ∈ {"PASS", "FAIL", "ERROR"}：
+
+    * ``PASS``：DoF / 总质量 / 零位末端高度 / 7 条限位 / 限位交接件全部一致；
+    * ``FAIL``：模型加载成功但数值或交接件不一致；
+    * ``ERROR``：Drake 不可用等**环境**问题（调用方应返回退出码 2）。
+
+    ``loader`` 可注入（测试用）：默认 :func:`_load_model_facts`。
+    """
+    src_dir = REPO_ROOT / "src"
+    if str(src_dir) not in sys.path:
+        sys.path.insert(0, str(src_dir))
+
+    try:
+        facts = (loader or _load_model_facts)()
+    except ImportError as exc:
+        return ("ERROR", [f"模型自检需要 Drake（pydrake）不可用：{exc}"], {})
+    except Exception as exc:  # 模型加载失败 = 检查失败
+        return ("FAIL", [f"模型加载/自检失败：{exc}"], {})
+
+    problems: List[str] = []
+
+    dof = facts.get("dof")
+    expected_dof = facts.get("expected_dof")
+    if dof != expected_dof:
+        problems.append(f"DoF={dof}，期望 {expected_dof}")
+
+    mass = facts.get("total_mass_kg")
+    expected_mass = facts.get("expected_total_mass_kg")
+    if mass is None or expected_mass is None or abs(mass - expected_mass) > MASS_TOL_KG:
+        problems.append(f"总质量={mass} kg，期望 {expected_mass} kg（容差 {MASS_TOL_KG}）")
+
+    tip = facts.get("tip_position_m") or [0.0, 0.0, 0.0]
+    expected_height = facts.get("expected_tip_height_m")
+    if abs(tip[2] - expected_height) > TIP_HEIGHT_TOL_M:
+        problems.append(
+            f"零位末端高度={tip[2]} m，期望 {expected_height} m（容差 {TIP_HEIGHT_TOL_M}）"
+        )
+    if abs(tip[0]) > TIP_LATERAL_TOL_M:
+        problems.append(f"零位末端 x={tip[0]} m 偏离 0 超过 {TIP_LATERAL_TOL_M}")
+    if abs(tip[1]) > TIP_LATERAL_TOL_M:
+        problems.append(f"零位末端 y={tip[1]} m 偏离 0 超过 {TIP_LATERAL_TOL_M}")
+
+    urdf_by_name = {str(item["name"]): item for item in facts.get("urdf_limits") or ()}
+    limits_rows = []
+    for item in facts.get("joint_limits") or ():
+        name = str(item.get("name"))
+        urdf_item = urdf_by_name.get(name)
+        if urdf_item is None:
+            problems.append(f"Drake 解析出关节 {name}，但 URDF 里没有对应关节")
+            continue
+        for key, urdf_key in (
+            ("lower", "lower"),
+            ("upper", "upper"),
+            ("velocity", "velocity"),
+        ):
+            if abs(float(item[key]) - float(urdf_item[urdf_key])) > LIMIT_TOL:
+                problems.append(
+                    f"{name}.{key}：Drake 解析 {item[key]} ≠ URDF 声明 {urdf_item[urdf_key]}"
+                )
+        limits_rows.append(
+            {
+                "name": name,
+                "lower": float(item["lower"]),
+                "upper": float(item["upper"]),
+                "velocity": float(item["velocity"]),
+                "effort": float(urdf_item.get("effort", 0.0)),
+            }
+        )
+    if len(limits_rows) != 7:
+        problems.append(f"关节限位摘要应有 7 条，实际 {len(limits_rows)} 条")
+
+    # 限位交接件（models/rm75_drake/joint_limits.yaml）与 URDF 的一致性
+    limits_summary: Dict[str, Any] = {}
+    try:
+        from rm75_drake import limits as limits_mod
+
+        limits_data = limits_mod.load_joint_limits(limits_path)
+        limit_problems = limits_mod.check_joint_limits(
+            limits_data, urdf_limits=facts.get("urdf_limits")
+        )
+        problems.extend(limit_problems)
+        limits_summary = {
+            "path": str(limits_mod.joint_limits_path(limits_path)),
+            "software_margin_rad": limits_data.get("software_limits", {}).get("margin_rad"),
+        }
+    except Exception as exc:
+        problems.append(f"限位交接件校验失败：{exc}")
+
+    summary = {
+        "dof": dof,
+        "total_mass_kg": mass,
+        "tip_position_m": tip,
+        "expected_tip_height_m": expected_height,
+        "joint_limits": limits_rows,
+        "joint_limits_handoff": limits_summary,
+    }
+    return ("FAIL" if problems else "PASS", problems, summary)
+
+
+# --------------------------------------------------------------------------- #
 # 输出
 # --------------------------------------------------------------------------- #
 def _table(rows: Sequence[Dict[str, Any]]) -> str:
@@ -351,6 +502,32 @@ def _table(rows: Sequence[Dict[str, Any]]) -> str:
             "  ".join(str(row.get(key, "")).ljust(widths[i]) for i, key in enumerate(header))
         )
     return "\n".join(lines)
+
+
+def _print_model_summary(summary: Dict[str, Any]) -> None:
+    """打印模型自检摘要（人类可读）。"""
+    if not summary:
+        return
+    print(
+        f"  DoF={summary.get('dof')}  总质量={summary.get('total_mass_kg')} kg  "
+        f"零位末端={[round(v, 9) for v in summary.get('tip_position_m', [])]} m  "
+        f"期望高度={summary.get('expected_tip_height_m')} m"
+    )
+    rows = summary.get("joint_limits") or []
+    if rows:
+        header = f"  {'joint':<10}{'lower(rad)':>14}{'upper(rad)':>16}{'vel(rad/s)':>14}{'effort(N·m)':>14}"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for row in rows:
+            print(
+                f"  {row['name']:<10}{row['lower']:>14.7f}{row['upper']:>16.7f}"
+                f"{row['velocity']:>14.4f}{row['effort']:>14.1f}"
+            )
+    handoff = summary.get("joint_limits_handoff") or {}
+    if handoff:
+        print(
+            f"  限位交接件：{handoff.get('path')}（软限位收紧 {handoff.get('software_margin_rad')} rad）"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -370,18 +547,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--wheels", action="store_true", help="校验 vendor/wheels 归档")
     parser.add_argument("--forbidden", action="store_true", help="校验禁用名单")
     parser.add_argument("--package-map", action="store_true", help="PackageMap 解析冒烟")
+    parser.add_argument(
+        "--model", action="store_true", help="改造版 RM75-B 模型自检（DoF/质量/零位高度/限位）"
+    )
+    parser.add_argument(
+        "--joint-limits",
+        type=Path,
+        default=None,
+        help="限位交接件路径（默认 models/rm75_drake/joint_limits.yaml）",
+    )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    selected = [args.check, args.lock_only, args.wheels, args.forbidden, args.package_map]
+    selected = [
+        args.check,
+        args.lock_only,
+        args.wheels,
+        args.forbidden,
+        args.package_map,
+        args.model,
+    ]
     if not any(selected):
-        # 未指定子检查时全部执行
+        # 未指定子检查时全部执行（--model 需要 Drake，故不在默认集合里）
         args.check = args.lock_only = args.wheels = args.forbidden = args.package_map = True
+        if not args.json:
+            print("（--model 需显式指定：它依赖 Drake；CI 由 scripts/ci.sh fast 档调用）")
 
     report: Dict[str, Any] = {"checks": {}, "ok": True}
+    env_error = False
 
-    def emit(name: str, status: str, problems: Sequence[str], detail: str = "") -> None:
-        report["checks"][name] = {"status": status, "problems": list(problems)}
+    def emit(
+        name: str,
+        status: str,
+        problems: Sequence[str],
+        detail: str = "",
+        data: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        entry: Dict[str, Any] = {"status": status, "problems": list(problems)}
+        if data is not None:
+            entry["summary"] = data
+        report["checks"][name] = entry
         if status == "FAIL":
             report["ok"] = False
         if args.json:
@@ -447,9 +652,26 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         status, problems = check_package_map()
         emit("package-map", status, problems, "PackageMap 解析冒烟")
 
+    if args.model:
+        status, problems, summary = check_model(args.joint_limits)
+        if not args.json:
+            _print_model_summary(summary)
+        emit(
+            "model",
+            status,
+            problems,
+            "改造版 RM75-B 模型自检（DoF / 总质量 / 零位末端高度 / 7 条限位）",
+            data=summary,
+        )
+        if status == "ERROR":
+            env_error = True
+
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
 
+    if env_error:
+        print("verify_env: 模型自检环境不可用（Drake 缺失），属环境错误（退出码 2）", file=sys.stderr)
+        return 2
     if not report["ok"]:
         return 1
     return 0
