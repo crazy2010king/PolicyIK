@@ -8,6 +8,8 @@
 
 四个子命令的语义
 ----------------
+（``single`` / ``pick`` / ``bimanual`` / ``replay``；``exec`` 与 ``calibrate``
+ 见下）
 ``single``
     单臂规划：走完整链路（IK → IRIS → 空间 GCS → Toppra 重定时 → 碰撞复检），
     打印诊断，可选把结果录制成 JSON（``--output``）。
@@ -29,6 +31,12 @@
     ``--dry-run`` 走**传输层替身**（零硬件）；真机不可达时输出
     ``SKIP(reason=hardware_unreachable)`` 并以 **0** 退出
     （既不伪装成失败，也不伪装成成功）。
+``calibrate``
+    双臂标定作业入口（**离线**，零硬件）：解算关节零位偏差 / 工具 TCP 6D /
+    双臂基座外参 ``X_LR``，输出残差摘要（RMS / 最大残差 / 逐点残差 /
+    重复性 / 交叉验证差异）。
+    **无实测数据时输出 ``SKIP(reason=calibration_not_measured)`` 并以 0 退出**，
+    同时逐条列出**未验证的物理指标**（绝不把合成数据的残差冒充实测精度）。
 
 退出码语义
 ----------
@@ -61,6 +69,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from . import paths
+from .calibration.pipeline import (
+    REASON_CALIBRATION_NOT_MEASURED as _REASON_CALIBRATION_NOT_MEASURED,
+    UNVERIFIED_CALIBRATION_METRICS as _UNVERIFIED_CALIBRATION_METRICS,
+)
 from .device.hardware_gate import (
     SKIP_REASON_HARDWARE_UNREACHABLE,
     UNVERIFIED_HARDWARE_METRICS as _UNVERIFIED_HARDWARE_METRICS,
@@ -75,6 +87,10 @@ __all__ = [
     "EXIT_USAGE",
     "REASON_HARDWARE_UNREACHABLE",
     "UNVERIFIED_HARDWARE_METRICS",
+    "REASON_CALIBRATION_NOT_MEASURED",
+    "UNVERIFIED_CALIBRATION_METRICS",
+    "DEFAULT_CALIBRATION_SAMPLES",
+    "DEFAULT_CALIBRATION_FILE",
     "build_parser",
     "main",
 ]
@@ -100,6 +116,19 @@ REASON_HARDWARE_UNREACHABLE = SKIP_REASON_HARDWARE_UNREACHABLE
 #: 真机不可达时**必须如实列出**的未验证指标（绝不假装通过、绝不省略）。
 #: 真相源同上——禁止在 CLI 里另立第二份清单。
 UNVERIFIED_HARDWARE_METRICS: Tuple[str, ...] = tuple(_UNVERIFIED_HARDWARE_METRICS)
+
+#: ``calibrate`` 在「无实测数据」时的**稳定原因标签**（脚本与 CI 按它判定 SKIP）。
+#: 真相源 = :mod:`rm75_drake.calibration.pipeline`（CLI 与脚本共用同一份）。
+REASON_CALIBRATION_NOT_MEASURED = "calibration_not_measured"
+
+#: 无实测数据时**必须如实列出**的未验证物理指标（真相源同上）。
+UNVERIFIED_CALIBRATION_METRICS: Tuple[str, ...] = tuple(_UNVERIFIED_CALIBRATION_METRICS)
+
+#: ``calibrate`` 的默认采样文件（仓库根 ``calibration/samples/demo.yaml``，合成演练数据）。
+DEFAULT_CALIBRATION_SAMPLES = str(paths.calibration_files_dir / "samples" / "demo.yaml")
+
+#: ``calibrate`` 的默认标定文件（仓库根 ``calibration/dual_arm.yaml``，未实测占位）。
+DEFAULT_CALIBRATION_FILE = str(paths.calibration_files_dir / "dual_arm.yaml")
 
 #: bimanual 的归属说明（**必须**出现在输出里，便于人工核对路线图）。
 BIMANUAL_MESSAGE = (
@@ -193,8 +222,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python3 -m rm75_drake.cli",
         description=(
-            "RM75-D 规划 CLI 族：single / pick / bimanual / replay / exec。"
-            "退出码：0 成功，1 业务失败（规划失败 / 回放逃逸 / 安全态触发），"
+            "RM75-D 规划 CLI 族：single / pick / bimanual / replay / exec / calibrate。"
+            "退出码：0 成功（或无实测数据 / 真机不可达时的 SKIP），"
+            "1 业务失败（规划失败 / 回放逃逸 / 安全态触发 / 残差超阈值），"
             "2 用法错误或命令未实现。"
         ),
     )
@@ -372,6 +402,70 @@ def build_parser() -> argparse.ArgumentParser:
     )
     exec_parser.add_argument("--json", action="store_true", help="以 JSON 输出结果摘要")
 
+    calibrate = subparsers.add_parser(
+        "calibrate",
+        help="双臂标定作业（离线解算 + 残差报告；无实测数据 ⇒ SKIP）",
+        description=(
+            "双臂标定作业入口（**离线**，零硬件）：解算关节零位偏差 / 工具 TCP 6D /"
+            "双臂基座外参 X_LR，输出残差摘要（RMS / 最大残差 / 逐点残差 / 重复性 /"
+            "交叉验证差异）。\n"
+            "* 无实测数据（标定文件 measured=false 或采样是合成数据且未显式"
+            "--accept-synthetic）：输出 SKIP(reason=calibration_not_measured) 并以 "
+            "0 退出，同时逐条列出**未验证的物理指标**（既不伪装成功，也不伪装失败）；\n"
+            "* 残差超阈值 ⇒ 退出码 1；用法错误（路径缺失 / 参数非法）⇒ 退出码 2。"
+        ),
+    )
+    calibrate.add_argument(
+        "--samples",
+        default=DEFAULT_CALIBRATION_SAMPLES,
+        help=f"采样点集文件路径（默认：{DEFAULT_CALIBRATION_SAMPLES}）",
+    )
+    calibrate.add_argument(
+        "--calibration",
+        default=DEFAULT_CALIBRATION_FILE,
+        help=f"标定文件路径（默认：{DEFAULT_CALIBRATION_FILE}）",
+    )
+    calibrate.add_argument(
+        "--out", default=None, help="把结果摘要写成 JSON 文件（路径）"
+    )
+    calibrate.add_argument(
+        "--accept-synthetic",
+        action="store_true",
+        help=(
+            "显式接受合成数据（**仅离线演练**）：状态可以是 ok，"
+            "但 measured 仍为 false，未验证的物理指标照旧逐条列出"
+        ),
+    )
+    calibrate.add_argument(
+        "--fk",
+        choices=("auto", "model", "synthetic"),
+        default="auto",
+        help=(
+            "关节零位求解的 FK 对照口径：auto（默认，合成采样 ⇒ synthetic，"
+            "否则 ⇒ model）/ model（MDH 独立正解，实测口径）/ synthetic"
+            "（合成演练口径）"
+        ),
+    )
+    calibrate.add_argument(
+        "--joint-zero-threshold",
+        type=float,
+        default=None,
+        help="关节零位残差阈值（m，默认 1e-3）",
+    )
+    calibrate.add_argument(
+        "--tool-tcp-threshold",
+        type=float,
+        default=None,
+        help="工具 TCP 残差阈值（m，默认 5e-4）",
+    )
+    calibrate.add_argument(
+        "--base-extrinsic-threshold",
+        type=float,
+        default=None,
+        help="基座外参残差阈值（m，默认 5e-4）",
+    )
+    calibrate.add_argument("--json", action="store_true", help="以**单行** JSON 输出结果摘要")
+
     return parser
 
 
@@ -395,6 +489,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _cmd_replay(args)
         if command == "exec":
             return _cmd_exec(args)
+        if command == "calibrate":
+            return _cmd_calibrate(args)
     except _UsageError as exc:
         print(f"cli: 参数错误：{exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -917,6 +1013,99 @@ def _emit_exec_result(
     if result["status"] != "ok":
         return EXIT_FAILURE
     return EXIT_OK
+
+
+# ── calibrate（双臂标定作业入口）────────────────────────────────────────
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    """``calibrate``：离线标定解算 + 残差报告。
+
+    退出码
+    ------
+    * ``0``：解算完成（``skipped`` 表示**无实测数据**，只做离线演练；``ok`` 表示
+      结论可复算）；
+    * ``1``：业务失败（残差超阈值 / 求解器错误 / 数据文件内容非法）；
+    * ``2``：用法错误（路径缺失 / 参数非法）。
+    """
+    from .calibration.pipeline import CalibrationUsageError, run_calibration
+    from .calibration.schema import CalibrationError
+    from .calibration.solvers import (
+        DEFAULT_BASE_EXTRINSIC_THRESHOLD_M,
+        DEFAULT_JOINT_ZERO_THRESHOLD_M,
+        DEFAULT_TOOL_TCP_THRESHOLD_M,
+    )
+
+    try:
+        run = run_calibration(
+            samples_path=args.samples,
+            calibration_path=args.calibration,
+            accept_synthetic=bool(getattr(args, "accept_synthetic", False)),
+            fk_mode=str(getattr(args, "fk", "auto")),
+            joint_zero_threshold=(
+                DEFAULT_JOINT_ZERO_THRESHOLD_M
+                if args.joint_zero_threshold is None
+                else float(args.joint_zero_threshold)
+            ),
+            tool_tcp_threshold=(
+                DEFAULT_TOOL_TCP_THRESHOLD_M
+                if args.tool_tcp_threshold is None
+                else float(args.tool_tcp_threshold)
+            ),
+            base_extrinsic_threshold=(
+                DEFAULT_BASE_EXTRINSIC_THRESHOLD_M
+                if args.base_extrinsic_threshold is None
+                else float(args.base_extrinsic_threshold)
+            ),
+        )
+    except CalibrationUsageError as exc:
+        raise _UsageError(str(exc)) from exc
+    except CalibrationError as exc:
+        print(f"cli: 标定数据非法：{exc}", file=sys.stderr)
+        return EXIT_FAILURE
+
+    payload = run.as_dict()
+    out_path = getattr(args, "out", None)
+    if out_path:
+        out_file = Path(out_path)
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+        )
+        payload["output_path"] = str(out_file)
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, default=str))
+    else:
+        _print_calibrate_summary(payload)
+    return run.exit_code
+
+
+def _print_calibrate_summary(payload: Dict[str, Any]) -> None:
+    """打印人类可读的标定摘要（**必含**未验证项清单）。"""
+    status = payload["status"]
+    reason = payload["reason"]
+    print(f"[calibrate] 状态：{status}" + (f"（reason={reason}）" if reason else ""))
+    print(f"[calibrate] 采样文件：{payload['samples_path']}")
+    print(f"[calibrate] 标定文件：{payload['calibration_path']}")
+    print(f"[calibrate] 实测 measured：{payload['measured']}（FK 口径：{payload['fk_mode']}）")
+    for name, section in payload["sections"].items():
+        if section["status"] == "absent":
+            print(f"[calibrate] {name}：无采样（skipped）")
+            continue
+        print(
+            f"[calibrate] {name}：{section['status']} "
+            f"RMS={section['rms']:.6e} m 最大={section['max']:.6e} m "
+            f"样本数={section['sample_count']} 阈值={section['threshold']:.6e} m"
+        )
+        if section.get("detail"):
+            print(f"[calibrate]   说明：{section['detail']}")
+    if payload["detail"]:
+        print(f"[calibrate] 结论：{payload['detail']}")
+    if payload["unverified_metrics"]:
+        print("[calibrate] 以下物理指标**未验证**（不得当作通过）：")
+        for item in payload["unverified_metrics"]:
+            print(f"[calibrate]   - {item}")
+    if payload.get("output_path"):
+        print(f"[calibrate] 结果文件：{payload['output_path']}")
 
 
 # ── 规划实现 ────────────────────────────────────────────────────────────

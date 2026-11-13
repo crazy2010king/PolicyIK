@@ -12,6 +12,9 @@
   关节零位偏差、工具 TCP 6D（Kabsch）、双臂基座外参 ``X_LR``（Kabsch）。
 * :mod:`rm75_drake.calibration.report` —— **残差 / 重复性 / 第三方交叉验证**报告器；
   ``measured=false`` 时显式声明「未实测」并逐条列出未验证项。
+* :mod:`rm75_drake.calibration.pipeline` —— **标定作业编排**（S04-T08）：
+  CLI ``calibrate`` 子命令与 ``scripts/calibrate_dual_arm.py`` 共用的**唯一实现**
+  （同一份 status / reason / 残差 / 未验证清单，避免出现第二套真相源）。
 
 **零 pydrake 依赖**：本子包**只**依赖 numpy + 标准库 + PyYAML，
 因此标定内核可离线单测、不被 Drake 版本绑死（模型 FK 由调用方以
@@ -33,6 +36,16 @@ from .report import (
     build_report,
     cross_validation_summary,
     repeatability_summary,
+)
+from .pipeline import (
+    REASON_CALIBRATION_NOT_MEASURED,
+    UNVERIFIED_CALIBRATION_METRICS,
+    CalibrationRun,
+    CalibrationUsageError,
+    SectionResult,
+    model_fk,
+    run_calibration,
+    synthetic_fk,
 )
 from .samples import (
     MIN_BASE_EXTRINSIC_SAMPLES,
@@ -115,4 +128,13 @@ __all__ = [
     "repeatability_summary",
     "cross_validation_summary",
     "UNVERIFIED_ITEMS",
+    # pipeline
+    "run_calibration",
+    "CalibrationRun",
+    "CalibrationUsageError",
+    "SectionResult",
+    "model_fk",
+    "synthetic_fk",
+    "REASON_CALIBRATION_NOT_MEASURED",
+    "UNVERIFIED_CALIBRATION_METRICS",
 ]

@@ -44,7 +44,10 @@ usage() {
             模型本体零外部资产依赖 → 恒跑；Drake 不可用时显式 SKIP）、
             **规划回归**（场景 / 轨迹 / CLI / 回放，Drake 不可用时显式 SKIP）、
             **设备层与安全闸（零硬件）**（安全七闸 / 状态机 / 执行环 / 恢复流程 /
-            全链路运行日志 / 硬件门控脚本，恒跑——零硬件也能回归）。
+            全链路运行日志 / 硬件门控脚本，恒跑——零硬件也能回归）、
+            **双臂几何与标定回归（零硬件）**（模型变体 / 双臂单 plant 装配 /
+            碰撞过滤矩阵 / 共同点一致性 / 同步执行器 / 标定内核 / 标定 CLI，
+            恒跑——零硬件也能回归）。
   medium    在 fast 之上追加：constraints ↔ versions.lock 依赖锁一致性、
             package:// 解析测试、wheel 离线归档 sha256 校验（归档缺失时 SKIP）。
   nightly   在 medium 之上追加：**规划统计真实调用**（scripts/plan_stats.py，
@@ -236,6 +239,25 @@ DEVICE_TESTS=(
 )
 run_check "tests/device" "设备层与安全闸回归（零硬件：七闸 / 状态机 / 执行环 / 恢复 / 运行日志 / 脚本）" -- \
     "$PYTHON" -m pytest -q "${DEVICE_TESTS[@]}"
+
+# 10) **双臂几何与标定回归（零硬件）**（S04-T08 接入）。
+#     模型变体生成器 / 双臂单 plant 装配 / 程序化碰撞过滤矩阵 / 共同点一致性判定器 /
+#     双臂同一 tick 同步执行器 / 标定内核（schema + 求解器 + 产出物）/ 标定 CLI。
+#     全部可在**无真机、无实测数据**的环境里被真实验证 ⇒ **恒跑**，不得 SKIP。
+#     新增项失败即整体失败（run_check 的语义，绝不降级成 run_check_skippable）。
+BIMANUAL_CALIBRATION_TESTS=(
+    tests/test_bimanual_model_variants.py
+    tests/test_bimanual_dual_scene.py
+    tests/test_bimanual_collision_filter.py
+    tests/test_bimanual_consistency.py
+    tests/test_bimanual_sync_exec.py
+    tests/test_calibration_solvers.py
+    tests/test_calibration_schema.py
+    tests/test_calibration_artifact.py
+    tests/test_calibration_cli.py
+)
+run_check "tests/bimanual-calibration" "双臂几何与标定回归（零硬件：变体 / 单 plant / 碰撞过滤 / 一致性 / 同步执行 / 标定内核 / 标定 CLI）" -- \
+    "$PYTHON" -m pytest -q "${BIMANUAL_CALIBRATION_TESTS[@]}"
 
 # --------------------------------------------------------------------------- #
 # medium 档

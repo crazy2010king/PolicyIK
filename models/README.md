@@ -378,6 +378,24 @@ python3 tools/gen_dual_arm_models.py --check
 * `--check` 退出码：**0** = 四个变体与生成器一致；**1** = 缺失或已过期（打印逐个
   变体的状态：`ok` / `missing` / `stale`）；**2** = 用法 / 环境错误。
 
+### 变体生成规则（速查）
+
+一句话：**变体 = 源 URDF 改名，不改任何数值**；命名规则固定、生成器唯一、
+输出逐字节确定 ⇒ 任何手改都会被 CI 的 `--check` 判红。
+
+| 规则项 | 内容 |
+|--------|------|
+| 生成器（唯一实现） | `src/rm75_drake/bimanual/model_variants.py`；CLI 壳 = `tools/gen_dual_arm_models.py` |
+| 输入 | `models/rm75_drake/rm75_drake.urdf`、`models/rm75_drake/rmg24_drake.urdf`（S01 官方改造版） |
+| 输出 | `models/rm75_drake/{rm75,rmg24}_{left,right}.urdf`（**入 git**，不允许手改） |
+| 改名范围 | `<robot name>` / link / joint / collision / `@link` 引用（含 `<drake:disable_collide>` 引用） |
+| 侧别前缀 | `left_` / `right_`（固定，不用 `l_` / `r_`） |
+| 不改的内容 | `<inertial>` / `<limit>` / `<collision>` 的 origin 与 geometry / 关节类型与连接关系 |
+| 生成命令 | `python3 tools/gen_dual_arm_models.py`（幂等：重跑字节级一致） |
+| CI 校验命令 | `python3 tools/gen_dual_arm_models.py --check` |
+| `--check` 退出码 | `0` = 四个变体与生成器一致；`1` = 缺失 / 已过期（逐变体打印 `ok` / `missing` / `stale`）；`2` = 用法 / 环境错误 |
+| CI 位置 | `scripts/ci.sh fast` 恒跑（`tests/bimanual-calibration` 项，失败即整体失败，**不得**降级成 SKIP） |
+
 ### 与「官方 → 改造差异清单」的关系（重要）
 
 **变体是改名，不是新的模型真相源。**
