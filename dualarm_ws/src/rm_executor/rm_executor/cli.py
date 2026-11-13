@@ -78,6 +78,62 @@ NEXT_ACTION_EXECUTOR_PATH = (
     "# 执行层包 rm_executor"
 )
 
+#: 「未启用夹爪互锁」的证据前缀（**固定文案**，便于检索）
+INTERLOCK_DISABLED_NOTE = "未启用夹爪互锁"
+
+#: 「已启用夹爪互锁」的证据前缀（**固定文案**，便于检索）
+INTERLOCK_ENABLED_NOTE = "已启用夹爪互锁"
+
+
+class _Unset:
+    """哨兵：区分「未传 motion_gate」与「显式传 None（不启用互锁）」。"""
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试辅助
+        return "<unset>"
+
+
+#: ``execute(motion_gate=...)`` 的缺省哨兵
+_UNSET = _Unset()
+
+
+def _make_motion_gate(ws: Optional[str] = None):
+    """构造**共享**的夹爪运动闸门（``MotionGate``）。
+
+    返回 ``(gate, note)``：
+
+    * ``gate`` 为 ``MotionGate`` 实例 → 注入执行器，阶段 B / C 前会查；
+    * ``gate`` 为 ``None`` → **不启用互锁**（既有行为完全不变），
+      ``note`` 写明原因（固定前缀 :data:`INTERLOCK_DISABLED_NOTE`）。
+
+    **惰性导入**（与 ``rm_executor.contract`` 同一纪律）：执行层不模块级
+    import ``rm_hw_bridge``；导入失败 → 不启用互锁并留证据，**不假装有闸门**。
+
+    共享对象：同进程内的夹爪动作客户端与执行器共用
+    ``rm_hw_bridge.gripper_state.shared_motion_gate()`` 这**同一个**实例
+    → 夹爪一动作，执行器的闸门立刻变为非 IDLE。
+    """
+    try:
+        from rm_hw_bridge.gripper_state import shared_motion_gate
+    except Exception as exc:  # noqa: BLE001 - 硬件层不可用 → 不启用互锁
+        return None, ("%s（rm_hw_bridge.gripper_state 不可用: %s: %s）"
+                      % (INTERLOCK_DISABLED_NOTE, type(exc).__name__, exc))
+    # 夹爪配置未启用（工位文件缺 gripper: 段等）→ 不启用互锁
+    try:
+        from rm_hw_bridge import gripper_config as _gripper_config
+        res = _gripper_config.load_gripper_config(ws)
+    except Exception as exc:  # noqa: BLE001 - 配置读取异常 → 不启用互锁
+        return None, ("%s（夹爪配置读取失败: %s: %s）"
+                      % (INTERLOCK_DISABLED_NOTE, type(exc).__name__, exc))
+    if not isinstance(res, dict) or res.get("status") != "ok":
+        reason = ""
+        if isinstance(res, dict):
+            reason = str(res.get("reason") or "")
+        return None, ("%s（夹爪配置不可用: %s）"
+                      % (INTERLOCK_DISABLED_NOTE, reason or "未知原因"))
+    gate = shared_motion_gate()
+    return gate, ("%s（共享 MotionGate 实例，阶段 B / 阶段 C 前各查一次）"
+                  % INTERLOCK_ENABLED_NOTE)
+
 
 # --------------------------------------------------------------------- 工具
 def _load_config(ws: Optional[str]) -> Tuple[Optional[ExecutorConfig], Dict[str, Any]]:
@@ -258,7 +314,9 @@ def execute(mode: str = "fake",
             udp_port: Optional[int] = None,
             ws: Optional[str] = None,
             injections: Optional[List[str]] = None,
-            gate: Any = None) -> Dict[str, Any]:
+            gate: Any = None,
+            motion_gate: Any = _UNSET,
+            motion_gate_note: Optional[str] = None) -> Dict[str, Any]:
     """跑一次执行，返回**统一报告**（fake / live 同一 schema）。
 
     本函数**不抛裸异常**：任何失败都变成 ``status=blocked|error`` 的报告
@@ -267,6 +325,12 @@ def execute(mode: str = "fake",
     ``gate``：安全闸门（进程外强制停机通道，鸭子类型）。给了之后执行器
     会在每 tick 查询 ``gate.stop_requested``，并在闸门请求停机时**立即**
     执行 L4 急停（详见 ``rm_executor.executor.Executor``）。
+
+    ``motion_gate``：夹爪运动闸门（鸭子类型：``check()`` + ``state``）。
+    缺省（``_UNSET``）→ 自动构造进程内**共享**的 ``MotionGate``
+    （见 :func:`_make_motion_gate`）；显式传 ``None`` → **不启用互锁**。
+    ``motion_gate_note``：调用方自带的互锁说明（写进报告 evidence）；
+    缺省 → 由本函数按实际状态生成。
     """
     mode = "live" if str(mode) == "live" else "fake"
 
@@ -319,19 +383,31 @@ def execute(mode: str = "fake",
 
     legs = _leg_count(duration_s, traj_duration_s) if mode == "fake" else 1
 
+    # -- 夹爪运动闸门（共享实例；不可用 → 不启用互锁 + 证据）-----------
+    if motion_gate is _UNSET:
+        motion_gate, interlock_note = _make_motion_gate(ws)
+    elif motion_gate is None:
+        interlock_note = "%s（调用方显式关闭）" % INTERLOCK_DISABLED_NOTE
+    else:
+        interlock_note = ("%s（调用方注入的闸门，阶段 B / 阶段 C 前各查一次）"
+                          % INTERLOCK_ENABLED_NOTE)
+    if motion_gate_note:
+        interlock_note = motion_gate_note
+
     try:
         if mode == "live":
             report = _run_live(trajectory_path, config, arm, ip, port, udp_port,
-                               ws, duration_s, gate)
+                               ws, duration_s, gate, motion_gate)
         else:
             report = _run_fake(trajectory_path, config, ws, allow_unverified,
-                               realtime, legs, injection_specs, gate)
+                               realtime, legs, injection_specs, gate, motion_gate)
     except Exception as exc:  # noqa: BLE001 - 兜底：异常 → error 报告
         report = _failure_report(
             contract.STATUS_ERROR,
             "执行器异常终止（%s）: %s" % (type(exc).__name__, exc),
             "查看报告 evidence 与终端栈信息后重跑",
             [repr(exc)], mode)
+    report.setdefault("evidence", []).append(interlock_note)
     return report
 
 
@@ -339,7 +415,8 @@ def _run_fake(trajectory_path: str, config: Optional[ExecutorConfig],
               ws: Optional[str], allow_unverified: bool, realtime: bool,
               legs: int,
               injections: Optional[List[Dict[str, Any]]] = None,
-              gate: Any = None) -> Dict[str, Any]:
+              gate: Any = None,
+              motion_gate: Any = None) -> Dict[str, Any]:
     """离线假执行（零真机依赖）；长跑 = 重复执行 ``legs`` 轮后合并报告。"""
     reports: List[Dict[str, Any]] = []
     jitter_samples: List[float] = []
@@ -355,7 +432,8 @@ def _run_fake(trajectory_path: str, config: Optional[ExecutorConfig],
                  else ManualClock(period_s=DEFAULT_PERIOD_S))
         # config=None → 执行器自己按 ws 读工位配置（读不到就记 NEEDS_PARAM 事件）
         executor = Executor(transport, feedback, config=config, clock=clock,
-                            mode="fake", ws=ws, gate=gate)
+                            mode="fake", ws=ws, gate=gate,
+                            motion_gate=motion_gate)
         rep = executor.run(trajectory_path, allow_unverified=allow_unverified)
         reports.append(rep)
         jitter_samples.extend(executor.jitter_samples_ms)
@@ -375,7 +453,8 @@ def _run_fake(trajectory_path: str, config: Optional[ExecutorConfig],
 def _run_live(trajectory_path: str, config: Optional[ExecutorConfig],
               arm: str, ip: Optional[str], port: Optional[int],
               udp_port: Optional[int], ws: Optional[str],
-              duration_s: Optional[float], gate: Any = None) -> Dict[str, Any]:
+              duration_s: Optional[float], gate: Any = None,
+              motion_gate: Any = None) -> Dict[str, Any]:
     """真机执行（**与 fake 同一 Executor、同一报告 schema**）。"""
     try:
         from rm_hw_bridge import bridge as hw_bridge
@@ -423,7 +502,8 @@ def _run_live(trajectory_path: str, config: Optional[ExecutorConfig],
     try:
         # config=None → 执行器自己按 ws 读工位配置（读不到就记 NEEDS_PARAM 事件）
         executor = Executor(transport, feedback, config=config, clock=clock,
-                            mode="live", ws=ws, gate=gate)
+                            mode="live", ws=ws, gate=gate,
+                            motion_gate=motion_gate)
         rep = executor.run(trajectory_path, allow_unverified=False)
     finally:
         try:

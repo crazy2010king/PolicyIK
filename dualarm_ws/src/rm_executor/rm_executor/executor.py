@@ -485,6 +485,7 @@ class Executor:
                  watchdog_wait_timeout_s: float = DEFAULT_WATCHDOG_WAIT_TIMEOUT_S,
                  expected_trajectory_type: str = EXPECTED_TRAJECTORY_TYPE,
                  gate: Any = None,
+                 motion_gate: Any = None,
                  ) -> None:
         self.transport = transport
         self.feedback = feedback
@@ -493,6 +494,13 @@ class Executor:
         #: 安全闸门（进程外强制停机通道；鸭子类型：``stop_requested`` 属性
         #: + ``add_handler`` / ``requested_level``）——``None`` → 不启用
         self.gate = gate
+        #: **夹爪运动闸门**（鸭子类型：``check() -> Optional[dict]`` + ``state``
+        #: 属性）——``None`` → **不启用互锁**（既有行为完全不变）。
+        #: 非 IDLE 时在**阶段 B 之前**与**阶段 C 起流之前**各查一次，
+        #: 非 IDLE → **拒绝下发任何运动指令**（并留 ``gripper_interlock_blocked``
+        #: 事件证据）。夹爪动作是离散、慢、阻塞的，绝不跑进 10 ms tick 线程，
+        #: 因此互锁只落在**阶段边界**上。
+        self.motion_gate = motion_gate
         self.poll_period_s = float(poll_period_s)
         self.pre_position_timeout_s = float(pre_position_timeout_s)
         self.arrival_timeout_s = float(arrival_timeout_s)
@@ -587,6 +595,81 @@ class Executor:
             evidence=list(evidence or []),
             next_action=next_action,
         )
+
+    # ------------------------------------------------------- 夹爪互锁闸门
+    def _check_motion_gate(self, stage: str) -> Optional[Dict[str, Any]]:
+        """夹爪 ↔ 运动互锁检查（**只在阶段边界调用**，绝不进 tick 线程）。
+
+        返回
+        ----
+        ``None``
+            放行（未启用互锁，或闸门为 IDLE）。
+        ``dict``
+            被拒绝：``{"state", "reason", "next_action", "evidence"}``。
+        """
+        gate = self.motion_gate
+        if gate is None:
+            return None
+        try:
+            result = gate.check()
+        except Exception as exc:  # noqa: BLE001 - 闸门异常一律保守拒绝
+            return {
+                "state": "UNKNOWN",
+                "reason": "夹爪闸门检查异常: %s: %s" % (type(exc).__name__, exc),
+                "next_action": "检查夹爪闸门对象后重跑（闸门异常时保守拒绝运动）",
+                "evidence": ["stage=%s" % stage,
+                             "motion_gate_check_error=%s: %s"
+                             % (type(exc).__name__, exc)],
+            }
+        if result is None:
+            return None
+        # 鸭子类型：check() 返回 dict（state / reason / next_action）
+        state = str(result.get("state") or getattr(gate, "state", "") or "UNKNOWN")
+        reason = str(result.get("reason") or getattr(gate, "reason", "") or "")
+        next_action = str(result.get("next_action") or "")
+        evidence = [
+            "stage=%s" % stage,
+            "motion_gate_state=%s" % state,
+            "motion_gate_reason=%s" % reason,
+        ]
+        # 闸门对象若带最近夹爪快照字段则一并带上（可选，缺省不编造）
+        for attr in ("last_state", "last_snapshot", "snapshot"):
+            snap = getattr(gate, attr, None)
+            if snap is not None:
+                try:
+                    import json as _json
+                    evidence.append("motion_gate_%s=%s"
+                                    % (attr, _json.dumps(snap, ensure_ascii=False,
+                                                        default=str)))
+                except Exception:  # noqa: BLE001 - 快照序列化失败不致命
+                    evidence.append("motion_gate_%s=%r" % (attr, snap))
+                break
+        if not next_action:
+            next_action = ("等待夹爪动作结束并完成判定后重跑"
+                           "（或执行 `python3 -m rmctl gripper judge` 确认夹爪状态）")
+        return {
+            "state": state,
+            "reason": reason,
+            "next_action": next_action,
+            "evidence": evidence,
+        }
+
+    def _block_by_motion_gate(self, stage: str) -> Optional[Dict[str, Any]]:
+        """闸门非 IDLE → 记 ``gripper_interlock_blocked`` 事件并返回拒绝信息。
+
+        返回 ``None`` 表示放行；否则返回拒绝字典（调用方据此**不下发运动**）。
+        """
+        blocked = self._check_motion_gate(stage)
+        if blocked is None:
+            return None
+        self._add_event(
+            "gripper_interlock_blocked", "NEEDS_HUMAN",
+            "夹爪动作期间禁止运动（stage=%s，闸门状态=%s）"
+            % (stage, blocked["state"]),
+            blocked["evidence"],
+            blocked["next_action"],
+        )
+        return blocked
 
     def _rad2deg(self) -> float:
         """rad → deg 的**单点**换算常量（来自 ``rm_hw_bridge``）。"""
@@ -1708,6 +1791,12 @@ class Executor:
         evidence: List[str] = [
             "mode=%s transport=%s" % (self.mode, getattr(self.transport, "name", "?")),
         ]
+        # -- 夹爪互锁闸门状态（可观测：报告里能看出互锁是否启用）----------
+        if self.motion_gate is None:
+            evidence.append("未启用夹爪互锁（未注入 motion_gate）")
+        else:
+            evidence.append("已启用夹爪互锁（闸门状态=%s）"
+                            % getattr(self.motion_gate, "state", "UNKNOWN"))
         for item in self._safety_config_evidence:
             evidence.append("safety config: %s" % item)
         for item in self._safety_error_code_warnings:
@@ -1760,6 +1849,13 @@ class Executor:
                         % (len(grid_t), self._config.period_s, self._planned_s))
 
         # ---------------- 阶段 B：预就位 ----------------
+        # 夹爪互锁闸门检查（**阶段边界**，绝不进 tick 线程）：
+        # 闸门非 IDLE → 拒绝下发**任何**运动指令（含预就位）。
+        blocked = self._block_by_motion_gate("pre_position")
+        if blocked is not None:
+            evidence.append("夹爪互锁：阶段 B 之前被拒绝（闸门状态=%s），"
+                            "未下发任何运动指令" % blocked["state"])
+            return self._finalize(t_start, evidence)
         # 控制器看门狗先行启动（**独立线程**：SDK 状态查询不进 tick 线程）
         self._start_watchdog()
         goal_start_deg = self._to_deg(grid_p[0], factor)
@@ -1793,6 +1889,12 @@ class Executor:
         )
 
         # ---------------- 阶段 C：tick 流式透传 ----------------
+        # 夹爪互锁闸门检查（**起流之前**）：闸门非 IDLE → 拒绝下发任何运动
+        blocked = self._block_by_motion_gate("stream_start")
+        if blocked is not None:
+            evidence.append("夹爪互锁：阶段 C 起流前被拒绝（闸门状态=%s），"
+                            "未下发任何运动指令" % blocked["state"])
+            return self._finalize(t_start, evidence)
         self.stream_clock = self._make_stream_clock(self._config.period_s,
                                                      self._now())
         jitter_before = len(self.stream_clock.jitter_samples_ms)

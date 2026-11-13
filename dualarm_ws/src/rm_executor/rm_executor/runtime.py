@@ -119,6 +119,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return contract.EXIT_CODES.get(contract.STATUS_BLOCKED, 3)
     print("gate socket : %s" % server.socket_path)
 
+    # -- 夹爪互锁闸门：进程内**共享**的 MotionGate 实例 ---------------
+    # 真机窗口里若同一进程还跑夹爪动作客户端，两者共用同一个闸门对象
+    # → 夹爪一动作，运动闸门立刻变为非 IDLE，执行器在阶段 B / C 前拒绝运动。
+    motion_gate, interlock_note = exec_cli._make_motion_gate(args.ws)
+    print("interlock   : %s" % interlock_note)
+
     try:
         rep = exec_cli.execute(mode="live",
                                trajectory_path=args.traj,
@@ -130,7 +136,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                                port=args.port,
                                udp_port=args.udp_port,
                                ws=args.ws,
-                               gate=server.gate)
+                               gate=server.gate,
+                               motion_gate=motion_gate,
+                               motion_gate_note=interlock_note)
     finally:
         try:
             server.stop()

@@ -1722,6 +1722,13 @@ def _gripper_judge(hw, cfg, faults, count, thresholds):
             "mismatches": mismatches[:10],
         })
     ok = mismatches_total == 0
+    if ok:
+        # 判定全部正确 → 夹爪状态**已判定** → 进程内共享闸门回到 IDLE
+        # （运动互锁解除；此前夹爪动作后闸门处于 GRIPPER_UNJUDGED）
+        try:
+            hw["state"].shared_motion_gate().finish_action()
+        except Exception:  # noqa: BLE001 - 闸门复位失败不影响判定结论
+            pass
     payload = {
         "status": "ok" if ok else "error",
         "reason": ("六类判定全部正确（%d 类 × %d 次注入）" % (len(faults), count)
@@ -2026,8 +2033,13 @@ def cmd_gripper(args):
         G = hw["gripper"]
         timeout_ms = int(cfg.get("action_timeout_ms") or 2000)
         try:
-            res = adapter.with_protocol(
-                lambda ad: _gripper_apply(ad, G, path, action, speed, force, timeout_ms))
+            # **运动互锁护栏**：真机夹爪动作期间把进程内共享闸门置为
+            # GRIPPER_BUSY（动作结束 → GRIPPER_UNJUDGED，未判定前仍拒运动）。
+            # 与 rm_executor 共用同一个 MotionGate 实例（同进程）。
+            with hw["state"].gripper_action("夹爪 %s 动作中" % action):
+                res = adapter.with_protocol(
+                    lambda ad: _gripper_apply(ad, G, path, action, speed, force,
+                                              timeout_ms))
         finally:
             try:
                 arm_obj.close()

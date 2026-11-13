@@ -32,12 +32,26 @@
   等级单调升级，**仅 L1** 允许自动恢复）。
 
 两个模块同样**零反向依赖**：传输端口由调用方注入（鸭子类型）。
+
+安全闸门
+--------
+
+* :mod:`rm_safety.gate` —— **进程外强制停机通道**（Unix domain socket）：
+  ``InProcessGate``（进程内共享状态）/ ``UnixSocketGate``（socket 服务端）/
+  ``GateServer``（生命周期门面）。闸门**只做停机请求**，不做配置下发。
 """
 from __future__ import annotations
 
 from rm_safety.actuator import ActionResult, SafetyActuator
 from rm_safety.config import load_safety_config
 from rm_safety.error_codes import ErrorCodeMap, load_error_codes
+from rm_safety.gate import (
+    GateError,
+    GateServer,
+    InProcessGate,
+    UnixSocketGate,
+    default_socket_path,
+)
 from rm_safety.levels import (
     EVENT_L1_SLOWDOWN,
     EVENT_L1_SLOWDOWN_CLEARED,
@@ -85,6 +99,10 @@ __all__ = [
     "FAULT_LIMIT_EXCEEDED",
     "FAULT_PROTECTION_STOP",
     "FAULT_STREAM_LOST",
+    "GateError",
+    "GateServer",
+    "InProcessGate",
+    "UnixSocketGate",
     "LEVELS",
     "LEVEL_ORDER",
     "LEVEL_L1",
@@ -105,6 +123,7 @@ __all__ = [
     "level_severity",
     "load_error_codes",
     "load_safety_config",
+    "default_socket_path",
 ]
 
 __version__ = "0.1.0"

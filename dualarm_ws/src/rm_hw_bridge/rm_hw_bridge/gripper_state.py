@@ -23,8 +23,9 @@
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 __all__ = [
     # 错误位
@@ -76,6 +77,8 @@ __all__ = [
     "FORBIDDEN_ACTION_TOKENS",
     # 运动闸门
     "MotionGate",
+    "shared_motion_gate",
+    "gripper_action",
 ]
 
 
@@ -892,3 +895,52 @@ class MotionGate:
 
     def __repr__(self) -> str:  # pragma: no cover - 调试辅助
         return "MotionGate(state=%r, reason=%r)" % (self._state, self._reason)
+
+
+# --------------------------------------------------------------------------
+# 6. 进程内**共享**的运动闸门
+# --------------------------------------------------------------------------
+
+#: 进程内共享的闸门实例（**单例**）——夹爪动作客户端与执行器共用同一个对象，
+#: 这样「夹爪动作进行中」的状态对运动下发方立即可见。
+_SHARED_MOTION_GATE: Optional[MotionGate] = None
+
+
+def shared_motion_gate() -> MotionGate:
+    """返回**进程内共享**的 :class:`MotionGate` 实例（首次调用时创建）。
+
+    * 同一进程内的**夹爪动作客户端**（``rm_hw_bridge.gripper`` / ``rmctl
+      gripper``）与**执行器**（``rm_executor``）拿到的是**同一个对象** →
+      夹爪一动作，执行器的运动闸门立刻变为非 IDLE。
+    * 纯逻辑、零 SDK、零 I/O（本模块不碰任何寄存器）。
+    """
+    global _SHARED_MOTION_GATE
+    if _SHARED_MOTION_GATE is None:
+        _SHARED_MOTION_GATE = MotionGate()
+    return _SHARED_MOTION_GATE
+
+
+@contextmanager
+def gripper_action(reason: str = "", gate: Optional[MotionGate] = None
+                   ) -> Iterator[MotionGate]:
+    """夹爪动作的**闸门护栏**：动作期间闸门 = ``GRIPPER_BUSY``。
+
+    用法（夹爪动作客户端）::
+
+        with gripper_action("夹取中"):
+            adapter.gripper_pick(speed=100, force=100, block=True, timeout=2000)
+
+    * 动作期间 → 闸门 ``GRIPPER_BUSY`` → 执行器在阶段 B / C 前**拒绝运动**；
+    * 动作**正常结束** → 闸门 ``GRIPPER_UNJUDGED``（动作完成但状态**未判定**）
+      → 运动**仍然被拒**（必须先完成判定）；
+    * 动作**抛异常** → 同样 ``GRIPPER_UNJUDGED``（异常退出也**不假装判定过**）。
+
+    纯逻辑：``gate`` 缺省用进程内共享实例；不碰任何寄存器。
+    """
+    g = gate if gate is not None else shared_motion_gate()
+    g.begin_action(reason or "夹爪动作进行中")
+    try:
+        yield g
+    finally:
+        # 无论正常结束还是抛异常，动作结束后都**未判定** → 保守保持拒绝运动
+        g.mark_unjudged(reason or "夹爪动作已结束，状态待判定")
