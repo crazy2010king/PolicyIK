@@ -226,3 +226,54 @@ def test_archive_sha256_matches_actual_file_when_present(manifest_assets):
             for chunk in iter(lambda: fh.read(1 << 20), b""):
                 h.update(chunk)
         assert h.hexdigest() == asset["sha256"], f"{name}: 归档实际 sha256 与清单不符"
+
+
+# ── 元数据归档的可复现性（T01 补充）──────────────────────────────────────
+def _load_tool_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("fu_fetch_upstream", TOOL)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _make_local_repo(tmp_path: Path) -> tuple[Path, str, bytes]:
+    """建一个本地 git 仓库，返回 (repo_dir, blob sha, 内容)。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    content = b"hello upstream\n"
+    (repo / "a.txt").write_bytes(content)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=str(repo),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+
+    git("init", "-q")
+    git("add", "a.txt")
+    git("commit", "-q", "-m", "init")
+    sha = git("rev-parse", "HEAD:a.txt").stdout.strip()
+    return repo, sha, content
+
+
+def test_resolve_blob_sizes_returns_real_size(tmp_path):
+    """大小未知的 blob 必须能取回真实字节数（否则归档 sha256 不可复现）。"""
+    fu = _load_tool_module()
+    repo, sha, content = _make_local_repo(tmp_path)
+    sizes = fu.resolve_blob_sizes(repo, [sha], retries=1)
+    assert sizes[sha] == len(content)
+
+
+def test_resolve_blob_sizes_fails_loudly_on_missing_blob(tmp_path):
+    """取不到 blob 大小 → 必须硬失败（SystemExit），不得静默写 0 污染归档 sha。"""
+    fu = _load_tool_module()
+    repo, _sha, _content = _make_local_repo(tmp_path)
+    missing = "0" * 40
+    with pytest.raises(SystemExit):
+        fu.resolve_blob_sizes(repo, [missing], retries=1)

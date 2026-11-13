@@ -216,7 +216,14 @@ def ensure_commit(repo_dir: Path, commit: str) -> None:
     run_git(["fetch", "--depth", "1", "origin", commit], cwd=repo_dir, timeout=1800)
 
 
-def ls_tree_long(repo_dir: Path, commit: str, pathspec: str | None = None) -> list[tuple[str, int]]:
+def ls_tree_long(
+    repo_dir: Path, commit: str, pathspec: str | None = None
+) -> list[tuple[str, int, str]]:
+    """列出树条目：(路径, 大小, blob sha)。
+
+    大小为 0 **可能**意味着“大小未知”（部分克隆里 blob 尚未取回，见
+    :func:`resolve_blob_sizes`），不一定是空文件。
+    """
     args = ["ls-tree", "-r", "--long", commit]
     if pathspec:
         args += ["--", pathspec]
@@ -230,8 +237,69 @@ def ls_tree_long(repo_dir: Path, commit: str, pathspec: str | None = None) -> li
             size = int(parts[3])
         except ValueError:
             size = 0
-        entries.append((parts[4], size))
+        entries.append((parts[4], size, parts[2]))
     return entries
+
+
+def resolve_blob_sizes(repo_dir: Path, shas: list[str], retries: int = 3) -> dict[str, int]:
+    """解析一批 blob 的真实字节数。
+
+    部分克隆（``--filter=blob:none``）下 ``git ls-tree --long`` 对尚未取回的 blob
+    会报 **大小未知**（本实现里落成 0）。若把这个 0 写进元数据归档，归档字节就
+    取决于“当时哪些 blob 恰好在本地”，**同一 commit 反复抓取 sha256 不一致**，
+    写进 versions.lock 的 sha256 也就失去可复现性。
+
+    因此：大小未知的 blob 一律用 ``git cat-file --batch-check`` 取真实大小
+    （该命令会触发 promisor 懒加载）；仍取不到就 **硬失败**，绝不静默写 0。
+    """
+    if not shas:
+        return {}
+    sizes: dict[str, int] = {}
+    pending = list(dict.fromkeys(shas))
+    for attempt in range(1, retries + 1):
+        proc = subprocess.run(
+            ["git", "cat-file", "--batch-check"],
+            cwd=str(repo_dir),
+            input="\n".join(pending) + "\n",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=1800,
+        )
+        still_missing: list[str] = []
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            sha, rest = parts[0], parts[1:]
+            if rest and rest[0] == "missing":
+                still_missing.append(sha)
+                continue
+            if len(rest) < 2:
+                still_missing.append(sha)
+                continue
+            kind, size = rest[0], rest[1]
+            if kind == "missing" or size == "-":
+                still_missing.append(sha)
+                continue
+            try:
+                sizes[sha] = int(size)
+            except ValueError:
+                still_missing.append(sha)
+        pending = still_missing
+        if not pending:
+            return sizes
+        log(
+            f"blob 大小未取回（尝试 {attempt}/{retries}）：{len(pending)} 个，"
+            "5 秒后重试（网络抖动）"
+        )
+        time.sleep(5)
+    die(
+        f"无法取得 {len(pending)} 个 blob 的真实大小（{pending[:3]}…）。"
+        "归档将不可复现（sha256 会随本地 blob 状态漂移），因此中止。"
+        "可先在该浅克隆里执行 `git fetch --refetch --filter=blob:none` 后重试。"
+    )
+    return {}  # pragma: no cover - die() 必然抛错
 
 
 def build_subset_archive(repo_dir: Path, commit: str, subset: str, out_path: Path) -> tuple[int, int]:
@@ -251,13 +319,20 @@ def build_subset_archive(repo_dir: Path, commit: str, subset: str, out_path: Pat
         tmp.unlink(missing_ok=True)
         die(f"git archive 失败：{(proc.stderr or b'').decode(errors='replace').strip()}")
     tmp.replace(out_path)
-    return len(entries), sum(size for _, size in entries)
+    return len(entries), sum(size for _, size, _ in entries)
 
 
 def build_metadata_archive(repo_dir: Path, commit: str, out_path: Path) -> tuple[int, int]:
     """元数据归档：仓库全量文件清单（ls-tree --long）+ 许可文件。不含大体积二进制。"""
     entries = ls_tree_long(repo_dir, commit)
-    listing = "".join(f"{size:>12}  {path}\n" for path, size in entries)
+    # 大小未知的 blob 必须取回真实大小，否则归档字节不可复现（见 resolve_blob_sizes）。
+    unknown = [(path, sha) for path, size, sha in entries if size == 0]
+    if unknown:
+        resolved = resolve_blob_sizes(repo_dir, [sha for _, sha in unknown])
+        entries = [
+            (path, resolved.get(sha, size), sha) for path, size, sha in entries
+        ]
+    listing = "".join(f"{size:>12}  {path}\n" for path, size, _ in entries)
     files_txt = (
         f"# Two-Finger-Gripper 元数据清单（由 tools/fetch_upstream.py 生成）\n"
         f"# commit: {commit}\n"

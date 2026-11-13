@@ -7,7 +7,7 @@
 # 字段：name / repo / ref / commit / subset / mode / license / redistributable /
 #       archive / sha256 / file_count / total_bytes / fetched_at
 schema_version: 1
-generated_at: 2026-11-13T12:50:11+0800
+generated_at: 2026-11-13T15:11:00+0800
 assets:
 - name: rm_models
   repo: https://github.com/RealManRobot/rm_models
@@ -21,7 +21,7 @@ assets:
   sha256: fb7ab533ce42a146d676e95a58d115e2695909fe325e403bddc8f84313eb202b
   file_count: 17
   total_bytes: 3312746
-  fetched_at: 2026-11-13T12:50:10+0800
+  fetched_at: 2026-11-13T14:59:08+0800
 - name: two_finger_gripper
   repo: https://github.com/RealManRobot/Two-Finger-Gripper
   ref: main
@@ -34,4 +34,4 @@ assets:
   sha256: 975b5474afbac9de17bf2ea2601d6eacd0267ecdc54c0f46640115ac64d154a5
   file_count: 480
   total_bytes: 60747
-  fetched_at: 2026-11-13T12:50:11+0800
+  fetched_at: 2026-11-13T15:11:00+0800
