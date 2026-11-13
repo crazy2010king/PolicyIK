@@ -62,11 +62,12 @@ def _load_traj(path):
 #
 # R010：doctor 的每条检查项都要有分级 level + **可粘贴的修复命令**。
 # 本切片（S02）新增的硬件面——SDK 在位 / 22 核心符号 / 白黑名单契约 / 限值来源——
-# 全部收敛到下面 4 条 hw:* 检查项；判定逻辑一律复用硬件适配层（rm_hw_bridge），
+# 全部收敛到下面 5 条 hw:* 检查项；判定逻辑一律复用硬件适配层（rm_hw_bridge），
 # **不在 rmctl 侧另写一套**（清单与真值都在 rm_hw_bridge 里）。
 
-#: 硬件适配层的 4 条检查项名字（顺序固定）
-HW_CHECK_NAMES = ("hw:sdk", "hw:symbols", "hw:contract", "hw:limits_source")
+#: 硬件适配层的 5 条检查项名字（顺序固定）
+HW_CHECK_NAMES = ("hw:sdk", "hw:symbols", "hw:contract", "hw:limits_source",
+                  "hw:gripper")
 
 #: 硬件适配层不可导入时的修复动作（可直接粘贴）
 _HW_PYTHONPATH_ACTION = (
@@ -253,12 +254,13 @@ def _hw_limits_source_check(ws):
 
 
 def _hw_checks(ws):
-    """4 条 hw:* 检查项（顺序固定：sdk → symbols → contract → limits_source）。"""
+    """5 条 hw:* 检查项（顺序固定：sdk → symbols → contract → limits_source → gripper）。"""
     return [
         _hw_sdk_check(ws),
         _hw_symbols_check(ws),
         _hw_contract_check(ws),
         _hw_limits_source_check(ws),
+        _hw_gripper_check(ws),
     ]
 
 
@@ -372,7 +374,7 @@ def cmd_doctor(args):
         add("baselines:present", False, repr(exc),
             "python3 -m rmctl baseline scaffold")
 
-    # 硬件适配层（rm_hw_bridge）4 条：SDK 在位 / 22 符号 / 契约静态审计 / 限值来源
+    # 硬件适配层（rm_hw_bridge）5 条：SDK 在位 / 22 符号 / 契约静态审计 / 限值来源 / 夹爪配置
     for chk in _hw_checks(ws):
         add(chk["name"], chk["ok"], chk["detail"], chk["action"], chk["level"])
 
@@ -1402,6 +1404,715 @@ def cmd_safety(args):
     return 0 if result.get("status") == "ok" else 3
 
 
+# ------------------------------------------------------- 夹爪体验层（S05/T5）
+#
+# 纪律（与仓库既有约定一致）：
+# * 夹爪配置的**唯一来源** = workcell/rm_workcell.yaml::gripper（由硬件层读取器校验）；
+# * 夹爪判定的**唯一真值** = rm_hw_bridge.gripper_state.judge（CLI 不另写一套判定）；
+# * 离线一律走硬件层的 FakeGripper **代理**，输出必须带 mode=fake 与「代理模型，不代表真机结论」；
+# * 真机不可达 → status=blocked + 可粘贴 next_action（退出码 3），**绝不伪造结论**；
+# * 退出码沿用既有口径：0 ok / 2 参数非法 / 3 blocked / 4 error。
+
+#: 六类判定（结果名与 rm_hw_bridge.gripper_state 的 RESULT_* 一致）
+GRIPPER_FAULT_CLASSES = ("grasp_ok", "grasp_empty", "stall", "overtemp",
+                         "overcurrent", "offline")
+
+#: 六类判定的中文标签
+GRIPPER_FAULT_LABELS = {
+    "grasp_ok": "夹到",
+    "grasp_empty": "夹空",
+    "stall": "堵转",
+    "overtemp": "过温",
+    "overcurrent": "过流",
+    "offline": "离线",
+}
+
+#: 严重度排序（取「最严重等级」用）
+GRIPPER_SEVERITY_ORDER = ("OK", "RECOVERABLE", "NEEDS_PARAM", "NEEDS_HUMAN")
+
+#: **代理阈值**（真机标定未回填时的离线判据；输出里必须标注「不代表真机结论」）
+GRIPPER_PROXY_THRESHOLDS = {
+    "force_threshold": 100.0,
+    "grasp_position_window": [10.0, 30.0],
+    "position_mm_per_unit": 0.05,
+    "force_scale": 0.01,
+}
+
+#: 离线代理的固定声明（**必须**出现在 cycle / judge 的输出里）
+GRIPPER_PROXY_NOTE = "代理模型，不代表真机结论"
+
+
+def _gripper_hw(ws=None):
+    """惰性导入夹爪相关的硬件层模块（gripper / gripper_config / gripper_state / loader）。
+
+    返回 ``(mods, error_reason)``；``mods`` 为 ``None`` 时 ``error_reason``
+    说明原因（**不把 ImportError 堆栈直接甩给操作者**）。
+    """
+    def _import():
+        from rm_hw_bridge import gripper as _gripper
+        from rm_hw_bridge import gripper_config as _gripper_config
+        from rm_hw_bridge import gripper_state as _gripper_state
+        from rm_hw_bridge import loader as _loader
+        return {"gripper": _gripper, "config": _gripper_config,
+                "state": _gripper_state, "loader": _loader}
+
+    try:
+        return _import(), ""
+    except Exception as exc:  # noqa: BLE001 - 统一降级
+        first = repr(exc)
+    root = ws or paths.workspace_root()
+    pkg_parent = os.path.join(root, "dualarm_ws", "src", "rm_hw_bridge")
+    if os.path.isdir(pkg_parent) and pkg_parent not in sys.path:
+        sys.path.insert(0, pkg_parent)
+    try:
+        return _import(), ""
+    except Exception as exc:  # noqa: BLE001
+        return None, "%s / 兜底路径 %s: %r" % (first, pkg_parent, exc)
+
+
+def _gripper_config_result(hw, ws):
+    """读夹爪配置（唯一来源 = workcell/rm_workcell.yaml::gripper）。"""
+    try:
+        return hw["config"].load_gripper_config(ws)
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error",
+                "reason": "读取夹爪配置失败: %r" % (exc,),
+                "next_action": "检查 workcell/rm_workcell.yaml::gripper 段后重跑",
+                "evidence": [repr(exc)],
+                "config": None}
+
+
+def _gripper_thresholds(cfg):
+    """判定阈值：优先用工位配置；缺失项用**代理阈值**补齐（并标注来源）。"""
+    raw = dict((cfg or {}).get("thresholds") or {})
+    effective = {}
+    proxy_used = []
+    for key, proxy_value in GRIPPER_PROXY_THRESHOLDS.items():
+        value = raw.get(key)
+        if value is None:
+            effective[key] = proxy_value
+            proxy_used.append(key)
+        else:
+            effective[key] = value
+    window = effective.get("grasp_position_window")
+    if isinstance(window, (list, tuple)):
+        effective["grasp_position_window"] = tuple(float(v) for v in window)
+    return effective, proxy_used
+
+
+def _gripper_emit(args, payload, lines=None):
+    """统一输出（--json → 单个 JSON 对象；否则人读摘要）+ 退出码。"""
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        for line in (lines or []):
+            print(line)
+        if payload.get("status") != "ok":
+            print("[%s] %s" % (payload.get("status"), payload.get("reason")),
+                  file=sys.stderr)
+            print("→ 下一步: %s" % payload.get("next_action"), file=sys.stderr)
+    return {"ok": 0, "blocked": 3, "error": 4}.get(payload.get("status"), 4)
+
+
+def _gripper_real_adapter(hw, ws, arm, cfg):
+    """真机路径：找 SDK → 连臂 → 构造夹爪适配器。
+
+    返回 ``(adapter, handles, error_payload)``：``error_payload`` 非 ``None`` 时
+    **不返回任何伪造结论**（blocked = 等真机窗口，error = 运行错误）。
+    """
+    loader = hw["loader"]
+    lib = loader.find_library(ws=ws)
+    if not lib:
+        return None, None, {
+            "status": "blocked",
+            "reason": "未找到 RM-API2 动态库（libapi_c.so），无法连真机夹爪",
+            "next_action": ("在真机窗口执行：export RM_API2_LIB=/abs/path/libapi_c.so "
+                            "&& python3 -m rmctl gripper probe --arm %s" % arm),
+            "evidence": ["已搜索: %s" % p for p in loader.sdk_candidates(ws=ws)],
+            "mode": "live",
+            "arm": arm,
+        }
+    plan = _network_plan(ws) or {}
+    arm_plan = ((plan.get("arms") or {}).get(arm) or {})
+    ip = arm_plan.get("ip")
+    if not ip:
+        return None, None, {
+            "status": "blocked",
+            "reason": "network_plan.yaml 里没有 arms.%s.ip（没有控制器地址）" % arm,
+            "next_action": ("在 workcell/baselines/network_plan.yaml 补 arms.%s.ip 后重跑"
+                            % arm),
+            "evidence": ["network_plan.status=%s" % (plan.get("status") or "unknown")],
+            "mode": "live",
+            "arm": arm,
+        }
+    port_no = int(arm_plan.get("tcp_port") or 8080)
+    try:
+        bridge = loader.RmBridge(ws=ws)
+    except Exception as exc:  # noqa: BLE001
+        return None, None, {
+            "status": "blocked",
+            "reason": "加载 RM-API2 动态库失败: %r" % (exc,),
+            "next_action": "确认 SDK 版本与依赖库齐全（ldd %s）后重跑" % lib,
+            "evidence": [repr(exc), "lib=%s" % lib],
+            "mode": "live",
+            "arm": arm,
+        }
+    try:
+        arm_obj = bridge.create(str(ip), port_no)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            bridge.close()
+        except Exception:  # pragma: no cover - 释放失败不影响主流程
+            pass
+        return None, None, {
+            "status": "error",
+            "reason": "连接控制器失败（%s:%d）: %r" % (ip, port_no, exc),
+            "next_action": "确认控制器已上电、IP 可达后重跑同一条命令",
+            "evidence": [repr(exc), "ip=%s port=%d" % (ip, port_no)],
+            "mode": "live",
+            "arm": arm,
+        }
+    G = hw["gripper"]
+    adapter = G.GripperAdapter(
+        G.CtypesSdkPort(bridge.binding, arm_obj.handle),
+        path=(cfg or {}).get("path") or "modbus",
+        device_id=int((cfg or {}).get("device_id") or 1),
+        baud=int((cfg or {}).get("baud") or 115200),
+        timeout_100ms=max(1, int((cfg or {}).get("timeout_ms") or 500) // 100),
+        base=1,
+        position_mm_per_unit=(cfg or {}).get("position_mm_per_unit"),
+        force_scale=(cfg or {}).get("force_scale"),
+    )
+    return adapter, (bridge, arm_obj), None
+
+
+def _gripper_apply(adapter, G, path, action, speed, force, timeout_ms):
+    """下发一次夹爪动作（open = 张开 / close = 夹取）。
+
+    * ``gripper_api`` 路径 → 官方快路径（``rm_set_gripper_release`` / ``rm_set_gripper_pick``）；
+    * ``modbus`` 路径 → 手册寄存器（0x0006 松开到最大开口 / 0x0009 目标开口度 + 0x000A 速度
+      + 0x000B 力度）。
+
+    返回硬件层的统一结果字典（``status`` / ``reason`` / ``next_action`` / ``evidence``）。
+    """
+    if path == "gripper_api":
+        if action == "open":
+            return adapter.gripper_release(speed, True, timeout_ms)
+        return adapter.gripper_pick(speed, force, True, timeout_ms)
+    if action == "open":
+        return adapter.write_register(G.REG_OPEN_MAX, 1)
+    for reg, value in ((G.REG_SPEED, int(speed)), (G.REG_FORCE, int(force)),
+                       (G.REG_TARGET_POS, 0)):
+        res = adapter.write_register(reg, value)
+        if res.get("status") != "ok":
+            return res
+    return {"status": "ok",
+            "reason": "夹爪闭合动作已下发（目标开口度=0，速度=%d，力度=%d）" % (speed, force),
+            "next_action": "",
+            "evidence": ["写寄存器 0x%04X=0（目标开口度）" % G.REG_TARGET_POS]}
+
+
+def _gripper_fixture_thresholds(effective):
+    """确保夹具能落在阈值窗口内（否则退回代理阈值并标注）。"""
+    window = list(effective.get("grasp_position_window") or [])
+    try:
+        ppu = float(effective.get("position_mm_per_unit") or 0.0)
+    except (TypeError, ValueError):
+        ppu = 0.0
+    if len(window) == 2 and ppu > 0:
+        center = (float(window[0]) + float(window[1])) / 2.0
+        raw = center / ppu
+        if 0.0 <= raw <= 1000.0:
+            return effective, False
+    return dict(GRIPPER_PROXY_THRESHOLDS), True
+
+
+def _gripper_fixture(hw, fault, thresholds):
+    """构造一个能触发指定判定的假夹爪（返回 ``(port, path)``）。
+
+    * 夹到 / 夹空 / 堵转 / 过温 / 过流 → Modbus 路径（力度 0x000E 本身即 0–1000 标度）；
+    * 离线 → 官方夹爪快路径（Modbus 路径下「读不到」只能是通讯错误，**不是离线判定**）。
+    """
+    G = hw["gripper"]
+    window = list(thresholds.get("grasp_position_window") or [10.0, 30.0])
+    center = (float(window[0]) + float(window[1])) / 2.0
+    ppu = float(thresholds.get("position_mm_per_unit") or 0.05)
+    pos_raw = int(round(center / ppu)) if ppu else 400
+    force_threshold = float(thresholds.get("force_threshold") or 100.0)
+    error_bits = 0
+    force_raw = min(1000, int(round(force_threshold * 2)))
+    temp = 25
+    path = "modbus"
+    online = True
+    if fault == "grasp_empty":
+        force_raw = max(0, int(force_threshold // 2))
+    elif fault == "stall":
+        error_bits = 1
+    elif fault == "overtemp":
+        error_bits = 2
+        temp = 85
+    elif fault == "overcurrent":
+        error_bits = 4
+    elif fault == "offline":
+        path = "gripper_api"
+        online = False
+    registers = {
+        G.REG_ACTUAL_POS: pos_raw,
+        G.REG_ACTUAL_FORCE: force_raw,
+        G.REG_ACTUAL_TEMP: temp,
+        G.REG_ACTUAL_CURRENT: 120,
+        G.REG_ERROR: error_bits,
+        G.REG_STATE: 2,
+    }
+    port = G.FakeGripper(base=1, registers=registers, online=online, mode=2)
+    return port, path
+
+
+def _gripper_judge(hw, cfg, faults, count, thresholds):
+    """注入故障并用纯逻辑判定层复核（返回 ``(payload, lines)``）。"""
+    G = hw["gripper"]
+    S = hw["state"]
+    effective, fell_back = _gripper_fixture_thresholds(thresholds)
+    rows = []
+    mismatches_total = 0
+    for fault in faults:
+        correct = 0
+        mismatches = []
+        worst = "OK"
+        for index in range(count):
+            port, path = _gripper_fixture(hw, fault, effective)
+            adapter = G.GripperAdapter(
+                port,
+                path=path,
+                device_id=int((cfg or {}).get("device_id") or 1),
+                baud=int((cfg or {}).get("baud") or 115200),
+                timeout_100ms=max(1, int((cfg or {}).get("timeout_ms") or 500) // 100),
+                base=1,
+                position_mm_per_unit=effective.get("position_mm_per_unit"),
+                force_scale=effective.get("force_scale"),
+            )
+            state_res = adapter.read_state()
+            if state_res.get("status") != "ok":
+                mismatches.append({"index": index, "expected": fault,
+                                   "actual": "read_error",
+                                   "reason": state_res.get("reason")})
+                continue
+            judgment = S.judge(state_res.get("state"), effective)
+            if judgment.result == fault:
+                correct += 1
+            else:
+                mismatches.append({
+                    "index": index,
+                    "expected": fault,
+                    "actual": judgment.result,
+                    "reason": judgment.reason,
+                    "evidence": judgment.evidence.get("error_flags"),
+                })
+            if GRIPPER_SEVERITY_ORDER.index(judgment.severity) > \
+                    GRIPPER_SEVERITY_ORDER.index(worst):
+                worst = judgment.severity
+        mismatches_total += len(mismatches)
+        rows.append({
+            "fault": fault,
+            "label": GRIPPER_FAULT_LABELS.get(fault, fault),
+            "injected": count,
+            "correct": correct,
+            "accuracy": (correct / float(count)) if count else 0.0,
+            "worst_severity": worst,
+            "mismatches": mismatches[:10],
+        })
+    ok = mismatches_total == 0
+    payload = {
+        "status": "ok" if ok else "error",
+        "reason": ("六类判定全部正确（%d 类 × %d 次注入）" % (len(faults), count)
+                   if ok else
+                   "判定不符 %d 处（%d 类 × %d 次注入）" % (mismatches_total, len(faults), count)),
+        "next_action": ("" if ok else
+                        "对照 rm_hw_bridge.gripper_state 的判定优先级复核注入夹具与阈值后重跑"),
+        "evidence": [
+            "mode=fake（离线假夹爪，不代表真机结论）",
+            "判定真值: rm_hw_bridge.gripper_state.judge（CLI 不另写判定）",
+            "阈值来源: %s" % ("代理阈值（真机标定未回填）" if fell_back else "workcell/rm_workcell.yaml::gripper"),
+            "注入: %s" % ", ".join("%s×%d" % (f, count) for f in faults),
+        ],
+        "mode": "fake",
+        "action": "judge",
+        "note": GRIPPER_PROXY_NOTE,
+        "faults": rows,
+        "mismatches": mismatches_total,
+        "thresholds": {
+            key: (list(value) if isinstance(value, tuple) else value)
+            for key, value in effective.items()
+        },
+        "thresholds_source": "proxy_default" if fell_back else "workcell_config",
+    }
+    lines = ["夹爪判定自检（%s）" % GRIPPER_PROXY_NOTE]
+    for row in rows:
+        lines.append("  %-12s %-4s 正确 %d/%d（%.0f%%）最严重 %s" % (
+            row["label"], row["fault"], row["correct"], row["injected"],
+            row["accuracy"] * 100.0, row["worst_severity"]))
+    lines.append("→ %s" % payload["reason"])
+    return payload, lines
+
+
+def _gripper_cycle(hw, cfg, count, thresholds):
+    """代理模式开合 N 次，统计超时与失败（返回 ``(payload, lines)``）。"""
+    G = hw["gripper"]
+    path = (cfg or {}).get("path") or "modbus"
+    port = G.FakeGripper(base=1, registers={
+        G.REG_STATE: 2, G.REG_ACTUAL_TEMP: 25, G.REG_ACTUAL_CURRENT: 120,
+    }, max_records=1000)
+    adapter = G.GripperAdapter(
+        port,
+        path=path,
+        device_id=int((cfg or {}).get("device_id") or 1),
+        baud=int((cfg or {}).get("baud") or 115200),
+        timeout_100ms=max(1, int((cfg or {}).get("timeout_ms") or 500) // 100),
+        base=1,
+        position_mm_per_unit=(cfg or {}).get("position_mm_per_unit"),
+        force_scale=(cfg or {}).get("force_scale"),
+    )
+    timeout_ms = int((cfg or {}).get("action_timeout_ms") or 2000)
+    timeouts = 0
+    failures = []
+    actions = 0
+    opened = adapter.open_protocol()
+    try:
+        for index in range(count):
+            for act in ("open", "close"):
+                res = _gripper_apply(adapter, G, path, act, 100, 100, timeout_ms)
+                actions += 1
+                if res.get("status") != "ok":
+                    if res.get("rc") == G.RC_RECV_TIMEOUT:
+                        timeouts += 1
+                    failures.append({"cycle": index, "action": act,
+                                     "status": res.get("status"),
+                                     "reason": res.get("reason")})
+    finally:
+        closed = adapter.close_protocol()
+    ok = not failures
+    payload = {
+        "status": "ok" if ok else "error",
+        "reason": ("代理模式完成 %d 次开合（%d 次动作，%d 次超时，%d 次失败）"
+                   % (count, actions, timeouts, len(failures))),
+        "next_action": ("在真机窗口用 rmctl gripper open / close 复核真实动作"
+                        "（本次为%s）" % GRIPPER_PROXY_NOTE),
+        "evidence": [
+            "mode=fake（离线假夹爪，不代表真机结论）",
+            "协议生命周期: %s → %s" % (opened.get("reason"), closed.get("reason")),
+            "配置来源: %s" % ((cfg or {}).get("source") or "?"),
+        ],
+        "mode": "fake",
+        "action": "cycle",
+        "note": GRIPPER_PROXY_NOTE,
+        "cycles": count,
+        "actions": actions,
+        "timeouts": timeouts,
+        "failures": failures[:20],
+        "failure_count": len(failures),
+    }
+    lines = ["夹爪开合自检（%s）" % GRIPPER_PROXY_NOTE,
+             "  次数: %d（动作 %d 次）" % (count, actions),
+             "  超时: %d 次" % timeouts,
+             "  失败: %d 次" % len(failures)]
+    return payload, lines
+
+
+def cmd_gripper(args):
+    """`rmctl gripper`：夹爪体验层（probe / open / close / cycle / judge）。
+
+    退出码：0 ok / 2 参数非法 / 3 blocked（缺配置、缺 SDK、需真机窗口）/ 4 error。
+    """
+    action = getattr(args, "action", None)
+    if action not in ("probe", "open", "close", "cycle", "judge"):
+        print("rmctl gripper 需要一个子命令：probe / open / close / cycle / judge",
+              file=sys.stderr)
+        return 2
+    ws = getattr(args, "ws", None) or paths.workspace_root()
+    arm = getattr(args, "arm", "left") or "left"
+
+    hw, err = _gripper_hw(ws)
+    if hw is None:
+        payload = {
+            "status": "blocked",
+            "reason": "硬件适配层 rm_hw_bridge 不可用: %s" % err,
+            "next_action": ("export PYTHONPATH=%s:$PYTHONPATH  "
+                            "# 让 rmctl 看到硬件适配层"
+                            % os.path.join(ws, "dualarm_ws", "src", "rm_hw_bridge")),
+            "evidence": [err],
+            "mode": "gripper",
+            "action": action,
+            "arm": arm,
+        }
+        return _gripper_emit(args, payload, [])
+
+    cfg_res = _gripper_config_result(hw, ws)
+    if cfg_res.get("status") != "ok":
+        payload = {
+            "status": "blocked",
+            "reason": cfg_res.get("reason") or "夹爪配置不可用",
+            "next_action": cfg_res.get("next_action") or (
+                "补齐 workcell/rm_workcell.yaml::gripper 段后重跑"),
+            "evidence": list(cfg_res.get("evidence") or []),
+            "mode": "gripper",
+            "action": action,
+            "arm": arm,
+        }
+        return _gripper_emit(args, payload, [])
+    cfg = cfg_res.get("config") or {}
+    thresholds, proxy_used = _gripper_thresholds(cfg)
+
+    # ---- 参数校验（非法 → 2） ----
+    if action in ("open", "close"):
+        speed = int(getattr(args, "speed", 100))
+        force = int(getattr(args, "force", 100))
+        invalid = []
+        if not (0 <= speed <= 1000):
+            invalid.append("--speed 必须在 0–1000 之间（收到 %d）" % speed)
+        if not (0 <= force <= 1000):
+            invalid.append("--force 必须在 0–1000 之间（收到 %d）" % force)
+        if invalid:
+            for msg in invalid:
+                print("参数非法: %s" % msg, file=sys.stderr)
+            print("→ 修复: rmctl gripper %s --arm %s --speed 100 --force 100"
+                  % (action, arm), file=sys.stderr)
+            return 2
+    if action == "cycle":
+        count = int(getattr(args, "count", 10))
+        if count < 1 or count > 10000:
+            print("参数非法: --count 必须在 1–10000 之间（收到 %d）" % count,
+                  file=sys.stderr)
+            print("→ 修复: rmctl gripper cycle --count 100", file=sys.stderr)
+            return 2
+    if action == "judge":
+        count = int(getattr(args, "count", 1))
+        if count < 1 or count > 1000:
+            print("参数非法: --count 必须在 1–1000 之间（收到 %d）" % count,
+                  file=sys.stderr)
+            print("→ 修复: rmctl gripper judge --fault each --count 10", file=sys.stderr)
+            return 2
+
+    # ------------------------------------------------------------- probe
+    if action == "probe":
+        G = hw["gripper"]
+        if getattr(args, "dry_run", False):
+            lib = None
+            try:
+                lib = hw["loader"].find_library(ws=ws)
+            except Exception:  # noqa: BLE001 - dry-run 不因探测失败而中断
+                lib = None
+            payload = {
+                "status": "ok",
+                "reason": "dry-run：已解析夹爪配置与 SDK 路径，**未连接真机**（无任何实测数值）",
+                "next_action": "去掉 --dry-run 即在真机窗口执行探针",
+                "evidence": [
+                    "配置来源: %s" % cfg.get("source"),
+                    "protocol=%s path=%s device_id=%s baud=%s timeout_ms=%s" % (
+                        cfg.get("protocol"), cfg.get("path"), cfg.get("device_id"),
+                        cfg.get("baud"), cfg.get("timeout_ms")),
+                    "SDK: %s" % (lib or "未找到 RM-API2 动态库（真机路径会 blocked）"),
+                    "未实测假设: 寄存器地址基数、只读寄存器归属 FC03/FC04、"
+                    "波特率档位映射、控制器代际",
+                ],
+                "mode": "dry_run",
+                "action": "probe",
+                "arm": arm,
+                "config": cfg,
+            }
+            lines = ["夹爪探针（dry-run，未连接真机）",
+                     "  配置来源: %s" % cfg.get("source"),
+                     "  协议    : %s（path=%s）" % (cfg.get("protocol"), cfg.get("path")),
+                     "  从站/波特: device_id=%s baud=%s" % (cfg.get("device_id"),
+                                                          cfg.get("baud")),
+                     "  SDK     : %s" % (lib or "未找到"),
+                     "→ 下一步: rmctl gripper probe --arm %s" % arm]
+            return _gripper_emit(args, payload, lines)
+        adapter, handles, err_payload = _gripper_real_adapter(hw, ws, arm, cfg)
+        if err_payload is not None:
+            err_payload.update({"action": "probe"})
+            return _gripper_emit(args, err_payload, [])
+        bridge, arm_obj = handles
+        try:
+            probe = adapter.probe()
+        except Exception as exc:  # noqa: BLE001
+            payload = {"status": "error", "reason": "夹爪探针异常: %r" % (exc,),
+                       "next_action": "检查夹爪接线与控制器状态后重跑同一条命令",
+                       "evidence": [repr(exc)], "mode": "live",
+                       "action": "probe", "arm": arm}
+            return _gripper_emit(args, payload, [])
+        finally:
+            try:
+                arm_obj.close()
+                bridge.close()
+            except Exception:  # pragma: no cover - 释放失败不影响结论
+                pass
+        payload = {
+            "status": probe.get("status") or "ok",
+            "reason": probe.get("reason") or "",
+            "next_action": probe.get("next_action") or "",
+            "evidence": list(probe.get("evidence") or []),
+            "mode": "live",
+            "action": "probe",
+            "arm": arm,
+            "probe": probe,
+            "config": cfg,
+        }
+        lines = ["夹爪探针（真机）",
+                 "  协议状态: rm_plus=%s modbus=%s" % (
+                     (probe.get("rm_plus") or {}).get("protocol_state"),
+                     (probe.get("modbus_open") or {}).get("status")),
+                 "  波特率档: %s   设备 ID: %s" % (probe.get("baud_code"),
+                                              probe.get("device_id")),
+                 "  基数探测: detected_base=%s（%s）" % (
+                     probe.get("detected_base"), probe.get("detected_base_note")),
+                 "  工具端供电: %s" % (probe.get("tool_voltage") or {}).get("voltage_type"),
+                 "  代际线索: %s" % probe.get("controller_generation_hint"),
+                 "  未实测假设: %s" % "; ".join(probe.get("assumptions") or [])]
+        return _gripper_emit(args, payload, lines)
+
+    # --------------------------------------------------------- open / close
+    if action in ("open", "close"):
+        speed = int(getattr(args, "speed", 100))
+        force = int(getattr(args, "force", 100))
+        path = cfg.get("path") or "modbus"
+        if path == "rm_plus":
+            payload = {
+                "status": "blocked",
+                "reason": "RM Plus 路径只作协议开关区分（disable / offline），没有夹爪动作接口",
+                "next_action": ("把 workcell/rm_workcell.yaml::gripper.path 改成 modbus "
+                                "（主路径）后重跑"),
+                "evidence": ["RM Plus 不提供夹爪动作接口（白名单只有协议开关）"],
+                "mode": "gripper",
+                "action": action,
+                "arm": arm,
+            }
+            return _gripper_emit(args, payload, [])
+        if getattr(args, "dry_run", False):
+            planned = ("rm_set_gripper_release(speed=%d)" % speed if action == "open" and
+                       path == "gripper_api" else
+                       "rm_set_gripper_pick(speed=%d, force=%d)" % (speed, force))
+            if path == "modbus":
+                planned = ("写寄存器 0x0006=1（松开到最大开口）" if action == "open" else
+                           "写寄存器 0x000A=%d / 0x000B=%d / 0x0009=0（速度/力度/目标开口度）"
+                           % (speed, force))
+            payload = {
+                "status": "ok",
+                "reason": "dry-run：已解析参数与配置，**未下发任何动作**（零 SDK 调用）",
+                "next_action": "去掉 --dry-run 即在真机窗口下发该动作",
+                "evidence": [
+                    "计划动作: %s" % planned,
+                    "path=%s device_id=%s baud=%s" % (path, cfg.get("device_id"),
+                                                     cfg.get("baud")),
+                    "配置来源: %s" % cfg.get("source"),
+                    "SDK 写调用次数: 0",
+                ],
+                "mode": "dry_run",
+                "action": action,
+                "arm": arm,
+                "speed": speed,
+                "force": force,
+                "config": cfg,
+            }
+            lines = ["夹爪 %s（dry-run，未下发任何动作）" % action,
+                     "  计划动作: %s" % planned,
+                     "  路径    : %s（device_id=%s baud=%s）" % (path, cfg.get("device_id"),
+                                                             cfg.get("baud"))]
+            return _gripper_emit(args, payload, lines)
+        adapter, handles, err_payload = _gripper_real_adapter(hw, ws, arm, cfg)
+        if err_payload is not None:
+            err_payload.update({"action": action})
+            return _gripper_emit(args, err_payload, [])
+        bridge, arm_obj = handles
+        G = hw["gripper"]
+        timeout_ms = int(cfg.get("action_timeout_ms") or 2000)
+        try:
+            res = adapter.with_protocol(
+                lambda ad: _gripper_apply(ad, G, path, action, speed, force, timeout_ms))
+        finally:
+            try:
+                arm_obj.close()
+                bridge.close()
+            except Exception:  # pragma: no cover
+                pass
+        payload = {
+            "status": res.get("status") or "ok",
+            "reason": res.get("reason") or "",
+            "next_action": res.get("next_action") or "",
+            "evidence": list(res.get("evidence") or []),
+            "mode": "live",
+            "action": action,
+            "arm": arm,
+            "speed": speed,
+            "force": force,
+            "path": path,
+        }
+        lines = ["夹爪 %s（真机）" % action,
+                 "  结果: %s" % payload["reason"],
+                 "  路径: %s  速度=%s 力度=%s" % (path, speed, force)]
+        return _gripper_emit(args, payload, lines)
+
+    # ------------------------------------------------------------- cycle
+    if action == "cycle":
+        path = cfg.get("path") or "modbus"
+        if path == "rm_plus":
+            payload = {
+                "status": "blocked",
+                "reason": "RM Plus 路径没有夹爪动作接口，无法做开合循环",
+                "next_action": ("把 workcell/rm_workcell.yaml::gripper.path 改成 modbus "
+                                "（主路径）后重跑"),
+                "evidence": ["RM Plus 不提供夹爪动作接口（白名单只有协议开关）"],
+                "mode": "gripper",
+                "action": action,
+                "arm": arm,
+            }
+            return _gripper_emit(args, payload, [])
+        payload, lines = _gripper_cycle(hw, cfg, count, thresholds)
+        payload.update({"action": action, "arm": arm})
+        return _gripper_emit(args, payload, lines)
+
+    # ------------------------------------------------------------- judge
+    fault = getattr(args, "fault", "each") or "each"
+    faults = list(GRIPPER_FAULT_CLASSES) if fault == "each" else [fault]
+    payload, lines = _gripper_judge(hw, cfg, faults, count, thresholds)
+    payload.update({"action": action, "arm": arm, "fault": fault})
+    return _gripper_emit(args, payload, lines)
+
+
+def _hw_gripper_check(ws):
+    """hw:gripper —— 夹爪配置完整性与标定系数是否已回填。
+
+    * 必需字段缺失 / 类型错 → **FAIL（阻塞）**，reason 逐字段指名（来自硬件层读取器）；
+    * 标定字段为 null → **INFO（不阻塞）**：判定层据此走 NEEDS_PARAM 属**预期行为**，
+      但必须给出「在真机窗口回填标定系数」的可粘贴动作。
+    """
+    mods, err = _gripper_hw(ws)
+    if mods is None:
+        return _hw_check("hw:gripper", False,
+                         "硬件适配层 rm_hw_bridge 不可用: %s" % err,
+                         _HW_PYTHONPATH_ACTION)
+    res = _gripper_config_result(mods, ws)
+    if res.get("status") != "ok":
+        return _hw_check("hw:gripper", False,
+                         res.get("reason") or "夹爪配置不可用",
+                         res.get("next_action") or (
+                             "补齐 workcell/rm_workcell.yaml::gripper 段后重跑 rmctl doctor"),
+                         level="FAIL")
+    cfg = res.get("config") or {}
+    pending = list(cfg.get("calibration_pending") or [])
+    if pending:
+        return _hw_check(
+            "hw:gripper", False,
+            "夹爪配置齐备（%s），但标定系数未回填: %s"
+            "（判定层据此走 needs_param，属预期行为，不阻塞）"
+            % (cfg.get("source"), ", ".join(pending)),
+            "在真机窗口回填标定系数（%s）：编辑 workcell/rm_workcell.yaml::gripper 的 %s"
+            % (", ".join(pending), ", ".join(pending)),
+            level="INFO")
+    return _hw_check("hw:gripper", True,
+                     "夹爪配置齐备且标定系数已回填（%s）" % cfg.get("source"),
+                     "python3 -m rmctl gripper probe --arm left  # 用探针复核真机夹爪")
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="rmctl", description="双臂工程操作入口")
     p.add_argument("--ws", default=None, help="工作区根目录（默认自动发现或 $RM_WS）")
@@ -1519,6 +2230,40 @@ def build_parser():
 
     s = sub.add_parser("repl", help="交互式会话")
     s.set_defaults(func=cmd_repl)
+
+    # ---- 夹爪体验层（S05）----
+    g = sub.add_parser("gripper", help="夹爪：probe / open / close / cycle / judge")
+    g.set_defaults(func=cmd_gripper)
+    gsub = g.add_subparsers(dest="action")
+    for _name, _help in (
+        ("probe", "探针：协议/波特率/ID/寄存器基数/供电/代际线索"),
+        ("open", "张开夹爪（松开）"),
+        ("close", "夹爪夹取（闭合）"),
+        ("cycle", "开合 N 次并统计超时（离线代理）"),
+        ("judge", "注入六类故障并复核判定（离线代理）"),
+    ):
+        sp = gsub.add_parser(_name, help=_help)
+        sp.add_argument("--arm", choices=["left", "right"], default="left",
+                        help="选哪条臂（默认 left）")
+        sp.add_argument("--json", action="store_true", help="机器可读输出（单个 JSON 对象）")
+        sp.add_argument("--dry-run", dest="dry_run", action="store_true",
+                        help="走通参数/配置解析但不下发任何动作")
+        sp.add_argument("--ws", dest="ws", default=argparse.SUPPRESS,
+                        help="工作区根目录（也可写在子命令之前）")
+        if _name in ("open", "close"):
+            sp.add_argument("--speed", type=int, default=100,
+                            help="夹取速度（0–1000 标度，默认 100）")
+            sp.add_argument("--force", type=int, default=100,
+                            help="夹取力度（0–1000 标度，默认 100）")
+        if _name == "cycle":
+            sp.add_argument("--count", type=int, default=10, help="开合次数（默认 10）")
+        if _name == "judge":
+            sp.add_argument("--fault", default="each",
+                            choices=["each"] + list(GRIPPER_FAULT_CLASSES),
+                            help="注入哪类故障（默认 each = 六类各来一次）")
+            sp.add_argument("--count", type=int, default=1,
+                            help="每类注入次数（默认 1）")
+        sp.set_defaults(func=cmd_gripper)
     return p
 
 

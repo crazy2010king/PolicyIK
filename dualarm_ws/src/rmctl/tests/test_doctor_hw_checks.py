@@ -1,7 +1,7 @@
-"""doctor 的 4 条硬件适配层检查项（hw:*）测试（T7 / S02）。
+"""doctor 的 5 条硬件适配层检查项（hw:*）测试（T7 / S02 + T5 / S05）。
 
 覆盖：
-  - 4 条检查项都出现在 doctor 输出里，且字段齐全（name/ok/detail/action/level）；
+  - 5 条检查项都出现在 doctor 输出里，且字段齐全（name/ok/detail/action/level）；
   - hw:contract 在干净仓库上是 PASS；有黑名单调用时是**阻塞级** FAIL 并给出
     可粘贴的修复命令；
   - SDK 缺失时 hw:sdk / hw:symbols 是 **INFO**（不阻塞退出码）且带可粘贴 action；
@@ -37,11 +37,11 @@ def _no_sdk_env(monkeypatch):
 
 
 # ------------------------------------------------------------- 存在性与字段
-def test_doctor_lists_four_hw_checks(capsys, repo_root):
+def test_doctor_lists_five_hw_checks(capsys, repo_root):
     code, out = _run(capsys, ["--ws", repo_root, "doctor"])
     for name in cli.HW_CHECK_NAMES:
         assert name in out, (name, out)
-    assert len(cli.HW_CHECK_NAMES) == 4
+    assert len(cli.HW_CHECK_NAMES) == 5
     assert code in (0, 1)  # 与本机是否有厂商库 / 真机无关
 
 

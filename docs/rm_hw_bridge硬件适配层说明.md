@@ -13,8 +13,10 @@
 
 | 我要做的事 | 命令 / 文件 |
 |---|---|
-| 看硬件面体检结果（4 条 `hw:*`） | `python3 -m rmctl doctor` |
+| 看硬件面体检结果（5 条 `hw:*`） | `python3 -m rmctl doctor` |
 | 连真机看状态快照（R004 全字段） | `python3 -m rmctl connect --arm left --ip <ip> --json` |
+| 探夹爪（协议/波特率/ID/寄存器基数/供电/代际） | `python3 -m rmctl gripper probe --arm left --json` |
+| 夹爪开合自检 + 六类判定自检（离线代理） | `python3 -m rmctl gripper cycle --count 100 --json` / `python3 -m rmctl gripper judge --fault each --count 10 --json` |
 | 复核白/黑名单静态审计 | `python3 -m rm_hw_bridge.audit --repo`（退出码 0 = 零违规，3 = 有违规） |
 | 看 ABI 唯一真值 | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/abi_spec.yaml` |
 | 看符号契约唯一真值（22 核心 + 21 支持 + 黑名单） | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml` |
@@ -235,9 +237,9 @@ stdout 打印「限值 diff（当前值 → 目标值，含单位）」，结果
 
 ---
 
-## 6. doctor 的 4 条硬件面检查项（`hw:*`）
+## 6. doctor 的 5 条硬件面检查项（`hw:*`）
 
-`python3 -m rmctl doctor` 现在共 **16 条**检查项，其中 4 条是硬件适配层：
+`python3 -m rmctl doctor` 现在共 **17 条**检查项，其中 5 条是硬件适配层：
 
 | 检查项 | 判定 | 分级 | 修复动作（可粘贴） |
 |---|---|---|---|
@@ -245,6 +247,7 @@ stdout 打印「限值 diff（当前值 → 目标值，含单位）」，结果
 | `hw:symbols` | 22 个核心符号全部可解析（用 `rm_hw_bridge.loader` 绑定校验） | SDK 缺失 = INFO；**符号缺失 = FAIL（阻塞）** | `nm -D --defined-only <so> \| grep rm_` |
 | `hw:contract` | 白/黑名单静态审计**零违规**（跑 `rm_hw_bridge.audit` 的仓库扫描） | 有违规 = **FAIL（阻塞）**，列出违规文件与符号 | `python3 -m rm_hw_bridge.audit --repo` |
 | `hw:limits_source` | `measured_limits` 基线 `status` 是否为 `measured` | 非 measured = **INFO**（不阻塞） | `python3 dualarm_ws/src/rm_description/scripts/apply_measured_limits.py --dry-run` |
+| `hw:gripper` | `workcell/rm_workcell.yaml::gripper` 段必需字段齐全？标定系数是否已回填？ | 缺必需字段 = **FAIL（阻塞）**，reason 逐字段指名；标定系数为 null = **INFO**（不阻塞，判定层据此走 `needs_param` 属预期） | 缺字段 → 补齐 `gripper` 段；标定 → 在真机窗口回填 `position_mm_per_unit` / `force_scale` / `force_threshold` / `grasp_position_window` |
 
 `hw:contract` 之所以是**阻塞**项：黑名单调用会绕过 R003 的厂商解耦红线，
 属于代码缺陷而不是"环境没就位"。
@@ -266,8 +269,9 @@ source scripts/rmenv.sh     # 设好 RM_WS / PYTHONPATH / LD_LIBRARY_PATH
 
 ```bash
 python3 -m rmctl doctor
-# 关注 4 条 hw:*：hw:sdk / hw:symbols 必须 PASS；
-# hw:limits_source 在真机窗口之前是 INFO（基线未实测），窗口回填后转 PASS。
+# 关注 5 条 hw:*：hw:sdk / hw:symbols 必须 PASS；
+# hw:limits_source 在真机窗口之前是 INFO（基线未实测），窗口回填后转 PASS；
+# hw:gripper 在标定系数回填前是 INFO（配置齐备即合法），缺必需字段才 FAIL。
 ```
 
 ### 7.3 连真机看快照
@@ -307,6 +311,32 @@ python3 -c "from rm_hw_bridge import limits; print(limits.load_limit_defaults()[
 
 > **红线**：`status=measured` 时数值不得高于 `joint_limits.yaml` 的已生效限值；
 > 未实测项一律写 `null`，**禁止填占位数值**。
+
+### 7.6 夹爪体验层（`rmctl gripper`）
+
+```bash
+# 1) 探针：协议状态 / 波特率档 / 设备 ID / 寄存器基数 / 工具端供电 / 控制器代际线索
+#    （“未实测假设”逐条列出；真机不可达时 status=blocked + 可粘贴 next_action，退出码 3）
+python3 -m rmctl gripper probe --arm left --json
+
+# 2) 开 / 合（--dry-run 只走参数与配置解析，**不下发任何动作**）
+python3 -m rmctl gripper open  --arm left --dry-run --json
+python3 -m rmctl gripper close --arm left --speed 100 --force 100 --json
+
+# 3) 开合 100 次（**离线代理**：mode=fake，输出带“代理模型，不代表真机结论”）
+python3 -m rmctl gripper cycle --count 100 --json
+
+# 4) 六类判定自检（夹到/夹空/堵转/过温/过流/离线，各 10 次；任一不符 → 退出码非 0）
+python3 -m rmctl gripper judge --fault each --count 10 --json
+```
+
+* 退出码沿用既有口径：`0 ok / 2 参数非法 / 3 blocked / 4 error`；
+* 配置（`gripper:` 段）缺必需字段 → `status=blocked` + 退出码 3，reason **指名**缺哪个字段；
+* `cycle` / `judge` **永远走离线代理**（硬件层 `FakeGripper`），
+  输出必须带 `mode=fake`；真机结论一律报 blocked 并给出回填入口，**绝不以离线代理冒充真机结论**；
+* 判定真值只在 `rm_hw_bridge.gripper_state.judge`，CLI **不另写一套判定**；
+* 标定系数（`position_mm_per_unit` / `force_scale` / `force_threshold` /
+  `grasp_position_window`）未回填时，判定层走 `needs_param`（属预期，不阻塞）。
 
 ---
 
