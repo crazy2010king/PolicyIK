@@ -53,12 +53,21 @@ def test_run_with_rm_executor_writes_report(traj_file, tmp_path, capsys):
 
 
 def test_run_default_is_marked_legacy(traj_file, capsys):
-    """默认路径 = legacy MockExecutor 回放，且**明确标注不作验收证据**。"""
+    """默认路径 = legacy MockExecutor 回放，且**明确标注不作验收证据**。
+
+    厂商规划内核不可用时（裸环境缺 GLIBCXX_3.4.31+），legacy 路径必须
+    **诚实降级**：退出码 3 + reason + 可粘贴 next_action，既不抛裸异常，
+    也不伪造回放统计。
+    """
     rc = rmctl_cli.main(["run", "--traj", traj_file, "--fast"])
     out = capsys.readouterr().out
     assert "legacy" in out
     assert "不作验收证据" in out
-    assert rc == 0
+    if rc == 0:
+        assert "执行完成" in out
+    else:
+        assert rc == 3, out
+        assert "scripts/rmenv.sh" in out
 
 
 def test_run_live_unreachable_controller_is_error(traj_file, tmp_path, capsys):

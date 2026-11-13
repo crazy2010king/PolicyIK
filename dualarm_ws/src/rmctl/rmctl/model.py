@@ -6,6 +6,11 @@ import yaml
 
 from . import paths
 from .selfkin import UrdfModel
+from .vendor_env import VendorUnavailable, ensure_libstdcxx
+
+# 厂商 nanobind wheel 需要 GLIBCXX_3.4.31+：先预加载仓库自带的
+# .deps/libstdcxx（只读引用），再 import 厂商库。
+ensure_libstdcxx()
 
 
 def _locator():
@@ -26,7 +31,15 @@ class Model(object):
         self.urdf_path = paths.urdf_path(self.ws)
         self.srdf_path = paths.srdf_path(self.ws)
         self.urdf = UrdfModel(self.urdf_path)
-        from tesseract_robotics.planning import Robot
+        try:
+            from tesseract_robotics.planning import Robot
+        except ImportError as exc:
+            # 厂商规划内核不可用（如裸环境缺 GLIBCXX_3.4.31+）：
+            # 抛结构化异常，交由 CLI 走「NEEDS_HUMAN + 可粘贴 next_action」，
+            # 绝不吞异常、更不伪造模型能力。
+            raise VendorUnavailable(
+                "厂商规划内核不可用：%s（需要 GLIBCXX_3.4.31+ 的 libstdc++，"
+                "仓库自带 .deps/libstdcxx 可用）" % exc) from exc
         self.robot = Robot.from_files(self.urdf_path, self.srdf_path, _locator())
         self.joint_names = list(self.robot.get_joint_names(group))
         self.link_names = list(self.robot.get_link_names())

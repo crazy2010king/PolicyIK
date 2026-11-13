@@ -19,6 +19,7 @@ from . import baseline as bl
 from . import paths
 from .executor import MockExecutor
 from .model import Model
+from .vendor_env import VendorUnavailable
 
 # 注意：planner / verify 在模块顶层 import tesseract_robotics，而 nanobind wheel
 # 需要 GLIBCXX_3.4.31+。为了让 `rmctl baseline` / `rmctl doctor` 在没有厂商库
@@ -811,7 +812,16 @@ def cmd_run(args):
 
     print("【legacy】MockExecutor 回放路径：仅供开发自测，**不作验收证据**。")
     print("        验收请用 `--executor rm_executor`（离线）或 `--live`（真机）。")
-    model = _load_model(args)
+    try:
+        model = _load_model(args)
+    except VendorUnavailable as exc:
+        # 厂商规划内核不可用（裸环境缺 GLIBCXX_3.4.31+）：
+        # 诚实降级 —— 退出码 3 + reason + 可粘贴 next_action，
+        # 绝不抛裸异常、绝不伪造回放统计。
+        print("【legacy】无法加载模型：%s" % exc)
+        print("        下一步：source scripts/rmenv.sh   "
+              "# 提供 GLIBCXX_3.4.31+ 的 libstdc++ 后重试")
+        return 3
     data = _load_traj(args.traj)
     ex = MockExecutor(model, period=args.period)
     print("开始回放 %d 点 / 计划时长 %.2fs（模拟执行器）" %

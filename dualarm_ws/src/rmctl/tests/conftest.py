@@ -24,6 +24,16 @@ if HW_SRC not in sys.path:
 if EXEC_SRC not in sys.path:
     sys.path.insert(0, EXEC_SRC)
 
+# 厂商 nanobind wheel 需要 GLIBCXX_3.4.31+（本机系统 libstdc++ 只有
+# 3.4.30）。pytest 在 import 任何测试模块**之前**加载 conftest，这里提前
+# 预加载仓库自带的 .deps/libstdcxx（只读引用，与 scripts/rmenv.sh 同源），
+# 保证裸环境（无 LD_LIBRARY_PATH）下厂商规划内核同样可用。
+# 预加载失败时静默跳过：rmctl 会沿用「厂商内核不可用 → 退出码 3 + reason +
+# 可粘贴 next_action」的诚实降级路径（见 rmctl/vendor_env.py）。
+from rmctl.vendor_env import ensure_libstdcxx  # noqa: E402
+
+ensure_libstdcxx()
+
 
 @pytest.fixture(scope="session")
 def repo_root():
