@@ -108,12 +108,22 @@ upstream:
     ref: main
     commit: "cff49bb40f5ed0728505c03bff0e521a0dc21acd"
     subset: RM75/urdf/RM75-B/
+    archive:
+      filename: rm_models-cff49bb40f5e.tar.gz
+      sha256: fb7ab533ce42a146d676e95a58d115e2695909fe325e403bddc8f84313eb202b
+      file_count: 17
+      total_bytes: 3312746
     note: 官方 RM75-B URDF + STL 网格来源；S01 做定点改造（STL→OBJ、凸包化）。
   two_finger_gripper:
     repo: https://github.com/RealManRobot/Two-Finger-Gripper
     ref: main
     commit: "91f587b1d4efaab235f3d227ee614b28f35060c9"
     subset: metadata-only
+    archive:
+      filename: two_finger_gripper-91f587b1d4ef-metadata.tar.gz
+      sha256: 975b5474afbac9de17bf2ea2601d6eacd0267ecdc54c0f46640115ac64d154a5
+      file_count: 480
+      total_bytes: 60747
     note: 官方两指夹爪硬件/协议参考；OpenAtom Open Hardware License 1.0。
 
 platform:

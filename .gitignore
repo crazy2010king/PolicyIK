@@ -5,6 +5,14 @@ simulation/logs/
 simulation/outputs/
 simulation/third_party/
 
+# ── 上游资产离线归档（T06）────────────────────────────────────────────
+# 归档本体不入 git：rm_models 许可未明示、官方网格限制再分发；
+# 入 git 的只有 third_party/MANIFEST.yaml（commit + sha256 清单）。
+third_party/archives/
+third_party/.work/
+# 官方 STL 网格不入 git（改造后的模型由 S01 自产后入库）
+models/**/meshes/
+
 # ── GSD baseline (auto-generated) ──
 .gsd
 .gsd-worktrees/

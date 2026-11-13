@@ -1,0 +1,37 @@
+# third_party/MANIFEST.yaml —— 上游资产离线归档清单（由 tools/fetch_upstream.py 生成）
+#
+# 入 git 的只有这份清单（commit + sha256）。归档本体在 third_party/archives/ 下，
+# 因上游许可（rm_models 未明示 / 官方网格）限制再分发，已被 .gitignore 排除。
+# 复现：`python3 tools/fetch_upstream.py`；校验：`python3 tools/fetch_upstream.py --verify`
+#
+# 字段：name / repo / ref / commit / subset / mode / license / redistributable /
+#       archive / sha256 / file_count / total_bytes / fetched_at
+schema_version: 1
+generated_at: 2026-11-13T12:50:11+0800
+assets:
+- name: rm_models
+  repo: https://github.com/RealManRobot/rm_models
+  ref: main
+  commit: cff49bb40f5ed0728505c03bff0e521a0dc21acd
+  subset: RM75/urdf/RM75-B/
+  mode: subset
+  license: 未明示
+  redistributable: false
+  archive: rm_models-cff49bb40f5e.tar.gz
+  sha256: fb7ab533ce42a146d676e95a58d115e2695909fe325e403bddc8f84313eb202b
+  file_count: 17
+  total_bytes: 3312746
+  fetched_at: 2026-11-13T12:50:10+0800
+- name: two_finger_gripper
+  repo: https://github.com/RealManRobot/Two-Finger-Gripper
+  ref: main
+  commit: 91f587b1d4efaab235f3d227ee614b28f35060c9
+  subset: metadata-only
+  mode: metadata
+  license: OpenAtom Open Hardware License 1.0
+  redistributable: true
+  archive: two_finger_gripper-91f587b1d4ef-metadata.tar.gz
+  sha256: 975b5474afbac9de17bf2ea2601d6eacd0267ecdc54c0f46640115ac64d154a5
+  file_count: 480
+  total_bytes: 60747
+  fetched_at: 2026-11-13T12:50:11+0800
