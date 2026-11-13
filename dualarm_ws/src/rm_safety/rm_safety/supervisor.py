@@ -42,6 +42,7 @@ L1 自动恢复成功后 ``current_level`` **仍保持 ``L1``**（等级单调�
 """
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from rm_safety import levels as _levels
@@ -122,6 +123,10 @@ class SafetySupervisor:
         self.last_action: Optional[ActionResult] = None
         #: 事件回调抛出的异常记录（**不静默**：留痕但不打断安全动作）
         self.event_errors: List[str] = []
+        #: 等级/动作的互斥锁（**外部闸门线程**与 tick 线程可能并发触发）
+        self._lock = threading.RLock()
+        #: 外部闸门是否已经触发过（**幂等**：闸门只触发一次停机）
+        self._external_stop_applied = False
 
     # ------------------------------------------------------------------ 状态
     @property
@@ -164,6 +169,11 @@ class SafetySupervisor:
         Decision
             判据决策本身（动作结果见 :attr:`last_action`）。
         """
+        with self._lock:
+            return self._evaluate_locked(signals)
+
+    def _evaluate_locked(self, signals: Mapping[str, Any]) -> _policy.Decision:
+        """判定主体（**调用方已持锁**）。"""
         decision = _policy.evaluate(signals, self.thresholds)
         self.last_decision = decision
 
@@ -176,6 +186,59 @@ class SafetySupervisor:
         # ---- 无故障命中：唯一允许的自动恢复路径（L1） ----
         self._maybe_auto_recover(signals)
         return decision
+
+    # ------------------------------------------------------- 外部闸门（停机）
+    def apply_external(self, level: str = _levels.LEVEL_L4,
+                       reason: str = "外部闸门请求",
+                       source: str = "",
+                       extra_evidence: Optional[List[Dict[str, Any]]] = None
+                       ) -> ActionResult:
+        """外部闸门请求 → 走**同一条**动作路径（唯一动作权威）。
+
+        与 :meth:`evaluate` 的区别**只在触发源**：判据来自故障信号，外部
+        闸门来自进程外的操作者/看门狗进程。动作仍由
+        :class:`rm_safety.actuator.SafetyActuator` 发出（**只发一次**），
+        事件仍走 ``on_event`` 回调交给宿主。
+
+        幂等：闸门重复触发**不会**重复下发停机（第二次直接返回首次结果）。
+        """
+        level = str(level or "").strip().upper()
+        if level not in _levels.LEVELS:
+            raise ValueError("未知安全等级 %r（只允许 %s）"
+                             % (level, ", ".join(_levels.LEVEL_ORDER)))
+        with self._lock:
+            if self._external_stop_applied:
+                return self.last_action if self.last_action is not None else ActionResult(
+                    level=level, action=_levels.level_action(level),
+                    transport_method="", sdk_symbol=_levels.level_sdk_symbol(level),
+                    status="ok", reason="外部闸门已触发过（幂等，不重复下发停机）")
+            self._external_stop_applied = True
+            evidence: List[Dict[str, Any]] = []
+            for item in (extra_evidence or []):
+                evidence.append(dict(item))
+            result = self.actuator.apply(level, context={
+                "reason": reason,
+                "evidence": evidence,
+                "next_action": ("立即按下硬件急停并人工确认机械臂状态"
+                                if level == _levels.LEVEL_L4 else ""),
+            })
+            self.last_action = result
+            effective = result.effective_level or level
+            self.current_level = effective
+            if self._rank(effective) > self._rank(self.peak_level):
+                self.peak_level = effective
+            if effective == _levels.LEVEL_L1 and result.status == "ok":
+                self.speed_scaled = True
+            merged = evidence + [dict(item) for item in result.evidence]
+            severity = _levels.level_severity(effective)
+            self._emit(
+                _levels.level_event_type(level), severity,
+                "外部闸门请求（source=%s）｜动作=%s｜%s"
+                % (source or "external", result.action, result.reason),
+                merged,
+                result.next_action or "确认机械臂已停机后人工处置",
+            )
+            return result
 
     # -------------------------------------------------------------- 内部工具
     def _should_act(self, level: str) -> bool:

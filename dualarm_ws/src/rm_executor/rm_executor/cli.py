@@ -257,11 +257,16 @@ def execute(mode: str = "fake",
             port: Optional[int] = None,
             udp_port: Optional[int] = None,
             ws: Optional[str] = None,
-            injections: Optional[List[str]] = None) -> Dict[str, Any]:
+            injections: Optional[List[str]] = None,
+            gate: Any = None) -> Dict[str, Any]:
     """跑一次执行，返回**统一报告**（fake / live 同一 schema）。
 
     本函数**不抛裸异常**：任何失败都变成 ``status=blocked|error`` 的报告
     （带 reason + 可粘贴 next_action）。
+
+    ``gate``：安全闸门（进程外强制停机通道，鸭子类型）。给了之后执行器
+    会在每 tick 查询 ``gate.stop_requested``，并在闸门请求停机时**立即**
+    执行 L4 急停（详见 ``rm_executor.executor.Executor``）。
     """
     mode = "live" if str(mode) == "live" else "fake"
 
@@ -317,10 +322,10 @@ def execute(mode: str = "fake",
     try:
         if mode == "live":
             report = _run_live(trajectory_path, config, arm, ip, port, udp_port,
-                               ws, duration_s)
+                               ws, duration_s, gate)
         else:
             report = _run_fake(trajectory_path, config, ws, allow_unverified,
-                               realtime, legs, injection_specs)
+                               realtime, legs, injection_specs, gate)
     except Exception as exc:  # noqa: BLE001 - 兜底：异常 → error 报告
         report = _failure_report(
             contract.STATUS_ERROR,
@@ -333,7 +338,8 @@ def execute(mode: str = "fake",
 def _run_fake(trajectory_path: str, config: Optional[ExecutorConfig],
               ws: Optional[str], allow_unverified: bool, realtime: bool,
               legs: int,
-              injections: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+              injections: Optional[List[Dict[str, Any]]] = None,
+              gate: Any = None) -> Dict[str, Any]:
     """离线假执行（零真机依赖）；长跑 = 重复执行 ``legs`` 轮后合并报告。"""
     reports: List[Dict[str, Any]] = []
     jitter_samples: List[float] = []
@@ -349,7 +355,7 @@ def _run_fake(trajectory_path: str, config: Optional[ExecutorConfig],
                  else ManualClock(period_s=DEFAULT_PERIOD_S))
         # config=None → 执行器自己按 ws 读工位配置（读不到就记 NEEDS_PARAM 事件）
         executor = Executor(transport, feedback, config=config, clock=clock,
-                            mode="fake", ws=ws)
+                            mode="fake", ws=ws, gate=gate)
         rep = executor.run(trajectory_path, allow_unverified=allow_unverified)
         reports.append(rep)
         jitter_samples.extend(executor.jitter_samples_ms)
@@ -369,7 +375,7 @@ def _run_fake(trajectory_path: str, config: Optional[ExecutorConfig],
 def _run_live(trajectory_path: str, config: Optional[ExecutorConfig],
               arm: str, ip: Optional[str], port: Optional[int],
               udp_port: Optional[int], ws: Optional[str],
-              duration_s: Optional[float]) -> Dict[str, Any]:
+              duration_s: Optional[float], gate: Any = None) -> Dict[str, Any]:
     """真机执行（**与 fake 同一 Executor、同一报告 schema**）。"""
     try:
         from rm_hw_bridge import bridge as hw_bridge
@@ -417,7 +423,7 @@ def _run_live(trajectory_path: str, config: Optional[ExecutorConfig],
     try:
         # config=None → 执行器自己按 ws 读工位配置（读不到就记 NEEDS_PARAM 事件）
         executor = Executor(transport, feedback, config=config, clock=clock,
-                            mode="live", ws=ws)
+                            mode="live", ws=ws, gate=gate)
         rep = executor.run(trajectory_path, allow_unverified=False)
     finally:
         try:

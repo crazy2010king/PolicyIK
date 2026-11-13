@@ -15,6 +15,22 @@
   （沿用 S02 的诚实分层口径）；
 * **不接受** ``--allow-unverified``（真机路径只跑带 ``verify`` 报告的轨迹）。
 
+安全闸门（S04/T7）
+------------------
+
+进程启动时**先**建安全闸门（Unix domain socket，默认
+``build/run/rm_runtime.sock``，可用 ``--gate-socket`` 覆盖），**之后**才允许
+跑轨迹：
+
+* 闸门创建失败 → **诚实报错**（退出码 3 + reason + 可粘贴 next_action），
+  **不假装成功**、**不带闸门开跑**（没有外部停机通道就不动机械臂）；
+* 闸门收到停机请求 → 执行器**立即**执行 L4 急停（``transport.stop()``）+
+  置停止标志（tick 下一拍退出）+ 记 ``safety_l4_emergency_stop`` 事件；
+* 进程退出时关闭闸门并清理 socket 文件。
+
+方向：闸门是**外部进程 → rm_runtime** 的单向通道（``rmctl safety stop`` 是
+客户端）；rm_runtime **不反向依赖** rmctl。
+
 退出码：``0`` ok / ``3`` blocked / ``4`` error（与 ``rm_hw_bridge.errors`` 同口径）。
 
 零 rmctl 依赖、零 tesseract 依赖。
@@ -52,22 +68,77 @@ def build_parser() -> argparse.ArgumentParser:
                         help="用真实墙钟（真机路径默认即为真实墙钟）")
     parser.add_argument("--ws", default=None,
                         help="工作区根（默认自动发现或 $RM_WS）")
+    parser.add_argument("--gate-socket", dest="gate_socket", default=None,
+                        help="安全闸门 Unix socket 路径"
+                             "（默认 <工作区根>/build/run/rm_runtime.sock）")
     return parser
+
+
+def _start_gate(path: str):
+    """建安全闸门（返回 ``(server, error_dict)``）。
+
+    失败 → 返回 ``(None, {reason, next_action})``（**诚实报错**，不假装成功）。
+    """
+    try:
+        from rm_safety.gate import GateError, GateServer
+    except Exception as exc:  # noqa: BLE001 - 安全层不可用 → blocked
+        return None, {
+            "reason": "安全层 rm_safety 不可用（无法建安全闸门）: %s: %s"
+                      % (type(exc).__name__, exc),
+            "next_action": ("export PYTHONPATH=$PWD/dualarm_ws/src/rm_safety:"
+                            "$PYTHONPATH  # 让进程看到安全层"),
+        }
+    server = GateServer(socket_path=path)
+    try:
+        server.start()
+    except GateError as exc:
+        return None, {"reason": exc.reason, "next_action": exc.next_action}
+    except Exception as exc:  # noqa: BLE001 - 兜底：任何异常都诚实报错
+        return None, {
+            "reason": "安全闸门启动失败（%s）: %s" % (type(exc).__name__, exc),
+            "next_action": "用 --gate-socket <其它可写路径> 重试",
+        }
+    return server, {}
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     """主入口；返回进程退出码（0 / 3 / 4）。"""
     args = build_parser().parse_args(argv)
-    rep = exec_cli.execute(mode="live",
-                           trajectory_path=args.traj,
-                           allow_unverified=False,
-                           duration_s=args.duration,
-                           realtime=True,
-                           arm=args.arm,
-                           ip=args.ip,
-                           port=args.port,
-                           udp_port=args.udp_port,
-                           ws=args.ws)
+
+    # -- 安全闸门：先建闸门，再谈运动（没有外部停机通道就不开跑）--------
+    try:
+        from rm_safety.gate import default_socket_path
+        socket_path = args.gate_socket or default_socket_path(args.ws)
+    except Exception:  # noqa: BLE001 - 路径解析失败 → 后面 _start_gate 会报错
+        socket_path = args.gate_socket or ""
+    server, error = _start_gate(socket_path)
+    if server is None:
+        print("安全闸门启动失败: %s" % error["reason"], file=sys.stderr)
+        if error.get("next_action"):
+            print("next_action : %s" % error["next_action"], file=sys.stderr)
+        return contract.EXIT_CODES.get(contract.STATUS_BLOCKED, 3)
+    print("gate socket : %s" % server.socket_path)
+
+    try:
+        rep = exec_cli.execute(mode="live",
+                               trajectory_path=args.traj,
+                               allow_unverified=False,
+                               duration_s=args.duration,
+                               realtime=True,
+                               arm=args.arm,
+                               ip=args.ip,
+                               port=args.port,
+                               udp_port=args.udp_port,
+                               ws=args.ws,
+                               gate=server.gate)
+    finally:
+        try:
+            server.stop()
+        except Exception:  # noqa: BLE001 - 闸门清理失败不影响报告
+            pass
+
+    rep.setdefault("evidence", []).append(
+        "safety gate: %s（已关闭）" % server.socket_path)
     rc = contract.EXIT_CODES.get(rep.get("status"), 4)
     if args.report:
         try:

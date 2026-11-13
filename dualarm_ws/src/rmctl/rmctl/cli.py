@@ -8,6 +8,7 @@ import contextlib
 import ipaddress
 import json
 import os
+import socket
 import sys
 import tempfile
 import time
@@ -1247,6 +1248,148 @@ calibration:
 """
 
 
+# ------------------------------------------------------- 安全闸门（客户端）
+#
+# 方向：**rmctl → rm_runtime**（rmctl 是客户端，rm_runtime 是服务端）。
+# 这**不违反**「硬件层不反向依赖体验层」的红线：rmctl 依赖安全层 rm_safety，
+# 而 rm_safety / rm_executor 都**不** import rmctl。
+
+
+def _safety_socket_path(args):
+    """闸门 socket 路径（``--socket`` 优先，否则用安全层默认路径）。"""
+    path = getattr(args, "socket_path", None)
+    if path:
+        return os.path.abspath(os.path.expanduser(path))
+    try:
+        from rm_safety.gate import default_socket_path
+    except Exception:  # noqa: BLE001 - 安全层不可用 → 后面报错
+        return ""
+    try:
+        return default_socket_path(getattr(args, "ws", None))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _safety_blocked(reason, next_action, evidence=None):
+    """构造 blocked 结果（**带可粘贴下一步**）。"""
+    return {
+        "status": "blocked",
+        "ok": False,
+        "reason": reason,
+        "next_action": next_action,
+        "evidence": list(evidence or []),
+    }
+
+
+def _gate_client_request(path, payload, timeout=2.0):
+    """向闸门发一行 JSON → 读一行 JSON 响应（失败也返回结果字典）。
+
+    失败路径全部**诚实映射**为 blocked（带 reason + 可粘贴 next_action）：
+    socket 不存在 / 无人监听 / 超时 / 返回非 JSON / 服务端拒绝。
+    """
+    if not path:
+        return _safety_blocked(
+            "无法确定安全闸门 socket 路径",
+            "用 --socket <path> 显式指定安全闸门路径")
+    if not hasattr(socket, "AF_UNIX"):
+        return _safety_blocked(
+            "当前平台不支持 Unix domain socket",
+            "在 Linux 上使用 `rmctl safety stop`")
+    request = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(timeout)
+    try:
+        client.connect(path)
+    except FileNotFoundError:
+        client.close()
+        return _safety_blocked(
+            "安全闸门 socket 不存在：%s" % path,
+            "先启动 rm_runtime（它会创建该 socket）："
+            "python3 -m rm_executor.runtime --traj <traj.json>")
+    except ConnectionRefusedError:
+        client.close()
+        return _safety_blocked(
+            "安全闸门 socket 存在但无人监听：%s（rm_runtime 可能已退出）" % path,
+            "删除残留 socket 后重试：rm -f %s" % path)
+    except OSError as exc:
+        client.close()
+        return _safety_blocked(
+            "连接安全闸门失败（%s）: %s" % (type(exc).__name__, exc),
+            "确认 rm_runtime 正在运行且 socket 路径一致")
+    try:
+        client.sendall(request)
+        data = client.recv(65536)
+    except socket.timeout:
+        return _safety_blocked(
+            "安全闸门无响应（超时 %.1f s）" % timeout,
+            "确认 rm_runtime 仍在运行；必要时用 --socket 指向正确的路径")
+    except OSError as exc:
+        return _safety_blocked(
+            "与安全闸门通信失败（%s）: %s" % (type(exc).__name__, exc),
+            "确认 rm_runtime 仍在运行")
+    finally:
+        try:
+            client.close()
+        except OSError:  # pragma: no cover
+            pass
+    text = data.decode("utf-8", errors="replace").strip()
+    if not text:
+        return _safety_blocked("安全闸门返回空响应", "确认闸门服务线程正常")
+    try:
+        resp = json.loads(text)
+    except ValueError as exc:
+        return _safety_blocked(
+            "安全闸门返回非 JSON（%s）: %s" % (type(exc).__name__, exc),
+            "查看闸门端日志")
+    if not isinstance(resp, dict):
+        return _safety_blocked(
+            "安全闸门返回格式非法：%s" % type(resp).__name__, "查看闸门端日志")
+    if resp.get("status") != "ok":
+        return _safety_blocked(
+            resp.get("reason") or "安全闸门拒绝了该请求",
+            resp.get("next_action") or "按闸门协议重发请求",
+            resp.get("evidence") or [])
+    out = dict(resp)
+    out["status"] = "ok"
+    out["ok"] = True
+    out.setdefault("reason", "")
+    out.setdefault("next_action", "")
+    out.setdefault("evidence", [])
+    return out
+
+
+def cmd_safety(args):
+    """``rmctl safety stop|status`` —— 安全闸门客户端（stdio JSON 输出）。
+
+    退出码沿用仓库口径：``0`` ok / ``3`` blocked（socket 不存在、超时、
+    服务端拒绝、非法等级）/ ``4`` error（未预期异常）。
+    """
+    action = getattr(args, "action", "status")
+    path = _safety_socket_path(args)
+    if action == "stop":
+        level = str(getattr(args, "level", None) or "L4").strip().upper()
+        try:
+            from rm_safety.levels import LEVEL_ORDER
+        except Exception as exc:  # noqa: BLE001 - 安全层不可用 → blocked
+            result = _safety_blocked(
+                "安全层 rm_safety 不可用：%s: %s" % (type(exc).__name__, exc),
+                "export PYTHONPATH=$PWD/dualarm_ws/src/rm_safety:$PYTHONPATH  "
+                "# 让 rmctl 看到安全层（等级唯一真值）")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 3
+        if level not in LEVEL_ORDER:
+            result = _safety_blocked(
+                "非法安全等级 %r（只允许 %s）" % (level, ", ".join(LEVEL_ORDER)),
+                "用 --level L1|L2|L3|L4 重发（缺省 L4 急停）")
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 3
+        result = _gate_client_request(path, {"cmd": "stop", "level": level})
+    else:
+        result = _gate_client_request(path, {"cmd": "status"})
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("status") == "ok" else 3
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="rmctl", description="双臂工程操作入口")
     p.add_argument("--ws", default=None, help="工作区根目录（默认自动发现或 $RM_WS）")
@@ -1348,6 +1491,19 @@ def build_parser():
     s.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="走通全路径但不连真机")
     s.set_defaults(func=cmd_connect)
+
+    s = sub.add_parser("safety",
+                       help="安全闸门：外部强制停机 / 状态查询"
+                            "（客户端，方向 rmctl → rm_runtime）")
+    s.add_argument("action", nargs="?", default="status",
+                   choices=["stop", "status"],
+                   help="stop=强制停机（外部进程）；status=查询闸门状态")
+    s.add_argument("--socket", dest="socket_path", default=None,
+                   help="闸门 socket 路径"
+                        "（默认 <工作区根>/build/run/rm_runtime.sock）")
+    s.add_argument("--level", default="L4",
+                   help="停机等级 L1/L2/L3/L4（默认 L4 急停）")
+    s.set_defaults(func=cmd_safety)
 
     s = sub.add_parser("repl", help="交互式会话")
     s.set_defaults(func=cmd_repl)

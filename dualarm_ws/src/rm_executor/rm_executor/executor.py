@@ -484,11 +484,15 @@ class Executor:
                  watchdog_interval_ticks: int = DEFAULT_WATCHDOG_INTERVAL_TICKS,
                  watchdog_wait_timeout_s: float = DEFAULT_WATCHDOG_WAIT_TIMEOUT_S,
                  expected_trajectory_type: str = EXPECTED_TRAJECTORY_TYPE,
+                 gate: Any = None,
                  ) -> None:
         self.transport = transport
         self.feedback = feedback
         self.ws = ws
         self.limits = limits
+        #: 安全闸门（进程外强制停机通道；鸭子类型：``stop_requested`` 属性
+        #: + ``add_handler`` / ``requested_level``）——``None`` → 不启用
+        self.gate = gate
         self.poll_period_s = float(poll_period_s)
         self.pre_position_timeout_s = float(pre_position_timeout_s)
         self.arrival_timeout_s = float(arrival_timeout_s)
@@ -549,6 +553,14 @@ class Executor:
         self._stream_lost_active = False
         #: tick 线程标识（证明 SDK 状态查询不在 tick 线程）
         self._tick_thread_ident: Optional[int] = None
+
+        # -- 安全闸门（S04/T7）---------------------------------------------
+        #: 外部闸门是否已触发停机（**停止标志**：tick 下一拍退出）
+        self._external_stop = False
+        #: 闸门停机只触发一次（幂等）
+        self._external_stop_done = False
+        #: 闸门线程与 tick 线程的互斥（等级/事件一致性）
+        self._gate_lock = threading.Lock()
 
         # -- 安全包接线（S04）-------------------------------------------
         self._init_safety()
@@ -1033,6 +1045,85 @@ class Executor:
         out["status"] = "ok"
         return out
 
+    # -------------------------------------------------- 安全闸门（进程外停机）
+    def _gate_stop_requested(self) -> bool:
+        """闸门是否已请求停机（**只读**闸门状态，零 SDK 调用）。"""
+        gate = self.gate
+        if gate is None:
+            return False
+        try:
+            return bool(gate.stop_requested)
+        except Exception:  # noqa: BLE001 - 闸门不可用不得假装正常
+            return False
+
+    def _on_gate_stop(self, level: str, reason: str, source: str) -> None:
+        """外部闸门请求 → **立即**停机（闸门线程调用，不等 tick）。
+
+        动作仍由安全包（唯一动作权威）发出：``SafetySupervisor.apply_external``
+        → ``SafetyActuator`` → ``transport.stop()``（L4）。安全层不可用时
+        执行器**兜底**停机（并留 FATAL 事件，绝不假装成功）。
+        """
+        with self._gate_lock:
+            if self._external_stop_done:
+                return
+            self._external_stop_done = True
+        self._external_stop = True
+        gate_evidence = {
+            "kind": "external_gate_request",
+            "level": level,
+            "reason": reason,
+            "source": source or "socket",
+        }
+        supervisor = self._safety
+        if supervisor is None:
+            self._add_event(
+                "safety_l4_emergency_stop", "FATAL",
+                "外部闸门请求（安全层不可用 → 执行器兜底急停）：%s" % reason,
+                [str(gate_evidence)],
+                "立即按下硬件急停并人工确认机械臂状态",
+            )
+            self._self_triggered_stop = True
+            self._stop_transport()
+            return
+        try:
+            result = supervisor.apply_external(
+                level=level, reason=reason, source=source,
+                extra_evidence=[gate_evidence])
+        except Exception as exc:  # noqa: BLE001 - 闸门处理异常也要留痕
+            self._add_event(
+                "safety_l4_emergency_stop", "FATAL",
+                "外部闸门请求处理异常（%s）: %s" % (type(exc).__name__, exc),
+                [repr(exc)],
+                "立即按下硬件急停并人工确认机械臂状态",
+            )
+            self._self_triggered_stop = True
+            self._stop_transport()
+            return
+        if not result.ok:
+            self._add_event(
+                "safety_action_failed", "FATAL",
+                "外部闸门停机失败：%s" % result.reason,
+                _format_evidence(result.evidence),
+                result.next_action or "立即按下硬件急停并人工确认机械臂状态",
+            )
+            self._self_triggered_stop = True
+            self._stop_transport()
+
+    def _wire_gate(self) -> None:
+        """把执行器挂到闸门上（注册回调 + 处理早到的请求）。"""
+        gate = self.gate
+        if gate is None:
+            return
+        try:
+            gate.add_handler(self._on_gate_stop)
+        except Exception:  # noqa: BLE001 - 闸门不可用不得掀翻执行
+            return
+        if not self._gate_stop_requested():
+            return
+        level = getattr(gate, "requested_level", "") or "L4"
+        reason = getattr(gate, "reason", "") or "外部闸门请求"
+        self._on_gate_stop(level, reason, getattr(gate, "source", "") or "socket")
+
     # -------------------------------------------------- 安全动作（停机 / 暂停）
     def _stop_transport(self) -> None:
         """立即停机（硬红线）并留痕（失败也要留证据）。
@@ -1380,6 +1471,9 @@ class Executor:
         for index, row_rad in enumerate(grid_p):
             # ① 绝对截止时间等待（抖动样本由时钟记录）
             self.stream_clock.tick()  # type: ignore[union-attr]
+            # ①' 外部闸门：已请求停机 → 不再下发任何指令（tick 下一拍退出）
+            if self._external_stop:
+                return None
             # ② 下发本拍指令角（度）
             cmd_deg = self._to_deg(row_rad, factor)
             result = self.transport.transmit(
@@ -1400,7 +1494,7 @@ class Executor:
             stream_abort = self._check_stream_health()
             # ④' 安全包判定（**唯一动作权威**：动作只由 supervisor 发一次）
             safety_abort = self._apply_safety(error, snapshot)
-            if follow_abort or stream_abort or safety_abort:
+            if follow_abort or stream_abort or safety_abort or self._external_stop:
                 return None
             # ⑤ 看门狗（控制器抢轨迹）：先并入已产生的事件，再看标志位
             self._drain_pending_events()
@@ -1428,6 +1522,8 @@ class Executor:
         hold_start: Optional[float] = None
         while self._hold_ticks < max_ticks:
             self.stream_clock.tick()  # type: ignore[union-attr]
+            if self._external_stop:
+                return False
             result = self.transport.transmit(
                 goal_deg, cfg.follow, cfg.trajectory_mode, cfg.radio
             )
@@ -1444,7 +1540,7 @@ class Executor:
                                                        snapshot)
             stream_abort = self._check_stream_health()
             safety_abort = self._apply_safety(position_error, snapshot)
-            if follow_abort or stream_abort or safety_abort:
+            if follow_abort or stream_abort or safety_abort or self._external_stop:
                 return False
             now = self._now()
             speed = self._speed_deg_s(snapshot)
@@ -1607,6 +1703,8 @@ class Executor:
 
         t_start = self._now()
         self._last_frame_time = t_start  # 断流 age 的起点
+        # -- 安全闸门接线（S04/T7）：注册回调 + 处理早到的请求 ------------
+        self._wire_gate()
         evidence: List[str] = [
             "mode=%s transport=%s" % (self.mode, getattr(self.transport, "name", "?")),
         ]
@@ -1614,6 +1712,11 @@ class Executor:
             evidence.append("safety config: %s" % item)
         for item in self._safety_error_code_warnings:
             evidence.append("safety error codes: %s" % item)
+
+        # -- 闸门已请求停机（执行开始前就收到）→ 不下发任何运动指令 -------
+        if self._external_stop:
+            evidence.append("safety gate: 外部闸门已请求停机 → 本次执行未下发运动指令")
+            return self._finalize(t_start, evidence)
 
         # ---------------- 阶段 A：预校验 ----------------
         if self._config is None:

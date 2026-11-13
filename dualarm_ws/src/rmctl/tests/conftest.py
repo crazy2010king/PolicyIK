@@ -16,6 +16,9 @@ PKG_SRC = os.path.join(REPO_ROOT, "dualarm_ws", "src", "rmctl")
 HW_SRC = os.path.join(REPO_ROOT, "dualarm_ws", "src", "rm_hw_bridge")
 # 执行层 rm_executor（rmctl run --executor rm_executor / --live 走它，方向合法）
 EXEC_SRC = os.path.join(REPO_ROOT, "dualarm_ws", "src", "rm_executor")
+# 安全层 rm_safety（rmctl safety stop|status 是闸门客户端，方向合法：
+# experience(rmctl) → safety(rm_safety)；安全层**不**反向依赖 rmctl）
+SAFETY_SRC = os.path.join(REPO_ROOT, "dualarm_ws", "src", "rm_safety")
 
 if PKG_SRC not in sys.path:
     sys.path.insert(0, PKG_SRC)
@@ -23,6 +26,8 @@ if HW_SRC not in sys.path:
     sys.path.insert(0, HW_SRC)
 if EXEC_SRC not in sys.path:
     sys.path.insert(0, EXEC_SRC)
+if SAFETY_SRC not in sys.path:
+    sys.path.insert(0, SAFETY_SRC)
 
 # 厂商 nanobind wheel 需要 GLIBCXX_3.4.31+（本机系统 libstdc++ 只有
 # 3.4.30）。pytest 在 import 任何测试模块**之前**加载 conftest，这里提前
