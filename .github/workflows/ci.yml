@@ -1,0 +1,74 @@
+# GitHub Actions 薄封装（T05）
+#
+# ⚠️ 本文件**不包含任何检查逻辑**。
+#
+# 本项目的主战场是内网 NFS + 远程 docker 容器，GitHub Actions 的可达性
+# **未经验证**。因此：
+#   * CI 的唯一实现是 `scripts/ci.sh`（fast / medium / nightly 三档）；
+#   * 本 workflow 只做三件事：触发器、装依赖、调 `scripts/ci.sh`；
+#   * 无论用 Actions、内网 cron 还是远程容器里的 runner，检查项都不会分叉成两套。
+#
+# 若本仓库在 Actions 上不可达：直接忽略本文件，用
+#   bash scripts/ci.sh fast
+# 在内网机器/容器里跑即可，行为完全一致。
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  schedule:
+    # nightly 档（每日 UTC 03:00）
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  fast:
+    name: ci-fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-cov pyyaml
+      - name: 运行 fast 档
+        run: bash scripts/ci.sh fast
+
+  medium:
+    name: ci-medium
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-cov pyyaml
+      - name: 运行 medium 档
+        run: bash scripts/ci.sh medium
+
+  nightly:
+    name: ci-nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装测试依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-cov pyyaml
+      - name: 运行 nightly 档
+        run: bash scripts/ci.sh nightly
