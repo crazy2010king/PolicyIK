@@ -9,8 +9,10 @@
     scenario → Drake 场景（plant / scene_graph / 碰撞检查器）的装配层。
 ``trajectory``
     轨迹数据结构与不变量（S02-T02）：5 ms 网格 / 单调 seq / 绝对时刻 / 软限位与速度限值。
-``ik`` / ``regions`` / ``gcs`` / ``retime``
-    S02-T03 ~ S02-T06 依次落地（见切片计划）。
+``ik``
+    逆运动学（S02-T03）：DiffIK 风格求解 + 名义姿态 + 软限位复核 + 可解释失败。
+``regions`` / ``gcs`` / ``retime``
+    S02-T04 ~ S02-T06 依次落地（见切片计划）。
 
 **惰性导入**：本包 ``__init__`` 不在 import 时拉起 pydrake（与
 :mod:`rm75_drake` 顶层包的既有约定一致），子模块按需导入。
@@ -20,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["scene", "trajectory"]
+__all__ = ["scene", "trajectory", "ik"]
 
 
 def __getattr__(name: str) -> Any:
