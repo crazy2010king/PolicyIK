@@ -22,6 +22,8 @@ __all__ = [
     "calibration_dir",
     "models_dir",
     "scenarios_dir",
+    "devices_dir",
+    "run_logs_dir",
     "vendor_dir",
     "third_party_dir",
     "versions_lock_path",
@@ -70,6 +72,14 @@ models_dir = REPO_ROOT / "models"
 
 #: 场景描述目录（S02 填充正式 schema）。
 scenarios_dir = REPO_ROOT / "scenarios"
+
+#: **设备（部署）配置**目录（S03）：真机连接参数、标定阈值的真相源。
+#: 与 ``scenarios_dir`` 分开——场景语义与部署配置是两件事（研究 F8：
+#: scenario schema 已冻结，设备连接信息不得塞进去）。
+devices_dir = REPO_ROOT / "devices"
+
+#: 设备层全链路运行日志目录（S03）：``run_log.py`` 的默认落盘位置。
+run_logs_dir = REPO_ROOT / "run_logs"
 
 #: 本机离线 wheel 镜像目录（不入 git，见 .gitignore）。
 vendor_dir = REPO_ROOT / "vendor"

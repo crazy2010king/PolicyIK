@@ -1,0 +1,56 @@
+# 单臂真机部署配置（S03 示例文件）
+#
+# 这是**部署配置**（连接参数 + 标定阈值），不是场景语义：
+# 场景语义在 scenarios/*.yaml（schema 已冻结，见 src/rm75_drake/scenario.py）。
+# 加载与校验入口：src/rm75_drake/device/config.py::load_device_config
+#
+# 校验纪律：未知键 / 缺字段 / 越界 → DeviceConfigError（消息点名出错键名），
+# 禁止静默默认值。
+#
+# ⚠️ 部署方必须修改：arm_ip（机械臂 IP）与 udp_cycle（上报周期，见下）。
+#    本文件里的 IP 是**占位值**，请按现场网络填写。
+
+schema_version: 1
+name: rm75_single_arm
+
+# 机械臂 IP（占位：部署方填写；官方 SDK 默认上报目标 IP 也是 192.168.1.18）。
+arm_ip: "192.168.1.18"
+
+# 指令通道（TCP）端口：官方默认 8080。
+tcp_port: 8080
+
+# 状态主动上报（UDP）的**本机监听端口**：官方 SDK 默认 8080。
+udp_port: 8080
+
+# UDP 上报周期参数（**两种读法，必须真机实测标定**）：
+#   读法 A：单位是「5 ms 的倍数」——官方 rm_driver 源码证据 config.cycle = udp_cycle / 5
+#            ⇒ 5 ms 上报周期对应 cycle=1；
+#   读法 B：单位是「毫秒」——本项目设计文档写 rm_set_realtime_push(cycle=5) 表示 5 ms。
+#   两种读法相差 5 倍，直接影响 age 阈值与抖动口径；
+#   真机首件事就是实测周期分布（P50/P99/P99.9/max），不采信任何二手数字。
+# 此处取读法 A 的 5 ms 周期（cycle=1）。
+udp_cycle: 1
+
+# 关节零位偏移（rad，7 维，joint_1..joint_7）——未标定时全 0。
+joint_zero_offset: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+# 加速度上限（rad/s²，7 维）。
+# measured=false ⇒ **未实测标定**，当前值来自 S02 自研默认
+# （DEFAULT_ACCELERATION_LIMITS_RAD_S2：J1/J2 6.0、J3–J7 8.0），
+# 厂商不公布逐轴加速度上限 ⇒ 必须按真机实测收紧后把 measured 改成 true。
+accel_limits:
+  measured: false
+  values: [6.0, 6.0, 8.0, 8.0, 8.0, 8.0, 8.0]
+
+# 逐轴电流阈值（mA，7 维）——安全闸 G5 用。
+# calibrated=false ⇒ **未标定**，当前值是保守兜底
+# （J1/J2 1500、J3/J4 1200、J5–J7 1000 mA）；
+# S01 的「电流阈值基线」实际未交付，真机标定后请回写并把 calibrated 改成 true。
+current_thresholds:
+  calibrated: false
+  values: [1500.0, 1500.0, 1200.0, 1200.0, 1000.0, 1000.0, 1000.0]
+
+# 几何围栏参数（安全闸 G6）：桌面高度 + 奇异圆柱半径。
+fence:
+  table_height_m: 0.75
+  singularity_radius_m: 0.15
