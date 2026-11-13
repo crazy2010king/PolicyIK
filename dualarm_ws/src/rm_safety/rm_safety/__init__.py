@@ -1,0 +1,95 @@
+"""rm_safety —— 失效安全停机层（四级等级表 + 判据纯函数 + 声明式错误码表）。
+
+层定位
+------
+
+依赖方向（**不得反向**）::
+
+    hardware(rm_hw_bridge)  <  safety(rm_safety)  <  executor(rm_executor)  <  experience(rmctl)
+
+本包**只依赖标准库 + pyyaml**，**不 import** ``rmctl`` / ``rm_executor`` /
+``rm_hw_bridge`` / ``tesseract*`` —— 这条红线由静态审计（T8 注册到
+``rm_hw_bridge/contract.yaml`` 的 ``rules.layers``）锁进代码层。
+
+四个模块的职责
+--------------
+
+* :mod:`rm_safety.levels` —— **四级等级表（唯一真值）**：动作 / SDK 符号 /
+  严重度 / 退出码 / 恢复方式 / 事件名；
+* :mod:`rm_safety.policy` —— **判据纯函数**（无 I/O / 无 SDK / 无线程）：
+  故障类 → 等级 → 动作 → 恢复方式；
+* :mod:`rm_safety.error_codes` —— **声明式错误码表**读取（未知码 → 保守 L3）；
+* :mod:`rm_safety.config` —— 安全配置读取（唯一来源 =
+  ``workcell/rm_workcell.yaml`` 的 ``safety:`` 段）；
+* :mod:`rm_safety.paths` —— 路径解析（**独立实现**，不反向依赖任何上层）。
+"""
+from __future__ import annotations
+
+from rm_safety.config import load_safety_config
+from rm_safety.error_codes import ErrorCodeMap, load_error_codes
+from rm_safety.levels import (
+    EVENT_L1_SLOWDOWN,
+    EVENT_L1_SLOWDOWN_CLEARED,
+    EVENT_L2_PAUSE,
+    EVENT_L3_SLOW_STOP,
+    EVENT_L4_EMERGENCY_STOP,
+    FAULT_COLLISION,
+    FAULT_FOLLOW_ERROR,
+    FAULT_LIMIT_EXCEEDED,
+    FAULT_PROTECTION_STOP,
+    FAULT_STREAM_LOST,
+    LEVELS,
+    LEVEL_ORDER,
+    LEVEL_L1,
+    LEVEL_L2,
+    LEVEL_L3,
+    LEVEL_L4,
+    level_action,
+    level_event_type,
+    level_exit_code,
+    level_rank,
+    level_recovery,
+    level_sdk_symbol,
+    level_severity,
+)
+from rm_safety.policy import (
+    Decision,
+    SafetyThresholds,
+    can_auto_recover,
+    evaluate,
+)
+
+__all__ = [
+    "Decision",
+    "ErrorCodeMap",
+    "EVENT_L1_SLOWDOWN",
+    "EVENT_L1_SLOWDOWN_CLEARED",
+    "EVENT_L2_PAUSE",
+    "EVENT_L3_SLOW_STOP",
+    "EVENT_L4_EMERGENCY_STOP",
+    "FAULT_COLLISION",
+    "FAULT_FOLLOW_ERROR",
+    "FAULT_LIMIT_EXCEEDED",
+    "FAULT_PROTECTION_STOP",
+    "FAULT_STREAM_LOST",
+    "LEVELS",
+    "LEVEL_ORDER",
+    "LEVEL_L1",
+    "LEVEL_L2",
+    "LEVEL_L3",
+    "LEVEL_L4",
+    "SafetyThresholds",
+    "can_auto_recover",
+    "evaluate",
+    "level_action",
+    "level_event_type",
+    "level_exit_code",
+    "level_rank",
+    "level_recovery",
+    "level_sdk_symbol",
+    "level_severity",
+    "load_error_codes",
+    "load_safety_config",
+]
+
+__version__ = "0.1.0"

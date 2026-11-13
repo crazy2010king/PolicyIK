@@ -22,6 +22,11 @@ safety:
   collision_margin_m: 0.005
   self_collision: true
   joint_limit_margin_deg: 1.0
+  error_codes: safety/error_codes.yaml   # 声明式错误码表（相对 workcell/ 目录）
+  l1_speed_scale: 0.5                    # L1 降速比例
+  enable_l1_slowdown: true               # 是否启用 L1 降速
+  enable_l2_pause_on_stream_lag: false   # 断流告警区间是否升到 L2 暂停（默认只告警）
+  sdk_timeout_s: 1.0                     # SDK 调用超时（秒）
 planning:
   num_planners: 2
   planning_time_s: 5.0
