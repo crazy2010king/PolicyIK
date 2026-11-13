@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rm75_drake"
+# 版本标识与 versions.lock:baseline.drake 严格对齐（T02 约定，见 src/rm75_drake/__init__.py）。
+# 它是"项目基线标识"，不是当前环境实装的 Drake 版本（实装版本见 drake_compat.drake_version()）。
+version = "1.55.0"
+description = "RM75-D 基于 Drake 的仿真与规划包（T02 骨架：路径层 + package:// 解析 + 版本兼容层）"
+requires-python = ">=3.10"
+dependencies = [
+    "drake>=1.51.1",
+    "PyYAML>=6.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "pyyaml",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rm75_drake = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

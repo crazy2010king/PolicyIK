@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>rm75_drake</name>
+  <version>0.1.0</version>
+  <description>
+    本项目自有的模型包（PackageMap key = rm75_drake）。
+    官方 RM75-B 资产属 S01 定点改造后放入，不使用官方原始 STL。
+  </description>
+</package>

@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<!--
+  占位模型（T02）：单个 box 立方体 link + 一个 fixed 关节。
+  官方 RM75-B 资产属 S01，本文件**不使用**任何官方资产。
+
+  注意：关节的 parent 必须是**本 URDF 内的 link**，不能写 link="world"。
+  Drake 1.51.1 在解析挂到 world 的关节时会触发
+  detail_collision_filter_group_resolver.cc:27 的 CHECK 失败
+  （'minimum_model_instance_index_ > world' failed），导致进程 abort。
+-->
+<robot name="rm75_drake_placeholder">
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.1 0.1 0.1"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.1 0.1 0.1"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="tip_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="0.001" ixy="0.0" ixz="0.0" iyy="0.001" iyz="0.0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <joint name="base_to_tip" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="tip_link"/>
+  </joint>
+</robot>

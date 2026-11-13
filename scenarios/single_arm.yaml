@@ -1,0 +1,29 @@
+# scenario schema 占位模板（T02）
+#
+# TODO(S02): 填充正式 schema —— 本文件当前只是**顶层键占位**，
+# 键名与语义约定如下，S02 落地后不得随意改名（改名会击穿 golden-file 回归）：
+#
+#   robots         机器人列表（每项含 name / urdf(package:// URL) / base_link / 关节顺序等）
+#   base_extrinsics 机器人基座外参（相对场景世界系的位置/姿态）
+#   obstacles      障碍物列表（几何体 + 位姿）
+#   calibration    标定参数（关节零位、工具偏置等）
+#
+# S02 会补充：字段校验、单位约定（SI）、默认值与版本号字段 schema_version。
+
+schema_version: 0
+
+robots: []
+#  - name: rm75
+#    urdf: package://rm75_drake/rm75_b.urdf
+#    base_link: base_link
+
+base_extrinsics: {}
+#  rm75:
+#    xyz: [0.0, 0.0, 0.0]
+#    rpy: [0.0, 0.0, 0.0]
+
+obstacles: []
+
+calibration: {}
+#  joint_zero_offset: {}
+#  tool_offset: {}

@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.pytest_cache/
 simulation/logs/
 simulation/outputs/
 simulation/third_party/
