@@ -110,6 +110,7 @@ class FakeDriver(Driver):
         之后再次调用 :meth:`step` 只会重复返回最后一个状态（**不**越界）。
         """
         self._require_open()
+        self._require_streaming()
         trajectory = self.trajectory
         if trajectory is None:
             raise DriverError(
@@ -140,6 +141,7 @@ class FakeDriver(Driver):
         samples = trajectory.samples
         index = min(self._index, len(samples) - 1)
         sample = samples[index]
+        self._mark_state_read()
         return DriverState(
             joint_positions=tuple(float(v) for v in sample.q),
             seq=int(sample.seq),

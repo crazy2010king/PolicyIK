@@ -114,6 +114,7 @@ class SimulationDriver(Driver):
     def step(self) -> DriverState:
         """推进**一个** 5 ms 节拍：把该拍位形写进 plant，再读回。"""
         self._require_open()
+        self._require_streaming()
         trajectory = self.trajectory
         if trajectory is None:
             raise DriverError(
@@ -148,6 +149,7 @@ class SimulationDriver(Driver):
         plant = self._scene.plant
         plant.SetPositions(self._context, sample.q)
         positions = plant.GetPositions(self._context)
+        self._mark_state_read()
         return DriverState(
             joint_positions=tuple(float(v) for v in positions[: len(sample.q)]),
             seq=int(sample.seq),

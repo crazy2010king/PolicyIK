@@ -31,6 +31,22 @@
 ``read_state() -> DriverState``
     读回当前状态：关节角 + ``seq`` + 绝对时刻 ``t_abs``。
 
+流式协议（S03-T06）
+-------------------
+S02 的驱动协议只有上面四个方法，**没有**「流式执行」语义
+（FakeDriver 的 ``step`` / ``replay`` / ``phase`` 都不在基类里）。
+S03 补齐了 :class:`StreamingDriver` 协议（``step / stop / hold /
+state_age / phase``），并给出**默认实现**：
+
+* :meth:`Driver.step` —— 默认抛 :class:`DriverError`
+  （``reason="not_streaming"``），**不是** ``abstractmethod``；
+* :meth:`Driver.stop` / :meth:`Driver.hold` / :meth:`Driver.resume`
+  —— 相位切换（``stopped`` / ``holding`` / ``streaming``）；
+* :meth:`Driver.state_age` —— 最近一次状态读回的年龄（``None`` = 未知）。
+
+因此**既有子类不被破坏**（FakeDriver / SimulationDriver 继续可用），
+而三者可以遵守**同一套**流式语义（同源断言的前提）。
+
 失败可解释
 ----------
 所有驱动错误都抛 :class:`DriverError`，并带稳定 ``reason`` 标签：
@@ -43,6 +59,9 @@
 ``no_trajectory``       设备里还没有已提交的轨迹就推进 / 读状态
 ``integrity``           驱动修改了轨迹内容（自检钩子发现）
 ``closed``              设备已关闭后再操作
+``not_streaming``       驱动未实现流式推进（``step`` 的默认实现）
+``held``                驱动处于保持相位（先 ``resume()``）
+``stopped``             驱动已停止，不能再推进
 ======================  ====================================================
 """
 
@@ -50,8 +69,9 @@ from __future__ import annotations
 
 import abc
 import copy
+import time
 from dataclasses import dataclass
-from typing import Any, Tuple
+from typing import Any, Optional, Protocol, Tuple, runtime_checkable
 
 from ..planning.trajectory import DEFAULT_DT, JOINT_COUNT
 
@@ -59,9 +79,12 @@ __all__ = [
     "DriverError",
     "DriverState",
     "Driver",
+    "StreamingDriver",
     "PHASE_IDLE",
     "PHASE_STREAMING",
     "PHASE_DONE",
+    "PHASE_HOLDING",
+    "PHASE_STOPPED",
     "REASON_INVALID_INPUT",
     "REASON_EMPTY",
     "REASON_DT_MISMATCH",
@@ -69,6 +92,9 @@ __all__ = [
     "REASON_NO_TRAJECTORY",
     "REASON_INTEGRITY",
     "REASON_CLOSED",
+    "REASON_NOT_STREAMING",
+    "REASON_HELD",
+    "REASON_STOPPED",
 ]
 
 
@@ -79,6 +105,10 @@ PHASE_IDLE = "idle"
 PHASE_STREAMING = "streaming"
 #: 完成：轨迹已全部下发完。
 PHASE_DONE = "done"
+#: 保持：主动保持当前位置（不再推进，但未终止）。
+PHASE_HOLDING = "holding"
+#: 停止：本次流式执行已终止（不再接受推进）。
+PHASE_STOPPED = "stopped"
 
 # ── 失败标签 ────────────────────────────────────────────────────────────
 REASON_INVALID_INPUT = "invalid_input"
@@ -88,6 +118,12 @@ REASON_NOT_OPEN = "not_open"
 REASON_NO_TRAJECTORY = "no_trajectory"
 REASON_INTEGRITY = "integrity"
 REASON_CLOSED = "closed"
+#: 驱动未实现流式推进（S03-T06 新增；**不是**硬性 abstractmethod）。
+REASON_NOT_STREAMING = "not_streaming"
+#: 驱动处于保持相位（hold 之后必须先 resume）。
+REASON_HELD = "held"
+#: 驱动已停止（stop 之后不能再推进）。
+REASON_STOPPED = "stopped"
 
 
 class DriverError(RuntimeError):
@@ -165,12 +201,20 @@ class Driver(abc.ABC):
         self._closed = False
         self._trajectory: Any = None
         self._snapshot: Any = None
+        # 流式协议状态（S03-T06）
+        self._phase: str = PHASE_IDLE
+        self._held = False
+        self._stopped = False
+        self._last_state_monotonic: Optional[float] = None
 
     # -- 生命周期 --------------------------------------------------------
     def open(self) -> None:
         """打开设备（幂等）。"""
         self._closed = False
         self._open = True
+        self._phase = PHASE_IDLE
+        self._held = False
+        self._stopped = False
 
     def close(self) -> None:
         """关闭设备（幂等；释放已提交的轨迹引用）。"""
@@ -178,6 +222,9 @@ class Driver(abc.ABC):
         self._closed = True
         self._trajectory = None
         self._snapshot = None
+        self._phase = PHASE_IDLE
+        self._held = False
+        self._stopped = False
 
     @property
     def is_open(self) -> bool:
@@ -198,6 +245,57 @@ class Driver(abc.ABC):
     def trajectory_snapshot(self) -> Any:
         """提交时的**深拷贝快照**（自检用）。"""
         return self._snapshot
+
+    # -- 流式协议（S03-T06）----------------------------------------------
+    @property
+    def phase(self) -> str:
+        """当前相位（``idle`` / ``streaming`` / ``done`` / ``holding`` / ``stopped``）。"""
+        return self._phase
+
+    @property
+    def state_age(self) -> Optional[float]:
+        """最近一次**状态读回**的年龄（s）。
+
+        ``None`` 表示「尚无状态读回」——是**未知**，不是测量值 0。
+        """
+        if self._last_state_monotonic is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_state_monotonic)
+
+    def step(self) -> DriverState:
+        """推进**一个**流式节拍并返回该拍状态（流式协议）。
+
+        默认实现显式报错（``reason="not_streaming"``）——
+        **不是** ``abstractmethod``，因此既有子类（FakeDriver /
+        SimulationDriver）不会因为新增协议而失效。
+        """
+        raise DriverError(
+            "该驱动未实现流式推进（step）", reason=REASON_NOT_STREAMING
+        )
+
+    def stop(self) -> None:
+        """停止本次流式执行（保留已提交轨迹；之后 :meth:`step` 显式报错）。"""
+        self._require_open()
+        self._stopped = True
+        self._held = False
+        self._phase = PHASE_STOPPED
+
+    def hold(self) -> DriverState:
+        """保持当前位置：停止推进但**不**终止（先 :meth:`resume` 才能继续）。"""
+        self._require_open()
+        self._held = True
+        self._phase = PHASE_HOLDING
+        return self.read_state()
+
+    def resume(self) -> None:
+        """从保持相位恢复到流式相位。"""
+        self._require_open()
+        if self._stopped:
+            raise DriverError(
+                "驱动已停止，无法恢复", reason=REASON_STOPPED
+            )
+        self._held = False
+        self._phase = PHASE_STREAMING
 
     # -- 轨迹提交 --------------------------------------------------------
     def submit_trajectory(self, trajectory: Any) -> None:
@@ -285,6 +383,68 @@ class Driver(abc.ABC):
                 "设备未打开（先调用 open()）",
                 reason=REASON_CLOSED if self._closed else REASON_NOT_OPEN,
             )
+
+    def _require_streaming(self) -> None:
+        """流式推进前的守卫：已停止 / 保持中 ⇒ 显式报错。"""
+        if self._stopped:
+            raise DriverError(
+                "驱动已停止，不能再推进", reason=REASON_STOPPED
+            )
+        if self._held:
+            raise DriverError(
+                "驱动处于保持相位（先调用 resume()）", reason=REASON_HELD
+            )
+
+    def _mark_state_read(self) -> None:
+        """记录「刚刚读回过一次状态」（供 :attr:`state_age` 使用）。"""
+        self._last_state_monotonic = time.monotonic()
+
+
+@runtime_checkable
+class StreamingDriver(Protocol):
+    """**流式执行协议**（S03-T06）。
+
+    三个驱动（假驱动 / 仿真驱动 / 真机驱动）都遵守这组语义：
+
+    ``step() -> DriverState``
+        推进**一个**节拍（默认 5 ms）并返回该拍状态；
+    ``stop() -> None``
+        终止本次流式执行（保留轨迹；之后 ``step()`` 显式报错）；
+    ``hold() -> DriverState``
+        保持当前位置（不再推进，**不**终止）；
+    ``state_age -> Optional[float]``
+        最近一次状态读回的年龄（s）；``None`` = 未知；
+    ``phase -> str``
+        当前相位（``idle`` / ``streaming`` / ``done`` / ``holding`` / ``stopped``）。
+
+    说明
+    ----
+    这是一个**独立的协议对象**（``typing.Protocol``），
+    **不是** :class:`Driver` 的新 ``abstractmethod``——
+    这样既有子类（FakeDriver / SimulationDriver）保持向后兼容。
+    """
+
+    def step(self) -> DriverState:
+        """推进一个节拍。"""
+        ...
+
+    def stop(self) -> None:
+        """终止流式执行。"""
+        ...
+
+    def hold(self) -> DriverState:
+        """保持当前位置。"""
+        ...
+
+    @property
+    def state_age(self) -> Optional[float]:
+        """状态年龄（s）。"""
+        ...
+
+    @property
+    def phase(self) -> str:
+        """当前相位。"""
+        ...
 
 
 def _same_trajectory(left: Any, right: Any) -> bool:

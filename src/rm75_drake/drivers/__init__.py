@@ -9,6 +9,9 @@
   消费 Planner 输出，按 5 ms 节拍模拟下发与回读（**零硬件、零仿真**）。
 * :mod:`rm75_drake.drivers.sim` —— :class:`SimulationDriver`：
   同样的 5 ms 节拍，但状态**真的写进 Drake plant 再读回**。
+* :mod:`rm75_drake.drivers.rm_device` —— :class:`RmDeviceDriver`：
+  真机驱动（S03-T06），走设备层传输层（唯一运动通道 ``rm_movej_canfd``），
+  安全七闸复用 :mod:`rm75_drake.device.safety` 的唯一实现。
 
 同源保证
 --------
@@ -24,31 +27,43 @@ from __future__ import annotations
 
 from .base import (
     PHASE_DONE,
+    PHASE_HOLDING,
     PHASE_IDLE,
+    PHASE_STOPPED,
     PHASE_STREAMING,
     REASON_CLOSED,
     REASON_DT_MISMATCH,
     REASON_EMPTY,
+    REASON_HELD,
     REASON_INTEGRITY,
     REASON_INVALID_INPUT,
     REASON_NOT_OPEN,
+    REASON_NOT_STREAMING,
     REASON_NO_TRAJECTORY,
+    REASON_STOPPED,
     Driver,
     DriverError,
     DriverState,
+    StreamingDriver,
 )
 from .fake import FakeDriver
+from .rm_device import RmDeviceDriver, RmDeviceDriverConfig
 from .sim import SimulationDriver
 
 __all__ = [
     "Driver",
     "DriverError",
     "DriverState",
+    "StreamingDriver",
     "FakeDriver",
     "SimulationDriver",
+    "RmDeviceDriver",
+    "RmDeviceDriverConfig",
     "PHASE_IDLE",
     "PHASE_STREAMING",
     "PHASE_DONE",
+    "PHASE_HOLDING",
+    "PHASE_STOPPED",
     "REASON_INVALID_INPUT",
     "REASON_EMPTY",
     "REASON_DT_MISMATCH",
@@ -56,4 +71,7 @@ __all__ = [
     "REASON_NO_TRAJECTORY",
     "REASON_INTEGRITY",
     "REASON_CLOSED",
+    "REASON_NOT_STREAMING",
+    "REASON_HELD",
+    "REASON_STOPPED",
 ]
