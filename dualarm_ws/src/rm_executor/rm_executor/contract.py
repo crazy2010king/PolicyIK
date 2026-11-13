@@ -48,15 +48,19 @@ __all__ = [
     "PRE_POSITION_TOL_DEG",
     "SCHEMA_VERSION",
     "STREAM_STOP_MS",
-    "STRICT_REQUIRED_FIELDS",
     "STREAM_WARN_MS",
+    "STRICT_REQUIRED_FIELDS",
     "STATUS_BLOCKED",
     "STATUS_ERROR",
     "STATUS_OK",
     "UNITS",
+    "blocked_result",
     "check_time_domain_limits",
+    "error_result",
     "load_execution_config",
     "load_trajectory",
+    "ok_result",
+    "result_dict",
 ]
 
 # ---------------------------------------------------------------------------
@@ -203,6 +207,53 @@ def _blocked(reason: str, next_action: str, evidence: Optional[Iterable[Any]] = 
              **extra: Any) -> Dict[str, Any]:
     """被阻塞结果（退出码 3）。"""
     return _result(STATUS_BLOCKED, reason, next_action, evidence, **extra)
+
+
+#: 失败状态（必须带非空 reason 与 next_action）
+FAILURE_STATUSES = (STATUS_BLOCKED, STATUS_ERROR)
+
+#: 失败结果的兜底 next_action（**可粘贴**，不静默丢失）
+NEXT_ACTION_FALLBACK = (
+    "查看上条 reason 与 evidence，修复对应条件后重跑同一条命令；"
+    "若仍失败，请把 evidence 原样贴给操作者。"
+)
+
+
+def result_dict(status: str, reason: str = "", next_action: str = "",
+                evidence: Optional[Iterable[Any]] = None,
+                **extra: Any) -> Dict[str, Any]:
+    """统一结果字典的**公开构造入口**（与 ``rm_hw_bridge.errors`` 同构）。
+
+    失败状态（blocked / error）缺 ``next_action`` 时补一条**可粘贴**的兜底动作
+    （绝不静默丢失）；失败结果**不携带任何伪造数值**。
+
+    本函数是执行层**唯一**的结果字典构造点——传输层（transport）、反馈层
+    （feedback）都复用它，避免第二处真相。
+    """
+    if status in FAILURE_STATUSES and not next_action:
+        next_action = NEXT_ACTION_FALLBACK
+    return _result(status, reason, next_action, evidence, **extra)
+
+
+def ok_result(reason: str = "", next_action: str = "",
+              evidence: Optional[Iterable[Any]] = None,
+              **extra: Any) -> Dict[str, Any]:
+    """成功结果（status=ok，退出码 0）。"""
+    return result_dict(STATUS_OK, reason, next_action, evidence, **extra)
+
+
+def blocked_result(reason: str, next_action: str = "",
+                   evidence: Optional[Iterable[Any]] = None,
+                   **extra: Any) -> Dict[str, Any]:
+    """被阻塞结果（status=blocked，退出码 3）。"""
+    return result_dict(STATUS_BLOCKED, reason, next_action, evidence, **extra)
+
+
+def error_result(reason: str, next_action: str = "",
+                 evidence: Optional[Iterable[Any]] = None,
+                 **extra: Any) -> Dict[str, Any]:
+    """运行错误结果（status=error，退出码 4）。"""
+    return result_dict(STATUS_ERROR, reason, next_action, evidence, **extra)
 
 
 def _ok(reason: str = "", next_action: str = "", evidence: Optional[Iterable[Any]] = None,

@@ -18,19 +18,26 @@ T1 交付的是**执行契约骨架**：轨迹 JSON 契约（:mod:`rm_executor.c
 T2 交付的是**时钟与栅格层**：绝对截止时间时钟（:mod:`rm_executor.clock`，
 含真实 ``TickClock`` 与确定性 ``ManualClock``）与 10 ms 栅格重采样
 （:mod:`rm_executor.resample`）。
+
+T3 交付的是**传输与反馈抽象**：透传通道接口（:mod:`rm_executor.transport`，
+含离线 ``FakeTransport`` 与真机 ``BridgeTransport``）与反馈源接口
+（:mod:`rm_executor.feedback`，含 ``ScriptedFeedback`` / ``PollFeedback`` /
+``UdpFeedback`` 与后台采集泵 ``FeedbackPump``）。
 """
 from __future__ import annotations
 
-from rm_executor import clock, contract, events, metrics, paths, resample
+from rm_executor import clock, contract, events, feedback, metrics, paths, resample, transport
 
 __all__ = [
     "__version__",
     "clock",
     "contract",
     "events",
+    "feedback",
     "metrics",
     "paths",
     "resample",
+    "transport",
 ]
 
 __version__ = "0.1.0"
