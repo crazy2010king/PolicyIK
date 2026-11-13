@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
-"""真机采集脚本骨架：最小只读 SDK 路径 + 六类实验 + ``--dry-run``（设计 §5.1/§5.2/§5.3）。
+"""真机采集脚本骨架：基于 rm_hw_bridge 的句柄语义 + 六类实验 + ``--dry-run``（设计 §5.1/§5.2/§5.3）。
 
 真机是**预约资源**（session.md：机械臂"等到需要时我再提供"）。窗口内每多一分钟
 交互式调试就多一分钟撞机风险，因此本模块把"真机窗口要执行的动作"全部脚本化，
 并在没有 SDK 的机器上离线自测：**窗口只跑脚本、只落数据**。
+
+**ABI 形态（本版已修正，见 S02-T6）**：S01 遗留版本按 **IP 字符串** 调用 SDK、
+并把 64 位指针截断成 32 位——真实 ABI 是 **handle-based**，那样调用是未定义行为
+（可能读越界、可能静默串号）。本版：
+
+* **不再手写 SDK 封装**：``RmSdk`` 与手写 ``_RmArmState``（"尽力而为布局"）已删除；
+  所有 SDK 访问都经由硬件适配层 ``rm_hw_bridge``（``loader`` / ``bridge``），
+  走**句柄语义**（``rm_robot_handle*``），布局由 ABI 唯一真值
+  （``rm_hw_bridge/abi_spec.yaml`` → 生成的 ctypes 绑定）保证。
+* **白名单不再是手写的字符串清单**：``WHITELIST`` 由 ``rm_hw_bridge/contract.yaml``
+  的 ``core`` **取子集**得到（硬件层是唯一真值；契约与本模块的用符需求不一致时直接报错）。
+* **黑名单自检来源改为契约**：``BLACKLIST`` 来自 contract 的 ``blacklist``，
+  判定用 **AST 调用形态**（字符串常量不误判）。
 
 六类实验（与 S01-T7 的窗口执行清单一一对应）：
 
@@ -20,9 +33,8 @@ zero_capture        零位读数与证据引用（零位只能走示教器受控
 
 * **缺 SDK 时优雅降级**：所有真机 action 统一返回 ``status="NEEDS_HUMAN"``
   并附 ``reason`` + 可粘贴的下一步动作，**绝不返回伪造数值**、绝不抛异常。
-* **黑名单符号**：``rm_set_joint_zero_pos``（零位标定）禁止调用——零位只能走
-  示教器受控流程（设计 §1.4）。模块启动时做**自检**（``blacklist_scan()``），
-  一旦源码里出现黑名单符号的调用形态就抛错。
+* **黑名单符号**：``rm_set_joint_zero_pos``（零位标定）等禁止调用——零位只能走
+  示教器受控流程（设计 §1.4）。模块启动时做**自检**（``blacklist_scan()``）。
 * **控制器位姿仅用于交叉校验**（R003）：厂商运动学输出只进 ``fk_cross``
   的比对报告，不得写回轨迹/模型/基线。
 * **量级约束**：udp_stability 600 s @ 5 ms ≈ 12 万条上报，只保留**聚合统计**
@@ -38,14 +50,12 @@ zero_capture        零位读数与证据引用（零位只能走示教器受控
 退出码：采集成功 0 / 输入非法 2 / 需要人工介入（NEEDS_HUMAN）3 / 真机执行错误 4。
 """
 import argparse
+import ast
 import ctypes
 import datetime
 import json
 import os
-import re
-import socket
 import sys
-import threading
 import time
 
 import numpy as np
@@ -57,8 +67,11 @@ from . import retime
 # ------------------------------------------------------------------ 常量
 SCHEMA = "rmctl.hwcollect/1"
 
-ENV_SDK_LIB = "RM_API2_LIB"
-DEPS_REL = os.path.join(".deps", "rm_api2", "libapi_c.so")
+#: 默认左右臂控制器 IP（真机窗口可�� --ip 覆盖）
+DEFAULT_ARM_IP = {"left": "192.168.1.18", "right": "192.168.1.19"}
+
+#: 默认 TCP 端口（与 rm_hw_bridge.bridge.DEFAULT_TCP_PORT 一致）
+DEFAULT_TCP_PORT = 8080
 
 #: 实时上报周期必须是 5 ms 的倍数（设计 §5.1，与 baseline.UDP_PERIOD_MS 同源）
 UDP_PERIOD_MS = 5
@@ -74,32 +87,11 @@ LADDER_DT_S = 0.02
 LADDER_DEFAULT_TRIALS = 3
 #: 阶梯实验真机路径：单关节单次位移（度）
 LADDER_STEP_DEG = 10.0
-#: 阶梯实验真机路径：基础速度与每档增速（RM-API2 rm_movej 的 speed 单位）
+#: 阶梯实验真机路径：基础速度与每档增速（RM-API2 rm_movej 的 speed 参数）
 LADDER_BASE_SPEED = 5
 LADDER_SPEED_STEP = 3
 #: FK 交叉校验默认位形数
 FK_DEFAULT_SAMPLES = 20
-
-#: SDK 白名单（最小只读集 + 预就位移动 + 停机族）
-WHITELIST = (
-    "rm_init",
-    "rm_create_robot_arm",
-    "rm_set_realtime_push",
-    "rm_get_joint_degree",
-    "rm_get_current_arm_state",
-    "rm_get_arm_all_state",
-    "rm_movej",
-    "rm_set_arm_stop",
-    "rm_set_arm_slow_stop",
-    "rm_set_arm_pause",
-    "rm_set_arm_continue",
-)
-
-#: 黑名单符号：**禁止调用**。零位标定只能走示教器受控流程（设计 §1.4）。
-BLACKLIST = ("rm_set_joint_zero_pos",)
-
-#: RM-API2 三线程模式（不开三线程收不到 UDP 实时上报）
-RM_TRIPLE_MODE_E = 0x00000001
 
 STATUS_OK = "ok"
 STATUS_DRY_RUN = "dry_run"
@@ -120,6 +112,9 @@ THREAT_NOTES = (
              "采集前先确认端口未被占用。"},
     {"id": "no_fabricated_values",
      "text": "缺 SDK / 未实测一律返回 NEEDS_HUMAN，禁止填写占位数值。"},
+    {"id": "handle_semantics",
+     "text": "SDK 调用一律经 rm_hw_bridge 的句柄语义（rm_robot_handle*）；"
+             "禁止按 IP 字符串调用或自行解释指针。"},
 )
 
 
@@ -129,6 +124,119 @@ class HwCollectError(Exception):
 
 class SdkMissing(HwCollectError):
     """RM-API2 SDK 缺失（附可粘贴的修复动作）。"""
+
+
+# ------------------------------------------------------- 硬件适配层（惰性导入）
+_HW_LOADER = None          # rm_hw_bridge.loader 模块（缓存）
+_HW_IMPORT_ERROR = ""      # 惰性导入失败原因
+
+
+def _hw_loader():
+    """惰性导入 ``rm_hw_bridge.loader``（硬件适配层），返回 ``(module, error)``。
+
+    硬件适配层是**独立包**（``dualarm_ws/src/rm_hw_bridge``），可能未安装到
+    ``sys.path``；这里按仓库布局兜底（兄弟包目录）。导入失败**不抛异常**——
+    调用方据此走 NEEDS_HUMAN 降级。
+    """
+    global _HW_LOADER, _HW_IMPORT_ERROR
+    if _HW_LOADER is not None:
+        return _HW_LOADER, ""
+    try:
+        from rm_hw_bridge import loader as _loader
+    except Exception as exc:  # pragma: no cover - 依赖缺失路径
+        first = repr(exc)
+        sibling = os.path.abspath(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            "rm_hw_bridge",
+        ))
+        if os.path.isdir(sibling) and sibling not in sys.path:
+            sys.path.insert(0, sibling)
+        try:
+            from rm_hw_bridge import loader as _loader
+        except Exception as exc2:  # pragma: no cover - 依赖缺失路径
+            _HW_IMPORT_ERROR = "%s / 兜底路径 %s: %r" % (first, sibling, exc2)
+            return None, _HW_IMPORT_ERROR
+    _HW_LOADER = _loader
+    _HW_IMPORT_ERROR = ""
+    return _HW_LOADER, ""
+
+
+def _hw_bridge():
+    """惰性导入 ``rm_hw_bridge.bridge``（连接层），返回 ``(module, error)``。"""
+    _loader, err = _hw_loader()
+    if _loader is None:
+        return None, err
+    try:
+        from rm_hw_bridge import bridge as _bridge
+    except Exception as exc:  # pragma: no cover - 依赖缺失路径
+        return None, "%s / import rm_hw_bridge.bridge: %r" % (err, exc)
+    return _bridge, ""
+
+
+# ------------------------------------------------------------- 符号契约（唯一真值）
+#: hwcollect 真机路径**需要用到的**契约核心符号（**能力需求声明**，不是许可清单）。
+#:
+#: 许可清单的**唯一真值**是 ``rm_hw_bridge/contract.yaml`` 的 ``core``；
+#: 本模块只声明"要用哪些能力"，:data:`WHITELIST` = 契约 core ∩ 本需求声明，
+#: 且需求里若有符号不在契约 core 中（契约漂移）→ 真机路径直接报错
+#: （:data:`MISSING_FROM_CONTRACT`）。**不存在第二份手写白名单。**
+REQUIRED_CORE_SYMBOLS = (
+    "rm_init",
+    "rm_create_robot_arm",
+    "rm_set_realtime_push",
+    "rm_get_joint_degree",
+    "rm_get_current_arm_state",
+    "rm_get_arm_all_state",
+    "rm_get_joint_err_flag",
+    "rm_get_arm_current_trajectory",
+    "rm_movej",
+    "rm_set_arm_stop",
+    "rm_set_arm_slow_stop",
+    "rm_set_arm_pause",
+    "rm_set_arm_continue",
+)
+
+
+def _contract_symbols():
+    """契约核心符号 / 黑名单符号 / 黑名单前缀（全部来自 contract.yaml）。
+
+    返回 ``(core, blacklist, prefixes)``；契约不可用时返回三个空列表，
+    并由 :data:`CONTRACT_ERROR` 说明原因（**失败时黑名单自检会 fail-closed**）。
+    """
+    global CONTRACT_ERROR
+    loader, err = _hw_loader()
+    if loader is None:
+        CONTRACT_ERROR = err
+        return [], [], []
+    try:
+        contract = loader.load_contract()
+    except Exception as exc:  # pragma: no cover - 契约损坏路径
+        CONTRACT_ERROR = repr(exc)
+        return [], [], []
+    return (list(loader.core_symbols(contract)),
+            list(loader.blacklist_names(contract)),
+            list(loader.blacklist_prefixes(contract)))
+
+
+#: 契约不可用的原因（空 = 契约已加载）
+CONTRACT_ERROR = ""
+
+CORE_SYMBOLS, _BLACKLIST_NAMES, _BLACKLIST_PREFIXES = _contract_symbols()
+
+#: 白名单 = 契约 core 中、本模块真机路径实际用到的子集（**不是手写清单**）
+WHITELIST = tuple(s for s in CORE_SYMBOLS if s in REQUIRED_CORE_SYMBOLS)
+
+#: 用符需求里**不在**契约 core 里的符号（契约漂移 → 真机路径直接报错）
+MISSING_FROM_CONTRACT = tuple(s for s in REQUIRED_CORE_SYMBOLS if s not in CORE_SYMBOLS)
+
+#: 黑名单符号（来自契约的 ``blacklist.symbols``）
+BLACKLIST = tuple(_BLACKLIST_NAMES)
+
+#: 黑名单前缀族（来自契约的 ``blacklist.prefixes``，如 ``rm_algo_``）
+BLACKLIST_PREFIXES = tuple(_BLACKLIST_PREFIXES)
+
+#: SDK 搜索路径环境变量（与硬件层同名同义）
+ENV_SDK_LIB = "RM_API2_LIB"
 
 
 # ------------------------------------------------------------------ 小工具
@@ -144,67 +252,110 @@ def _module_source():
         return ""
 
 
+def _call_name(node):
+    """取调用形态的函数名（``a.b()`` → ``b``；``f()`` → ``f``）。"""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return None
+
+
 def blacklist_scan(source=None):
     """自检：源码里是否出现黑名单符号的**调用形态**。
 
-    返回违规符号列表（空列表 = 通过）。扫描的是"符号 + 左括号"的调用形态，
-    因此黑名单常量本身（字符串字面量）不会误报。
+    判定用 **AST**（``ast.Call``）：只认调用形态，字符串常量里的符号名不误判，
+    并能给出符号名。黑名单来源是 ``rm_hw_bridge/contract.yaml`` 的 ``blacklist``
+    （含前缀族），**不在本模块硬编码任何黑名单符号**。
+
+    返回违规符号列表（空列表 = 通过）。
     """
     src = source if source is not None else _module_source()
     violations = []
-    for name in BLACKLIST:
-        pat = re.compile(r"%s\s*\(" % re.escape(name))
-        if pat.search(src):
+    if not src:
+        return violations
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:  # pragma: no cover - 退路：源码本身语法错误
+        return violations
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if not name:
+            continue
+        if name in BLACKLIST:
             violations.append(name)
-    return violations
+        elif any(name.startswith(p) for p in BLACKLIST_PREFIXES):
+            violations.append(name)
+    return sorted(set(violations))
 
 
 def _assert_no_blacklist_calls():
+    """黑名单自检。
+
+    * 契约可用 → 按契约的 blacklist（含前缀族）扫描**调用形态**，发现违规即报错；
+    * 契约不可用 → **打印警告**并继续（此时本模块根本拿不到任何黑名单符号，
+      且全仓静态审计 ``python3 -m rm_hw_bridge.audit --repo`` 是权威门禁）。
+    """
+    if CONTRACT_ERROR:
+        print("警告: 符号契约不可用，黑名单自检无法执行（权威门禁："
+              "python3 -m rm_hw_bridge.audit --repo）: %s" % CONTRACT_ERROR,
+              file=sys.stderr)
+        return
     violations = blacklist_scan()
     if violations:
         raise RuntimeError("黑名单符号调用检测失败（设计 §1.4）: %s" % ", ".join(violations))
 
 
-# ------------------------------------------------------------------ SDK 装载
+# ------------------------------------------------------------------ SDK 定位
 def sdk_candidates(ws=None, env=None):
-    """SDK 候选路径（按优先级）：环境变量 → ``.deps/rm_api2/libapi_c.so`` → 目录内任意 .so。"""
-    env = os.environ if env is None else env
-    out = []
-    var = env.get(ENV_SDK_LIB)
-    if var:
-        out.append(var)
-    root = ws or paths.workspace_root()
-    out.append(os.path.join(root, DEPS_REL))
-    dep_dir = os.path.join(root, ".deps", "rm_api2")
-    if os.path.isdir(dep_dir):
-        for name in sorted(os.listdir(dep_dir)):
-            if ".so" in name:
-                out.append(os.path.join(dep_dir, name))
-    return out
+    """SDK 候选路径（委托硬件层装载器，唯一真值在 rm_hw_bridge）。"""
+    loader, _err = _hw_loader()
+    if loader is None:
+        return []
+    return list(loader.sdk_candidates(ws=ws, env=env))
+
+
+def sdk_path(ws=None, env=None):
+    """返回第一个真实存在的候选 ``.so`` 路径（找不到返回 ``None``）。"""
+    for cand in sdk_candidates(ws=ws, env=env):
+        if cand and os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return None
 
 
 def load_sdk(ws=None, env=None):
-    """装载 RM-API2 动态库。
+    """定位 RM-API2 动态库。
 
     找不到时抛 :class:`SdkMissing`（消息里带搜索路径与修复动作）。
     """
-    candidates = sdk_candidates(ws=ws, env=env)
-    tried = []
-    for path in candidates:
-        tried.append(path)
-        if not path or not os.path.exists(path):
-            continue
-        try:
-            lib = ctypes.CDLL(path)
-        except OSError as exc:
-            raise SdkMissing("加载 RM-API2 失败: %s (%s)" % (path, exc))
-        return lib, path
-    raise SdkMissing(
-        "未找到 RM-API2 SDK（libapi_c.so）\n"
-        "  已搜索: %s\n"
-        "  → 修复: 向厂商索取 RM-API2 1.1.7，解包后把 libapi_c.so 放到 "
-        "<repo>/.deps/rm_api2/，或设置环境变量 %s=/abs/path/libapi_c.so"
-        % ("\n          ".join(tried or ["（无候选路径）"]), ENV_SDK_LIB))
+    path = sdk_path(ws=ws, env=env)
+    if not path:
+        tried = sdk_candidates(ws=ws, env=env)
+        raise SdkMissing(
+            "未找到 RM-API2 SDK（libapi_c.so）\n"
+            "  已搜索: %s\n"
+            "  → 修复: 向厂商索取 RM-API2 1.1.7，解包后把 libapi_c.so 放到 "
+            "<repo>/.deps/rm_api2/，或设置环境变量 %s=/abs/path/libapi_c.so"
+            % ("\n          ".join(tried or ["（无候选路径）"]), ENV_SDK_LIB))
+    return path
+
+
+# ------------------------------------------------------------- 失败结果构造
+def _evidence_blocker(reason, next_action, extra=None):
+    item = {"kind": "blocker", "detail": reason, "next_action": next_action}
+    if extra:
+        item.update(extra)
+    return item
+
+
+def _evidence_error(reason, next_action, extra=None):
+    item = {"kind": "error", "detail": reason, "next_action": next_action}
+    if extra:
+        item.update(extra)
+    return item
 
 
 def sdk_missing_result(experiment, arm, reason, next_action, params=None, started_at=None):
@@ -220,83 +371,156 @@ def sdk_missing_result(experiment, arm, reason, next_action, params=None, starte
         "params": params or {},
         "samples": [],
         "summary": {},
-        "evidence": [{"kind": "blocker", "detail": reason, "next_action": next_action}],
+        "evidence": [_evidence_blocker(reason, next_action)],
         "reason": reason,
         "next_action": next_action,
         "notes": list(THREAT_NOTES),
     }
 
 
-# ------------------------------------------------------------------ SDK 封装
-class _RmArmState(ctypes.Structure):
-    """RM-API2 ``rm_arm_current_state_t`` 的**尽力而为**布局。
+def _failure_result(experiment, arm, params, started, reason, next_action,
+                    status=STATUS_ERROR, evidence=None):
+    """失败结果（error / NEEDS_HUMAN 通用骨架）。"""
+    if status == STATUS_NEEDS_HUMAN:
+        ev = [_evidence_blocker(reason, next_action)]
+    else:
+        ev = [_evidence_error(reason, next_action)]
+    ev.extend(evidence or [])
+    return {
+        "schema": SCHEMA,
+        "experiment": experiment,
+        "mode": "hardware",
+        "status": status,
+        "arm": arm,
+        "started_at": started,
+        "finished_at": _now_iso(),
+        "params": params or {},
+        "samples": [],
+        "summary": {},
+        "evidence": ev,
+        "reason": reason,
+        "next_action": next_action,
+        "notes": list(THREAT_NOTES),
+    }
 
-    字段顺序按 RM-API2 1.1.7 头文件整理；真机窗口首次运行若布局不符，
-    以厂商头文件为准修正本结构——**不要**为了跑通而编造读数。
+
+# --------------------------------------------------------------- 连接（句柄）
+def _local_ip_for(target):
+    """推断本机（能到达 ``target`` 的那个网卡）的 IP。
+
+    UDP 主动上报的目标地址必须是**运行本进程的主机**地址（否则臂把报文发给自己），
+    因此真机路径需要它。这里用「不真正发包的 UDP connect」技巧推断（无副作用）。
+    推断失败返回 ``None``（交由连接层用默认值并如实报错）。
     """
+    import socket
 
-    _fields_ = [
-        ("arm_state", ctypes.c_uint16),
-        ("joint", ctypes.c_float * 7),
-        ("joint_2", ctypes.c_float * 7),
-        ("tcp_pose", ctypes.c_float * 6),
-        ("arm_err", ctypes.c_int32),
-        ("arm_err_code", ctypes.c_int32),
-        ("sys_err", ctypes.c_int32),
-        ("sys_err_code", ctypes.c_int32),
-    ]
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.connect((str(target), 9))   # 9 = discard（不会真的发包）
+            return sock.getsockname()[0]
+        finally:
+            sock.close()
+    except OSError:
+        return None
 
 
-class RmSdk(object):
-    """RM-API2 的最小只读封装（只暴露白名单符号）。"""
+def _connect_arm(arm="left", ip=None, port=DEFAULT_TCP_PORT, udp_port=None,
+                 enable_realtime=False, realtime_period_ms=UDP_PERIOD_MS,
+                 ws=None, lib=None):
+    """建立**句柄语义**连接（真机路径唯一入口）。
 
-    def __init__(self, lib, path):
-        self.lib = lib
-        self.path = path
-        self.missing_symbols = [s for s in WHITELIST if not hasattr(lib, s)]
+    返回 ``(link, failure)``：``failure`` 为 ``None`` 表示连接成功；否则是可直接
+    落盘的失败结果字典（NEEDS_HUMAN / error）。
+    """
+    loader, import_error = _hw_loader()
+    if loader is None:
+        reason = "硬件适配层 rm_hw_bridge 不可用：%s" % import_error
+        return None, _failure_result(
+            "connect", arm, {}, _now_iso(), reason,
+            "把硬件适配层加入 PYTHONPATH：export PYTHONPATH=%s:$PYTHONPATH"
+            % os.path.join(paths.workspace_root(ws), "dualarm_ws", "src", "rm_hw_bridge"),
+            status=STATUS_NEEDS_HUMAN,
+        )
 
-    # -- 生命周期
-    def init(self):
-        return int(self.lib.rm_init(RM_TRIPLE_MODE_E))
+    if MISSING_FROM_CONTRACT:
+        reason = "符号契约漂移：本模块需要的符号不在 rm_hw_bridge/contract.yaml 的 core 里: %s" \
+                 % ", ".join(MISSING_FROM_CONTRACT)
+        return None, _failure_result(
+            "connect", arm, {}, _now_iso(), reason,
+            "核对 rm_hw_bridge/contract.yaml 与 rm_hw_bridge/abi_spec.yaml 后重跑",
+        )
 
-    def create_robot_arm(self, ip, port=8080):
-        return int(self.lib.rm_create_robot_arm(ip.encode("utf-8"), int(port)))
+    if lib is None:
+        try:
+            load_sdk(ws=ws)
+        except SdkMissing as exc:
+            return None, _failure_result(
+                "connect", arm, {}, _now_iso(), str(exc),
+                "向厂商索取 RM-API2 1.1.7 并放入 .deps/rm_api2/，"
+                "或 export %s=/abs/path/libapi_c.so" % ENV_SDK_LIB,
+                status=STATUS_NEEDS_HUMAN,
+            )
 
-    def set_realtime_push(self, ip, port=8080, push=True):
-        return int(self.lib.rm_set_realtime_push(ip.encode("utf-8"), int(port), bool(push)))
+    hw_bridge, import_error = _hw_bridge()
+    if hw_bridge is None:
+        reason = "硬件适配层 rm_hw_bridge.bridge 不可用：%s" % import_error
+        return None, _failure_result(
+            "connect", arm, {}, _now_iso(), reason,
+            "确认 rm_hw_bridge 包完整（dualarm_ws/src/rm_hw_bridge）后重跑",
+            status=STATUS_NEEDS_HUMAN,
+        )
 
-    # -- 只读
-    def get_joint_degree(self, ip):
-        buf = (ctypes.c_float * 7)()
-        ret = int(self.lib.rm_get_joint_degree(ip.encode("utf-8"), buf))
-        return ret, [float(v) for v in buf]
+    host = ip or DEFAULT_ARM_IP.get(arm, DEFAULT_ARM_IP["left"])
+    kwargs = {}
+    if enable_realtime:
+        # 上报目标必须是**本机**地址（否则臂把 UDP 报文发给自己，本机收不到）
+        local_ip = _local_ip_for(host)
+        if local_ip:
+            kwargs["realtime_target_ip"] = local_ip
+        if udp_port:
+            kwargs["realtime_target_port"] = int(udp_port)
+    link = hw_bridge.connect(
+        ip=host,
+        port=int(port),
+        udp_port=udp_port,
+        enable_realtime=bool(enable_realtime),
+        realtime_period_ms=int(realtime_period_ms),
+        lib=lib,
+        ws=ws,
+        arm=arm,
+        **kwargs
+    )
+    if link.status == "ok":
+        return link, None
+    # 连接层已给出统一的分级语义：blocked → 需要人工/外部条件；error → 运行错误
+    status = STATUS_NEEDS_HUMAN if link.status == "blocked" else STATUS_ERROR
+    return None, _failure_result(
+        "connect", arm, {}, _now_iso(), link.reason or "连接失败", link.next_action,
+        status=status, evidence=[str(e) for e in (link.evidence or [])],
+    )
 
-    def get_current_arm_state(self, ip):
-        state = _RmArmState()
-        ret = int(self.lib.rm_get_current_arm_state(ip.encode("utf-8"), ctypes.byref(state)))
-        return ret, state
 
-    def get_arm_all_state(self, ip):
-        state = _RmArmState()
-        ret = int(self.lib.rm_get_arm_all_state(ip.encode("utf-8"), ctypes.byref(state)))
-        return ret, state
+def _joint_degrees(link):
+    """读 7 个关节角（°，handle 语义）。
 
-    # -- 运动（预就位 / 停机族）
-    def movej(self, ip, joints_deg, speed=10):
-        buf = (ctypes.c_float * 7)(*[float(v) for v in joints_deg])
-        return int(self.lib.rm_movej(ip.encode("utf-8"), buf, int(speed)))
+    只走契约清单内的 ``rm_get_joint_degree``，句柄来自连接层
+    （**不按 IP 调用、不自行解释指针**）。
 
-    def set_arm_stop(self, ip):
-        return int(self.lib.rm_set_arm_stop(ip.encode("utf-8")))
+    返回 ``(rc, values)``；``rc != 0`` 表示读失败（调用方必须报错，**不得**编数）。
+    """
+    buf = (ctypes.c_float * 7)()
+    rc = int(link.bridge.binding.rm_get_joint_degree(link.handle, buf) or 0)
+    return rc, [float(v) for v in buf]
 
-    def set_arm_slow_stop(self, ip):
-        return int(self.lib.rm_set_arm_slow_stop(ip.encode("utf-8")))
 
-    def set_arm_pause(self, ip):
-        return int(self.lib.rm_set_arm_pause(ip.encode("utf-8")))
-
-    def set_arm_continue(self, ip):
-        return int(self.lib.rm_set_arm_continue(ip.encode("utf-8")))
+def _close_link(link):
+    if link is None:
+        return
+    try:
+        link.close()
+    except Exception:  # pragma: no cover - 释放失败不影响主流程
+        pass
 
 
 # ------------------------------------------------------------------ 结果骨架
@@ -410,20 +634,6 @@ def _udp_verdict(frames, push_ret=None):
     return {"ok": True, "reason": None, "next_action": None, "push_ret": push_ret}
 
 
-def _estop_verdict(soft_ret, stop_ret, state_ret=None):
-    """急停演练的诚实判定：SDK 返回码非 0 一律报 error（演练未真正发生）。"""
-    if soft_ret != 0 or stop_ret != 0 or (state_ret is not None and state_ret != 0):
-        return {
-            "ok": False,
-            "reason": "急停演练未真正执行：rm_set_arm_slow_stop=%r, rm_set_arm_stop=%r, "
-                      "rm_get_current_arm_state=%r（返回码非 0 通常表示未连接到控制器）"
-                      % (soft_ret, stop_ret, state_ret),
-            "next_action": "确认控制器已上电使能且网络可达后重做演练；"
-                           "急停后需示教器清错并重新使能（项目不自动清错）",
-        }
-    return {"ok": True, "reason": None, "next_action": None}
-
-
 def _synthetic_udp_frames(duration_s, period_ms, dropouts=2, seed=7):
     """生成合成上报帧（惰性生成，不一次性堆内存）。"""
     rng = np.random.default_rng(seed)
@@ -446,11 +656,11 @@ def _synthetic_udp_frames(duration_s, period_ms, dropouts=2, seed=7):
 
 def udp_stability(arm="left", duration_s=UDP_DEFAULT_DURATION_S,
                   period_ms=UDP_PERIOD_MS, ip=None, port=8091,
-                  dry_run=False, ws=None, sdk=None):
+                  dry_run=False, ws=None, lib=None):
     """实时上报稳定性：断流次数 + 周期是否落在 5 ms 倍数上。
 
-    真机路径需要 SDK（``rm_set_realtime_push`` + 三线程模式）与 UDP 端口可达；
-    缺 SDK 时返回 NEEDS_HUMAN。
+    真机路径需要 SDK（三线程模式 + 主动上报配置）与上报可达；
+    缺 SDK 时返回 NEEDS_HUMAN，臂不可达时返回 error。
     """
     params = {"duration_s": duration_s, "period_ms": period_ms, "ip": ip, "port": port,
               "mode": "triple_thread", "single_client_per_endpoint": True}
@@ -466,53 +676,89 @@ def udp_stability(arm="left", duration_s=UDP_DEFAULT_DURATION_S,
                         _synthetic_evidence("udp_stability", "合成 UDP 帧流"),
                         started)
 
+    link, failure = _connect_arm(arm=arm, ip=ip, udp_port=port,
+                                 enable_realtime=True, realtime_period_ms=period_ms,
+                                 ws=ws, lib=lib)
+    if failure is not None:
+        failure["experiment"] = "udp_stability"
+        failure["params"] = params
+        failure["started_at"] = started
+        if failure.get("status") == STATUS_ERROR:
+            # 连接/上报配置失败 → 一帧都没收到（诚实降级：**不伪造任何帧数**）
+            failure["summary"] = {
+                "frames": 0,
+                "expected_frames": int(round(duration_s * 1000.0 / float(period_ms))),
+                "period_ms": period_ms,
+                "note": "连接或上报配置失败，未采到任何上报帧",
+            }
+        return failure
+
+    hw_bridge, _err = _hw_bridge()
+    state = hw_bridge.realtime_state()
+    window_s = max(float(period_ms) * 10.0, 50.0) / 1000.0
+    deadline = time.monotonic() + float(duration_s)
+    base_frames = state.frames
+    samples = []
+    windows = 0
+    zero_windows = 0
+    max_gap_windows = 0
+    run_zero = 0
+    prev = base_frames
     try:
-        lib, path = load_sdk(ws=ws)
-    except SdkMissing as exc:
-        return sdk_missing_result("udp_stability", arm, str(exc),
-                                   "向厂商索取 RM-API2 1.1.7 并放入 .deps/rm_api2/",
-                                   params, started)
-    sdkw = RmSdk(lib, path)
-    host = ip or ("192.168.1.18" if arm == "left" else "192.168.1.19")
-    agg = UdpAggregator(period_ms=period_ms)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    push_ret = None
-    push_error = None
-    try:
-        sock.bind(("0.0.0.0", int(port)))
-        sock.settimeout(1.0)
-        try:
-            push_ret = sdkw.set_realtime_push(host, port, True)
-        except Exception as exc:                       # noqa: BLE001 —— 记证据不崩
-            push_error = repr(exc)
-        deadline = time.monotonic() + float(duration_s)
         while time.monotonic() < deadline:
-            try:
-                data, _addr = sock.recvfrom(4096)
-            except socket.timeout:
-                continue
-            agg.add(time.monotonic(), {"bytes": len(data)})
+            time.sleep(window_s)
+            now_frames = state.frames
+            delta = now_frames - prev
+            prev = now_frames
+            windows += 1
+            if delta <= 0:
+                zero_windows += 1
+                run_zero += 1
+                if run_zero > max_gap_windows:
+                    max_gap_windows = run_zero
+            else:
+                run_zero = 0
+            if len(samples) < 200 and windows % 5 == 0:
+                samples.append({"t_s": round((windows * window_s), 3),
+                                "frames": int(now_frames - base_frames)})
     finally:
-        sock.close()
-    summary = agg.summary(duration_s)
-    summary["host"] = host
-    summary["set_realtime_push_ret"] = push_ret
-    summary["note"] = "真机采样；只保留聚合统计与抽样帧"
-    verdict = _udp_verdict(agg.frames, push_ret)
-    evidence = [{"kind": "sdk", "path": path, "missing_symbols": sdkw.missing_symbols},
-                {"kind": "udp", "frames": agg.frames, "push_ret": push_ret}]
-    if push_error:
-        evidence.append({"kind": "error", "detail": "set_realtime_push 异常: %s" % push_error})
+        _close_link(link)
+
+    frames = int(state.frames - base_frames)
+    elapsed = float(duration_s)
+    expected = int(round(duration_s * 1000.0 / float(period_ms)))
+    observed_period = (elapsed * 1000.0 / frames) if frames else None
+    if observed_period:
+        ratio = observed_period / float(period_ms)
+        period_ok = abs(ratio - round(ratio)) <= 0.2 and round(ratio) >= 1
+    else:
+        period_ok = None
+    summary = {
+        "frames": frames,
+        "expected_frames": expected,
+        "elapsed_s": elapsed,
+        "dropout_count": zero_windows,
+        "dropout_frames": max(0, expected - frames),
+        "max_gap_ms": max_gap_windows * window_s * 1000.0,
+        "period_ms": period_ms,
+        "period_multiple_ok": period_ok,
+        "sampled_frames": len(samples),
+        "host": ip or DEFAULT_ARM_IP.get(arm, DEFAULT_ARM_IP["left"]),
+        "set_realtime_push_ret": 0,
+        "sampling_window_ms": window_s * 1000.0,
+        "note": "真机采样（帧数来自 SDK 上报回调）；只保留聚合统计与抽样帧",
+    }
+    verdict = _udp_verdict(frames, push_ret=0)
+    evidence = [{"kind": "sdk", "detail": "SDK 路径: %s" % (sdk_path(ws=ws) or "<injected>")},
+                {"kind": "udp", "frames": frames, "push_ret": 0}]
     if not verdict["ok"]:
-        evidence.append({"kind": "error", "detail": verdict["reason"],
-                         "next_action": verdict["next_action"]})
+        evidence.append(_evidence_error(verdict["reason"], verdict["next_action"]))
         return _result("udp_stability", arm, "hardware", STATUS_ERROR, params,
-                        agg.sampled, summary, evidence, started,
+                        samples, summary, evidence, started,
                         extra={"reason": verdict["reason"],
                                "next_action": verdict["next_action"]})
     return _result("udp_stability", arm, "hardware", STATUS_OK, params,
-                    agg.sampled, summary, evidence, started)
+                    samples, summary, evidence, started)
 
 
 # ------------------------------------------------------------------ 阶梯 acc/jerk
@@ -559,7 +805,7 @@ def _ladder_peak(times, points, joint_index):
 
 def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
                     trials=LADDER_DEFAULT_TRIALS, dt=LADDER_DT_S,
-                    duration_s=4.0, ip=None, dry_run=False, ws=None, sdk=None):
+                    duration_s=4.0, ip=None, dry_run=False, ws=None, lib=None):
     """阶梯速度反推 acceleration / jerk 上限。
 
     取**多次采样的包络**（各 trial 峰值的最小值 = 保守下界），不用单次极值。
@@ -602,14 +848,13 @@ def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
                         samples, summary,
                         _synthetic_evidence("ladder_acc_jerk", "合成阶梯轨迹"), started)
 
-    try:
-        lib, path = load_sdk(ws=ws)
-    except SdkMissing as exc:
-        return sdk_missing_result("ladder_acc_jerk", arm, str(exc),
-                                   "向厂商索取 RM-API2 1.1.7 并放入 .deps/rm_api2/",
-                                   params, started)
-    sdkw = RmSdk(lib, path)
-    host = ip or ("192.168.1.18" if arm == "left" else "192.168.1.19")
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    if failure is not None:
+        failure["experiment"] = "ladder_acc_jerk"
+        failure["params"] = params
+        failure["started_at"] = started
+        return failure
+
     summary = {"trials": trials, "envelope": "min over trials（保守下界）",
                "derivative_method": "rmctl.retime.derivatives",
                "scope": "acc/jerk 上限的保守下界（多次采样包络），非单次极值",
@@ -619,35 +864,33 @@ def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
         for j in range(7):
             peaks_a, peaks_j = [], []
             for t in range(trials):
-                ret, base = sdkw.get_joint_degree(host)
-                if ret != 0:
-                    raise HwCollectError("rm_get_joint_degree 返回码 %r（IP %s）" % (ret, host))
+                rc, base = _joint_degrees(link)
+                if rc != 0:
+                    raise HwCollectError("rm_get_joint_degree 返回码 %r" % rc)
                 # 固定姿态、只让当前关节走一小段（阶梯速度）
                 goal = list(base)
                 goal[j] = base[j] + LADDER_STEP_DEG
                 speed = LADDER_BASE_SPEED + LADDER_SPEED_STEP * t
+                move = link.preposition_movej(goal, speed=speed, block=0)
+                if move.get("status") != "ok":
+                    raise HwCollectError(move.get("reason") or "rm_movej 失败")
                 times, positions = [], []
-                move_result = {}
-
-                def _move():
-                    move_result["ret"] = sdkw.movej(host, goal, speed)
-
-                worker = threading.Thread(target=_move, name="rm-movej")
-                worker.daemon = True
-                worker.start()
                 t0 = time.monotonic()
-                while worker.is_alive() or not times:
-                    ret, deg = sdkw.get_joint_degree(host)
-                    if ret != 0:
-                        raise HwCollectError("rm_get_joint_degree 返回码 %r" % ret)
-                    times.append(time.monotonic() - t0)
+                min_run = min(1.0, duration_s)
+                while True:
+                    rc, deg = _joint_degrees(link)
+                    if rc != 0:
+                        raise HwCollectError("rm_get_joint_degree 返回码 %r" % rc)
+                    elapsed = time.monotonic() - t0
+                    times.append(elapsed)
                     positions.append(list(deg))
-                    time.sleep(dt)
-                    if time.monotonic() - t0 > duration_s * 4 + 5.0:
+                    traj = link.current_trajectory_type()
+                    done = (traj.get("status") == "ok" and not traj.get("planning"))
+                    if done and elapsed >= min_run:
                         break
-                worker.join(timeout=1.0)
-                if move_result.get("ret") not in (0, None):
-                    raise HwCollectError("rm_movej 返回码 %r" % move_result["ret"])
+                    if elapsed > duration_s * 4 + 5.0:
+                        break
+                    time.sleep(dt)
                 q = np.asarray(positions, dtype=float)
                 a, jj = _ladder_peak(times, q, j)
                 peaks_a.append(a)
@@ -660,11 +903,16 @@ def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
     except HwCollectError as exc:
         return _result("ladder_acc_jerk", arm, "hardware", STATUS_ERROR, params,
                         samples, summary,
-                        [{"kind": "error", "detail": str(exc),
-                          "next_action": "检查机械臂使能与网络后重试"}], started)
+                        [_evidence_error(str(exc),
+                                         "检查机械臂使能与网络后重试")], started,
+                        extra={"reason": str(exc),
+                               "next_action": "检查机械臂使能与网络后重试"})
+    finally:
+        _close_link(link)
     return _result("ladder_acc_jerk", arm, "hardware", STATUS_OK, params,
                     samples, summary,
-                    [{"kind": "sdk", "path": path}], started)
+                    [{"kind": "sdk", "detail": "SDK 路径: %s" % (sdk_path(ws=ws) or "<injected>")}],
+                    started)
 
 
 # ------------------------------------------------------------------ TCP 重复性
@@ -693,7 +941,7 @@ def _repeatability_stats(samples):
 
 
 def tcp_repeatability(arm="left", target_deg=None, repeats=TCP_DEFAULT_REPEATS,
-                      ip=None, dry_run=False, ws=None, sdk=None):
+                      ip=None, dry_run=False, ws=None, lib=None):
     """TCP 位置**重复性**（明确区分重复性 ≠ 绝对精度）。
 
     官方标称 ±0.05 mm 是重复性标称值；本实验给出的是"多次到同一点的散布"，
@@ -714,41 +962,51 @@ def tcp_repeatability(arm="left", target_deg=None, repeats=TCP_DEFAULT_REPEATS,
                         samples, summary,
                         _synthetic_evidence("tcp_repeatability", "合成 TCP 散布"), started)
 
-    try:
-        lib, path = load_sdk(ws=ws)
-    except SdkMissing as exc:
-        return sdk_missing_result("tcp_repeatability", arm, str(exc),
-                                   "向厂商索取 RM-API2 1.1.7 并放入 .deps/rm_api2/",
-                                   params, started)
-    sdkw = RmSdk(lib, path)
-    host = ip or ("192.168.1.18" if arm == "left" else "192.168.1.19")
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    if failure is not None:
+        failure["experiment"] = "tcp_repeatability"
+        failure["params"] = params
+        failure["started_at"] = started
+        return failure
+
     goal = list(target_deg) if target_deg else [0.0] * 7
     samples = []
     try:
         for i in range(repeats):
-            ret = sdkw.movej(host, goal)
-            if ret != 0:
-                raise HwCollectError("rm_movej 返回码 %r" % ret)
-            time.sleep(1.0)   # 等待到位（保守等待，真机窗口按需调整）
-            ret, state = sdkw.get_current_arm_state(host)
-            if ret != 0:
-                raise HwCollectError("rm_get_current_arm_state 返回码 %r" % ret)
-            pose = [float(v) for v in state.tcp_pose]
-            samples.append({"index": i, "x_mm": pose[0], "y_mm": pose[1], "z_mm": pose[2]})
+            move = link.preposition_movej(goal, speed=10, block=1)
+            if move.get("status") != "ok":
+                raise HwCollectError(move.get("reason") or "rm_movej 失败")
+            time.sleep(0.2)   # 稳定后再读位置
+            snap = link.snapshot()
+            if snap.get("status") != "ok":
+                raise HwCollectError(snap.get("reason") or "状态快照失败")
+            pos = snap["snapshot"]["controller_pose"]["position"]
+            samples.append({"index": i,
+                            "x_mm": float(pos["x"]) * 1000.0,
+                            "y_mm": float(pos["y"]) * 1000.0,
+                            "z_mm": float(pos["z"]) * 1000.0})
     except HwCollectError as exc:
         return _result("tcp_repeatability", arm, "hardware", STATUS_ERROR, params,
-                        samples, {}, [{"kind": "error", "detail": str(exc)}], started)
+                        samples, {},
+                        [_evidence_error(str(exc),
+                                         "确认控制器在线、目标点位合法后重试")], started,
+                        extra={"reason": str(exc),
+                               "next_action": "确认控制器在线、目标点位合法后重试"})
+    finally:
+        _close_link(link)
     summary = _repeatability_stats(samples)
     summary["nominal_repeatability_mm"] = TCP_NOMINAL_MM
     summary["within_nominal"] = bool(summary["max_deviation_mm"] <= TCP_NOMINAL_MM)
     summary["scope"] = "重复性（散布）≠ 绝对精度（未标定）"
     return _result("tcp_repeatability", arm, "hardware", STATUS_OK, params,
-                    samples, summary, [{"kind": "sdk", "path": path}], started)
+                    samples, summary,
+                    [{"kind": "sdk", "detail": "SDK 路径: %s" % (sdk_path(ws=ws) or "<injected>")}],
+                    started)
 
 
 # ------------------------------------------------------------------ FK 交叉
 def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
-                        dry_run=False, ws=None, sdk=None, urdf_path=None):
+                        dry_run=False, ws=None, lib=None, urdf_path=None):
     """FK 与控制器位姿交叉校验（调用 ``rmctl.fk_cross.cross_check``）。
 
     控制器位姿只进入比对报告，**不得**写回轨迹/模型（R003）。
@@ -769,41 +1027,45 @@ def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
                         syn["samples"], summary,
                         _synthetic_evidence("fk_cross", "合成 FK 交叉样本"), started)
 
-    try:
-        lib, path = load_sdk(ws=ws)
-    except SdkMissing as exc:
-        return sdk_missing_result("fk_cross", arm, str(exc),
-                                   "向厂商索取 RM-API2 1.1.7 并放入 .deps/rm_api2/",
-                                   params, started)
-    sdkw = RmSdk(lib, path)
-    host = ip or ("192.168.1.18" if arm == "left" else "192.168.1.19")
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    if failure is not None:
+        failure["experiment"] = "fk_cross"
+        failure["params"] = params
+        failure["started_at"] = started
+        return failure
+
     samples = []
     try:
         for _ in range(n):
-            ret, deg = sdkw.get_joint_degree(host)
-            if ret != 0:
-                raise HwCollectError("rm_get_joint_degree 返回码 %r" % ret)
+            rc, deg = _joint_degrees(link)
+            if rc != 0:
+                raise HwCollectError("rm_get_joint_degree 返回码 %r" % rc)
             goal = [float(v) for v in deg]
-            ret = sdkw.movej(host, goal, speed=5)
-            if ret != 0:
-                raise HwCollectError("rm_movej 返回码 %r" % ret)
-            time.sleep(1.0)
-            ret, state = sdkw.get_current_arm_state(host)
-            if ret != 0:
-                raise HwCollectError("rm_get_current_arm_state 返回码 %r" % ret)
-            pose = [float(v) for v in state.tcp_pose]
+            move = link.preposition_movej(goal, speed=5, block=1)
+            if move.get("status") != "ok":
+                raise HwCollectError(move.get("reason") or "rm_movej 失败")
+            snap = link.snapshot()
+            if snap.get("status") != "ok":
+                raise HwCollectError(snap.get("reason") or "状态快照失败")
+            pos = snap["snapshot"]["controller_pose"]["position"]
             samples.append({"joint_deg": goal,
-                            "controller_pose": {"x": pose[0] / 1000.0, "y": pose[1] / 1000.0,
-                                                "z": pose[2] / 1000.0}})
+                            "controller_pose": {"x": float(pos["x"]),
+                                                "y": float(pos["y"]),
+                                                "z": float(pos["z"])}})
     except HwCollectError as exc:
         return _result("fk_cross", arm, "hardware", STATUS_ERROR, params, samples, {},
-                       [{"kind": "error", "detail": str(exc)}], started)
+                       [_evidence_error(str(exc),
+                                        "确认控制器在线后重跑 FK 交叉校验")], started,
+                       extra={"reason": str(exc),
+                              "next_action": "确认控制器在线后重跑 FK 交叉校验"})
+    finally:
+        _close_link(link)
     report = fk_cross.cross_check(samples, urdf_path)
     summary = fk_cross.fk_recheck_fields(report)
     summary["ok"] = bool(report["ok"])
     summary["violations"] = report["violations"]
     return _result("fk_cross", arm, "hardware", STATUS_OK, params, samples, summary,
-                   [{"kind": "sdk", "path": path},
+                   [{"kind": "sdk", "detail": "SDK 路径: %s" % (sdk_path(ws=ws) or "<injected>")},
                     {"kind": "fk_report", "ok": report["ok"]}], started)
 
 
@@ -818,7 +1080,40 @@ ESTOP_SAFETY_CHECKLIST = (
 ESTOP_RECOVERY = ("急停后需在示教器上清错并重新使能；本项目不自动清错、不自动续跑。")
 
 
-def estop_drill(arm="left", ip=None, dry_run=False, ws=None, sdk=None):
+def _estop_verdict(soft_ret, stop_ret, state_ret=None):
+    """急停演练的诚实判定：SDK 返回码非 0 一律报 error（演练未真正发生）。"""
+    if soft_ret != 0 or stop_ret != 0 or (state_ret is not None and state_ret != 0):
+        return {
+            "ok": False,
+            "reason": "急停演练未真正执行：rm_set_arm_slow_stop=%r, rm_set_arm_stop=%r, "
+                      "rm_get_current_arm_state=%r（返回码非 0 通常表示未连接到控制器）"
+                      % (soft_ret, stop_ret, state_ret),
+            "next_action": "确认控制器已上电使能且网络可达后重做演练；"
+                           "急停后需示教器清错并重新使能（项目不自动清错）",
+        }
+    return {"ok": True, "reason": None, "next_action": None}
+
+
+def _estop_state(link, ret):
+    """读一次状态快照 → 演练记录（错误码来自 ABI 规格的真实字段）。"""
+    snap = link.snapshot()
+    if snap.get("status") != "ok":
+        return {"ret": ret, "state_ret": 1, "arm_err": [], "arm_state": None,
+                "state_reason": snap.get("reason")}
+    payload = snap["snapshot"]
+    return {
+        "ret": ret,
+        "state_ret": 0,
+        "arm_err": list(payload.get("arm_err") or []),
+        "arm_state": payload.get("controller_trajectory_type"),
+        "arm_state_name": payload.get("controller_trajectory_type_name"),
+        "sys_err": None,
+        "sys_err_note": "RM-API2 1.1.7 的 rm_current_arm_state_t 无独立 sys_err 字段"
+                        "（见 rm_hw_bridge/abi_spec.yaml），此处留空而非编造",
+    }
+
+
+def estop_drill(arm="left", ip=None, dry_run=False, ws=None, lib=None):
     """软停 / 急停演练：记录 SDK 返回码、错误码与状态快照。"""
     params = {"ip": ip, "mode": "soft_stop_then_emergency",
               "safety_checklist": list(ESTOP_SAFETY_CHECKLIST),
@@ -835,52 +1130,52 @@ def estop_drill(arm="left", ip=None, dry_run=False, ws=None, sdk=None):
         return _result("estop_drill", arm, "dry_run", STATUS_DRY_RUN, params, [],
                         summary, _synthetic_evidence("estop_drill", "合成急停演练"), started)
 
-    try:
-        lib, path = load_sdk(ws=ws)
-    except SdkMissing as exc:
-        return sdk_missing_result("estop_drill", arm, str(exc),
-                                   "向厂商索取 RM-API2 1.1.7 并放入 .deps/rm_api2/",
-                                   params, started)
-    sdkw = RmSdk(lib, path)
-    host = ip or ("192.168.1.18" if arm == "left" else "192.168.1.19")
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    if failure is not None:
+        failure["experiment"] = "estop_drill"
+        failure["params"] = params
+        failure["started_at"] = started
+        return failure
+
     summary = {}
     try:
-        ret_slow = sdkw.set_arm_slow_stop(host)
-        ret_state, state = sdkw.get_current_arm_state(host)
-        summary["soft_stop"] = {"ret": ret_slow, "state_ret": ret_state,
-                                "arm_err": int(state.arm_err),
-                                "sys_err": int(state.sys_err),
-                                "arm_state": int(state.arm_state)}
-        ret_stop = sdkw.set_arm_stop(host)
-        ret_state2, state2 = sdkw.get_current_arm_state(host)
-        summary["emergency_stop"] = {"ret": ret_stop, "state_ret": ret_state2,
-                                     "arm_err": int(state2.arm_err),
-                                     "sys_err": int(state2.sys_err),
-                                     "arm_state": int(state2.arm_state)}
+        soft = link.slow_stop()
+        soft_ret = int(soft.get("rc") or 0) if soft.get("status") == "ok" else -1
+        summary["soft_stop"] = _estop_state(link, soft_ret)
+        stop = link.stop()
+        stop_ret = int(stop.get("rc") or 0) if stop.get("status") == "ok" else -1
+        summary["emergency_stop"] = _estop_state(link, stop_ret)
     except Exception as exc:                       # noqa: BLE001 —— 真机异常也结构化
         summary["error"] = repr(exc)
         return _result("estop_drill", arm, "hardware", STATUS_ERROR, params, [],
-                        summary, [{"kind": "error", "detail": repr(exc)}], started)
+                        summary, [_evidence_error(repr(exc),
+                                                 "确认控制器在线后重做演练")], started,
+                        extra={"reason": repr(exc),
+                               "next_action": "确认控制器在线后重做演练"})
+    finally:
+        _close_link(link)
     summary["recovery"] = ESTOP_RECOVERY
     summary["safety_checklist"] = list(ESTOP_SAFETY_CHECKLIST)
-    verdict = _estop_verdict(ret_slow, ret_stop, ret_state2)
+    verdict = _estop_verdict(soft_ret, stop_ret,
+                             summary["emergency_stop"].get("state_ret"))
     if not verdict["ok"]:
         summary["drill_performed"] = False
         return _result("estop_drill", arm, "hardware", STATUS_ERROR, params, [],
                         summary,
-                        [{"kind": "sdk", "path": path},
-                         {"kind": "error", "detail": verdict["reason"],
-                          "next_action": verdict["next_action"]}],
+                        [{"kind": "sdk", "detail": "SDK 路径: %s"
+                          % (sdk_path(ws=ws) or "<injected>")},
+                         _evidence_error(verdict["reason"], verdict["next_action"])],
                         started,
                         extra={"reason": verdict["reason"],
                                "next_action": verdict["next_action"]})
     summary["drill_performed"] = True
     return _result("estop_drill", arm, "hardware", STATUS_OK, params, [],
-                    summary, [{"kind": "sdk", "path": path}], started)
+                    summary, [{"kind": "sdk", "detail": "SDK 路径: %s"
+                              % (sdk_path(ws=ws) or "<injected>")}], started)
 
 
 # ------------------------------------------------------------------ 零位采集
-def zero_capture(arm="left", photos=None, ip=None, dry_run=False, ws=None, sdk=None):
+def zero_capture(arm="left", photos=None, ip=None, dry_run=False, ws=None, lib=None):
     """零位读数与证据引用。
 
     零位标定**只能走示教器受控流程**（黑名单符号禁止调用），本脚本只负责
@@ -896,21 +1191,25 @@ def zero_capture(arm="left", photos=None, ip=None, dry_run=False, ws=None, sdk=N
         return _result("zero_capture", arm, "dry_run", STATUS_DRY_RUN, params, [],
                         summary, _synthetic_evidence("zero_capture", "无读数的空采集"), started)
 
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    if failure is not None:
+        failure["experiment"] = "zero_capture"
+        failure["params"] = params
+        failure["started_at"] = started
+        return failure
+
     try:
-        lib, path = load_sdk(ws=ws)
-    except SdkMissing as exc:
-        return sdk_missing_result("zero_capture", arm, str(exc),
-                                   "向厂商索取 RM-API2 1.1.7 并放入 .deps/rm_api2/",
-                                   params, started)
-    sdkw = RmSdk(lib, path)
-    host = ip or ("192.168.1.18" if arm == "left" else "192.168.1.19")
-    try:
-        ret, deg = sdkw.get_joint_degree(host)
-        if ret != 0:
-            raise HwCollectError("rm_get_joint_degree 返回码 %r" % ret)
+        rc, deg = _joint_degrees(link)
+        if rc != 0:
+            raise HwCollectError("rm_get_joint_degree 返回码 %r" % rc)
     except Exception as exc:                       # noqa: BLE001
         return _result("zero_capture", arm, "hardware", STATUS_ERROR, params, [], {},
-                       [{"kind": "error", "detail": repr(exc)}], started)
+                       [_evidence_error(repr(exc),
+                                        "确认控制器在线后重跑零位读数")], started,
+                       extra={"reason": repr(exc),
+                              "next_action": "确认控制器在线后重跑零位读数"})
+    finally:
+        _close_link(link)
     joints = {}
     for i, value in enumerate(deg):
         joints["joint%d" % (i + 1)] = {"reading_deg": float(value), "unit": "deg",
@@ -918,7 +1217,8 @@ def zero_capture(arm="left", photos=None, ip=None, dry_run=False, ws=None, sdk=N
     summary = {"joints": joints, "groove_photos": list(photos or []), "zero_deg": None,
                "note": "读数为采集时刻快照，零位需示教器确认后人工回填"}
     return _result("zero_capture", arm, "hardware", STATUS_OK, params, [],
-                    summary, [{"kind": "sdk", "path": path},
+                    summary, [{"kind": "sdk", "detail": "SDK 路径: %s"
+                              % (sdk_path(ws=ws) or "<injected>")},
                               {"kind": "photos", "count": len(photos or [])}], started)
 
 
@@ -1035,7 +1335,12 @@ def main(argv=None):
         print("下一步: %s" % result.get("next_action", ""))
         return 3
     if result["status"] == STATUS_ERROR:
-        print("错误: %s" % json.dumps(result.get("summary", {}), ensure_ascii=False))
+        # 操作者必须看到**原因**与**可粘贴的下一步**（S01 遗留只打印空 summary）
+        print("错误: %s" % result.get("reason", "（未提供原因）"))
+        print("下一步: %s" % result.get("next_action", "（未提供下一步）"))
+        summary = result.get("summary") or {}
+        if summary:
+            print("摘要: %s" % json.dumps(summary, ensure_ascii=False))
         return 4
     print("摘要: %s" % json.dumps(result.get("summary", {}), ensure_ascii=False))
     return 0

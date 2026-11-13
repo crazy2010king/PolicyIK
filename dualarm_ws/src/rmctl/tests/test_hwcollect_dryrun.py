@@ -252,39 +252,106 @@ def test_zero_capture_does_not_fabricate_zero_deg():
 
 
 # ---------------------------------------------------------------- 诚实判定（不得假 ok）
-class _FakeState(object):
-    """假的 rm_arm_current_state_t（仅测试用）。"""
+class _FakeHandle(object):
+    """假句柄：RM-API2 的句柄是结构体指针，id < 0 表示创建失败。"""
 
-    def __init__(self):
-        self.arm_state = 0
-        self.arm_err = 0
-        self.sys_err = 0
-        self.tcp_pose = [0.0] * 6
+    def __init__(self, handle_id=1):
+        self.id = handle_id
 
 
-class _FakeLib(object):
-    """假 SDK：只实现本测试用到的白名单调用。"""
+class _FakeSdk(object):
+    """假 RM-API2（**句柄语义**）：实现 hwcollect 真机路径用到的契约符号。
 
-    def __init__(self, push_ret=0, stop_ret=0, state_ret=0):
+    与 S01 的 ``_FakeLib`` 的关键差别：**没有按 IP 字符串调用的接口**——
+    所有符号都是 ``(handle, ...)`` 形态，与 RM-API2 1.1.7 的真实 ABI 一致。
+    """
+
+    def __init__(self, push_ret=0, stop_ret=0, joint_ret=0):
         self.push_ret = push_ret
         self.stop_ret = stop_ret
-        self.state_ret = state_ret
+        self.joint_ret = joint_ret
+        self.handle = _FakeHandle(1)
+        self.calls = []
 
-    def rm_set_realtime_push(self, ip, port, push):
+    # -- 生命周期
+    def rm_init(self, mode):
+        self.calls.append(("rm_init", mode))
+        return 0
+
+    def rm_create_robot_arm(self, ip, port):
+        self.calls.append(("rm_create_robot_arm", ip, port))
+        return self.handle
+
+    def rm_delete_robot_arm(self, handle):
+        self.calls.append(("rm_delete_robot_arm",))
+        return 0
+
+    def rm_set_realtime_push(self, handle, config):
+        self.calls.append(("rm_set_realtime_push",))
         return self.push_ret
 
-    def rm_set_arm_slow_stop(self, ip):
+    def rm_realtime_arm_state_call_back(self, cb):
+        self.calls.append(("rm_realtime_arm_state_call_back",))
+        return None
+
+    def rm_set_log_call_back(self, cb, level):
+        return None
+
+    # -- 只读
+    def rm_get_joint_degree(self, handle, joints):
+        if self.joint_ret:
+            return self.joint_ret
+        for i in range(7):
+            joints[i] = float(i)
+        return 0
+
+    def rm_get_arm_all_state(self, handle, state_ptr):
+        st = state_ptr.contents
+        for i in range(7):
+            st.joint_current[i] = 100.0 + i
+            st.joint_temperature[i] = 30.0 + i
+            st.joint_voltage[i] = 12.0 + i
+            st.joint_en_flag[i] = 1
+            st.joint_err_code[i] = 0
+        return 0
+
+    def rm_get_current_arm_state(self, handle, state_ptr):
+        st = state_ptr.contents
+        st.pose.position.x = 0.1
+        st.pose.position.y = 0.2
+        st.pose.position.z = 0.3
+        st.pose.quaternion.w = 1.0
+        st.pose.euler.rx = 0.01
+        st.err.err_len = 0
+        return 0
+
+    def rm_get_joint_err_flag(self, handle, err_flag, brake_state):
+        err_flag[0] = 0
+        brake_state[0] = 0
+        return 0
+
+    def rm_get_arm_current_trajectory(self, handle, type_ptr, data):
+        type_ptr[0] = 0
+        return 0
+
+    # -- 运动 / 停机
+    def rm_movej(self, handle, joint, v, r, trajectory_connect, block):
+        self.calls.append(("rm_movej",))
+        return 0
+
+    def rm_set_arm_stop(self, handle):
+        self.calls.append(("rm_set_arm_stop",))
         return self.stop_ret
 
-    def rm_set_arm_stop(self, ip):
+    def rm_set_arm_slow_stop(self, handle):
+        self.calls.append(("rm_set_arm_slow_stop",))
         return self.stop_ret
 
-    def rm_get_current_arm_state(self, ip, out):
-        return self.state_ret
+    def rm_set_arm_pause(self, handle):
+        return 0
 
-
-def _fake_sdk(monkeypatch, lib):
-    monkeypatch.setattr(hwcollect, "load_sdk", lambda *a, **k: (lib, "/fake/libapi_c.so"))
+    def rm_set_arm_continue(self, handle):
+        return 0
 
 
 def test_udp_verdict_rejects_zero_frames():
@@ -310,10 +377,10 @@ def test_estop_verdict_rejects_nonzero_return_code():
     assert v2["ok"] is True
 
 
-def test_udp_stability_reports_error_when_no_frame_arrives(monkeypatch):
+def test_udp_stability_reports_error_when_no_frame_arrives():
     """真机路径收不到帧 → status=error（不是 ok），并给出可粘贴的下一步。"""
-    _fake_sdk(monkeypatch, _FakeLib(push_ret=-1))
-    res = hwcollect.udp_stability(arm="left", ip="192.168.1.18", duration_s=1, port=8099)
+    res = hwcollect.udp_stability(arm="left", ip="192.168.1.18", duration_s=0.2,
+                                  port=8099, lib=_FakeSdk())
     assert res["status"] == hwcollect.STATUS_ERROR
     assert res["summary"]["frames"] == 0
     assert res["reason"]
@@ -321,13 +388,42 @@ def test_udp_stability_reports_error_when_no_frame_arrives(monkeypatch):
     assert any(e.get("kind") == "error" for e in res["evidence"])
 
 
-def test_estop_drill_reports_error_when_sdk_returns_nonzero(monkeypatch):
+def test_estop_drill_reports_error_when_sdk_returns_nonzero():
     """急停演练 SDK 返回码非 0 → status=error，drill_performed=False。"""
-    _fake_sdk(monkeypatch, _FakeLib(stop_ret=-1, state_ret=0))
-    res = hwcollect.estop_drill(arm="left", ip="192.168.1.18")
+    res = hwcollect.estop_drill(arm="left", ip="192.168.1.18", lib=_FakeSdk(stop_ret=-1))
     assert res["status"] == hwcollect.STATUS_ERROR
     assert res["summary"]["drill_performed"] is False
     assert res["reason"]
+
+
+def test_hardware_path_uses_handle_semantics_not_ip_strings():
+    """真机路径走**句柄语义**：SDK 只收到 handle，不按 IP 字符串调用。"""
+    lib = _FakeSdk()
+    res = hwcollect.estop_drill(arm="left", ip="192.168.1.18", lib=lib)
+    names = [c[0] for c in lib.calls]
+    assert "rm_create_robot_arm" in names
+    assert "rm_set_arm_slow_stop" in names
+    # 句柄只出现一次创建，之后都是句柄形态的调用
+    assert names.count("rm_create_robot_arm") == 1
+
+
+def test_whitelist_is_derived_from_contract_core():
+    """白名单来自 contract.yaml 的 core（**不是手写清单**）。"""
+    loader = pytest.importorskip("rm_hw_bridge.loader")
+    contract = loader.load_contract()
+    core = set(loader.core_symbols(contract))
+    assert set(hwcollect.WHITELIST) <= core
+    assert set(hwcollect.WHITELIST)
+    assert not (set(hwcollect.WHITELIST) & set(hwcollect.BLACKLIST))
+
+
+def test_blacklist_comes_from_contract():
+    """黑名单来自 contract.yaml（含零位标定符号与 rm_algo_ 前缀族）。"""
+    loader = pytest.importorskip("rm_hw_bridge.loader")
+    contract = loader.load_contract()
+    assert set(hwcollect.BLACKLIST) == set(loader.blacklist_names(contract))
+    assert "rm_algo_" in loader.blacklist_prefixes(contract)
+    assert "rm_set_joint_zero_pos" in hwcollect.BLACKLIST
 
 
 # ---------------------------------------------------------------- CLI
@@ -352,6 +448,27 @@ def test_cli_needs_human_exit_code_3(tmp_path, monkeypatch):
     data = json.load(open(os.path.join(str(tmp_path), files[0]), encoding="utf-8"))
     assert data["status"] == hwcollect.STATUS_NEEDS_HUMAN
     assert data["next_action"]
+
+
+def test_cli_error_branch_prints_reason_and_next_action(monkeypatch, tmp_path, capsys):
+    """回归护栏：真机路径 status=error 时，CLI 必须打印 reason 与 next_action。
+
+    （S01 遗留只打印空 summary，操作者看不到原因。）
+    """
+    def _fake_connect(**kwargs):
+        failure = hwcollect._failure_result(
+            "connect", kwargs.get("arm", "left"), {}, hwcollect._now_iso(),
+            "控制器不可达（rm_create_robot_arm 句柄 id=-1）",
+            "ping 192.168.1.18 确认控制器在线后重跑",
+        )
+        return None, failure
+
+    monkeypatch.setattr(hwcollect, "_connect_arm", _fake_connect)
+    code = hwcollect.main(["zero_capture", "--out", str(tmp_path)])
+    assert code == 4
+    out = capsys.readouterr().out
+    assert "控制器不可达" in out
+    assert "ping 192.168.1.18" in out
 
 
 def test_cli_rejects_bad_target(tmp_path):
