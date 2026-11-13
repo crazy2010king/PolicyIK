@@ -1,0 +1,115 @@
+# versions.lock —— 本项目唯一的版本真相源（single source of truth）
+#
+# 所有下游工具都必须读取本文件，禁止在脚本里硬编码第二份版本/名单：
+#   tools/gen_constraints.py   → 由本文件生成 constraints/py312.txt、constraints/py310.txt
+#   tools/verify_env.py        → 校验实装版本 vs 本文件声明
+#   scripts/scan_forbidden_apis.py → 禁用名单唯一来源是 forbidden_apis 段
+#   tools/fetch_upstream.py    → 上游 commit 唯一来源是 upstream 段
+#
+# 字段语义：
+#   schema_version  本文件格式版本
+#   baseline        受支持基线（CI medium/nightly 与正式交付以它为准）
+#   fallback        降级档基线（非受支持，仅 fast 档；本机 Python 3.10 只能装 Drake 1.51.1）
+#   packages        除 Drake 外的全部钉死包（Mosek 显式登记，便于许可审计）
+#   upstream        上游资产 commit 锁定
+#   platform        目标平台标签
+#   forbidden_apis  厂商解算接口禁用名单（主链路禁止调用）
+#   allowed_apis    白名单（避免前缀误伤，例如 rm_movej_canfd 是允许的透传接口）
+#   wheels          文件名 → sha256 映射（T03 由 vendor/wheels/SHA256SUMS 回写）
+#
+# 注意：packages 中的版本必须与 constraints/*.txt 完全一致，由 tests/test_env_lock.py 断言。
+
+schema_version: 1
+project: rm75_drake
+
+baseline:
+  profile: py312
+  python: "3.12"
+  python_tag: cp312
+  drake: "1.55.0"
+  supported: true
+  note: >-
+    受支持基线：Ubuntu 22.04/24.04 + Python 3.12 + Drake 1.55.0。
+    medium / nightly 档与正式交付以本档为准。
+
+fallback:
+  profile: py310
+  python: "3.10"
+  python_tag: cp310
+  drake: "1.51.1"
+  supported: false
+  note: >-
+    非受支持基线，仅 fast 档：本机 Python 3.10 无法安装 Drake 1.55.0（requires-python >= 3.12），
+    只能用 1.51.1。数值栈与 baseline 对齐（numpy/scipy 同版本），仅用于快速自检。
+
+packages:
+  mosek:
+    version: "11.1.2"
+    note: >-
+      Drake 硬依赖商业求解器 Mosek（drake 的 requires_dist 为 Mosek==11.1.2）。
+      商业许可限制再分发 → wheel 不得入 git，只落本机 vendor/wheels/ 镜像。
+  robotic_arm:
+    version: "1.1.7"
+    note: >-
+      睿尔曼官方 RM_API2 Python 包（设备层唯一入口）。上游许可未明示，不得照抄 PyPI 的 MIT 字段。
+  toppra:
+    version: "0.6.11"
+    note: 轨迹重定时；本地已装版本，API 与旧版不同（新版用 toppra.SplineInterpolator / reachability-constrained 接口）。
+  numpy:
+    version: "1.26.4"
+    note: 数值栈基石；1.26.4 同时兼容 Drake 1.55.0（numpy2 构建的 ABI 向下兼容）与 Drake 1.51.1。
+  scipy:
+    version: "1.11.4"
+    note: 支持 numpy<1.27 且覆盖 cp310/cp312。
+  matplotlib:
+    version: "3.8.4"
+    note: Drake 依赖；3.8.4 覆盖 cp310/cp312。
+  pydot:
+    version: "3.0.4"
+    note: Drake 依赖（diagram 导出）。
+  pyyaml:
+    version: "6.0.2"
+    note: Drake 依赖 + 本项目 scenario/配置解析。
+
+upstream:
+  rm_models:
+    repo: https://github.com/RealManRobot/rm_models
+    ref: main
+    commit: "cff49bb40f5ed0728505c03bff0e521a0dc21acd"
+    subset: RM75/urdf/RM75-B/
+    note: 官方 RM75-B URDF + STL 网格来源；S01 做定点改造（STL→OBJ、凸包化）。
+  two_finger_gripper:
+    repo: https://github.com/RealManRobot/Two-Finger-Gripper
+    ref: main
+    commit: "91f587b1d4efaab235f3d227ee614b28f35060c9"
+    subset: metadata-only
+    note: 官方两指夹爪硬件/协议参考；OpenAtom Open Hardware License 1.0。
+
+platform:
+  os:
+    - ubuntu 22.04
+    - ubuntu 24.04
+  arch: x86_64
+  platform_tag: manylinux_2_34_x86_64
+  python_tags:
+    - cp312
+    - cp310
+
+forbidden_apis:
+  - rm_movej
+  - rm_movep
+  - rm_movec
+  - rm_moves
+  - rm_movej_follow
+  - rm_movep_canfd
+  - rm_algo_inverse_kinematics
+  - rm_algo_set_7dof_q3_track_angle
+  - rm_algo_enable_q3_tracker
+  - rm_algo_set_dq_weight
+  - rm_algo_set_joint_limit_angle
+
+allowed_apis:
+  - rm_movej_canfd
+  - rm_get_current_joint_current
+
+wheels: {}

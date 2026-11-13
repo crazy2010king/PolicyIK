@@ -1,0 +1,122 @@
+# licenses/registry.yaml —— 依赖与上游资产的许可登记表
+#
+# 用途：
+#   1. 决定哪些二进制（wheel / 归档）可以进 git，哪些只能落本机镜像；
+#   2. 为最终交付的第三方声明（NOTICE / THIRD_PARTY_LICENSES）提供底稿；
+#   3. 供 tools/verify_env.py --forbidden 与 tests/test_env_lock.py 断言。
+#
+# 字段：name / version / license / source / redistributable / usage_note
+#   redistributable: true  → 允许再分发（可考虑入 git 或随产品分发）
+#   redistributable: false → 限制再分发（只能本机镜像，wheel 不得入 git）
+#   license: "未明示"     → 上游未给出明确许可，按最保守口径处理（禁止再分发）
+
+schema_version: 1
+entries:
+  - name: drake
+    version: "1.55.0 (baseline) / 1.51.1 (fallback)"
+    license: BSD-3-Clause
+    source: https://github.com/RussTedrake/drake
+    redistributable: true
+    usage_note: >-
+      Drake 自身是 BSD-3；但其 wheel 内含/依赖商业求解器 Mosek，
+      因此 drake wheel 的再分发受 Mosek 许可约束（见 mosek 条目）。
+      本项目只在 CI/本机安装，不随产品分发 wheel。
+
+  - name: mosek
+    version: "11.1.2"
+    license: "Mosek 商业许可（受限再分发）"
+    source: https://pypi.org/project/mosek/
+    redistributable: false
+    usage_note: >-
+      商业求解器，Drake 的硬依赖（requires_dist: Mosek==11.1.2）。
+      许可限制再分发 → wheel 绝不入 git，只落本机 vendor/wheels/ 离线镜像；
+      交付产品时按 Mosek 许可单独取得授权。
+
+  - name: robotic_arm
+    version: "1.1.7"
+    license: "未明示（RM_API2 官方包）"
+    source: https://pypi.org/project/robotic_arm/
+    redistributable: false
+    usage_note: >-
+      睿尔曼官方 RM_API2 的 Python 封装，上游未明示许可（部分资料标注 MIT，
+      但未见官方 LICENSE 文件）→ 不得照抄 PyPI 元数据里的 MIT 字段，按最保守口径处理：
+      只作为设备层驱动依赖安装，不随产品再分发。
+
+  - name: rm_models
+    version: "commit cff49bb40f5ed0728505c03bff0e521a0dc21acd"
+    license: "未明示"
+    source: https://github.com/RealManRobot/rm_models
+    redistributable: false
+    usage_note: >-
+      官方 URDF + STL 网格来源。上游未明示许可 → 官方网格（models/**/meshes/）
+      不入 git；S01 改造后的模型（STL→OBJ、凸包化碰撞几何）在仓库内自产，
+      并在 third_party/MANIFEST.yaml 记录来源 commit。
+
+  - name: Two-Finger-Gripper
+    version: "commit 91f587b1d4efaab235f3d227ee614b28f35060c9"
+    license: "OpenAtom Open Hardware License 1.0"
+    source: https://github.com/RealManRobot/Two-Finger-Gripper
+    redistributable: true
+    usage_note: >-
+      官方两指夹爪硬件与协议参考（OpenAtom OHL 1.0，允许再分发，需保留许可与版权声明）。
+      仓库内只归档元数据清单与许可文件，不归档大体积二进制。
+
+  - name: toppra
+    version: "0.6.11"
+    license: MIT
+    source: https://pypi.org/project/toppra/
+    redistributable: true
+    usage_note: 轨迹重定时库；MIT 许可，保留版权与许可声明即可。
+
+  - name: constrained-bimanual-planning-example
+    version: "cohnt/constrained-bimanual-planning-example (commit 未锁定，仅方法论参考)"
+    license: MIT
+    source: https://github.com/cohnt/constrained-bimanual-planning-example
+    redistributable: true
+    usage_note: >-
+      双臂最小坐标参数化方法论来源。S05 引用其解析 IK 思路，
+      引用代码需注明出处与 MIT 许可；若直接搬运代码片段须登记 commit。
+
+  - name: manipulation
+    version: "RussTedrake/manipulation (commit 未锁定，仅范式参考)"
+    license: BSD-3-Clause
+    source: https://github.com/RussTedrake/manipulation
+    redistributable: true
+    usage_note: >-
+      scenario YAML 与感知-规划课程范式参考（BSD-3）。
+      S02 场景 schema 参考其风格，但本项目自有 schema，不整份复制。
+
+  - name: numpy
+    version: "1.26.4"
+    license: BSD-3-Clause
+    source: https://pypi.org/project/numpy/
+    redistributable: true
+    usage_note: 数值栈基石；BSD-3。
+
+  - name: scipy
+    version: "1.11.4"
+    license: BSD-3-Clause
+    source: https://pypi.org/project/scipy/
+    redistributable: true
+    usage_note: 优化/数值库；BSD-3。
+
+  - name: matplotlib
+    version: "3.8.4"
+    license: "matplotlib License（BSD 风格，兼容 BSD-3）"
+    source: https://pypi.org/project/matplotlib/
+    redistributable: true
+    usage_note: 仅用于离线绘图/文档；运行时主链路不依赖。
+
+  - name: pydot
+    version: "3.0.4"
+    license: MIT
+    source: https://pypi.org/project/pydot/
+    redistributable: true
+    usage_note: Drake 的 graphviz 依赖；MIT。
+
+  - name: pyyaml
+    version: "6.0.2"
+    license: MIT
+    source: https://pypi.org/project/PyYAML/
+    redistributable: true
+    usage_note: scenario / 配置解析；MIT。

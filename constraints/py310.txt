@@ -1,0 +1,24 @@
+# constraints/py310.txt
+#
+# 由 tools/gen_constraints.py 从 versions.lock 生成 —— 请勿手工编辑。
+# profile      : py310（fallback）
+# python       : 3.10（tag cp310）
+# drake        : 1.51.1
+# supported    : False
+#
+# !! 非受支持基线，仅 fast 档 !!
+# 本档仅用于本机 Python 3.10 的快速自检，正式交付以 baseline 为准。
+#
+# 每个包列出该版本在 PyPI 上与 linux/x86_64 + 当前 Python tag 兼容的所有发行文件
+# 的 sha256，供 pip install --require-hashes 校验。
+# 重新生成： python3 tools/gen_constraints.py
+
+drake==1.51.1 --hash=sha256:26dad57cad2bebe619c9f0a29e1c6aa59f1e15b98c462e5343bd4ee03e187ff9
+matplotlib==3.8.4 --hash=sha256:ecd79298550cba13a43c340581a3ec9c707bd895a6a061a78fa2524660482fc0 --hash=sha256:8aac397d5e9ec158960e31c381c5ffc52ddd52bd9a47717e2a694038167dffea
+mosek==11.1.2 --hash=sha256:5c3566d2a603d94a1773bcd27097c8390dba1d9a1543534f3527deb56f1d0a55
+numpy==1.26.4 --hash=sha256:ffa75af20b44f8dba823498024771d5ac50620e6915abac414251bd971b4529f --hash=sha256:2a02aba9ed12e4ac4eb3ea9421c420301a0c6460d9830d74a9df87efa4912010
+pydot==3.0.4 --hash=sha256:bfa9c3fc0c44ba1d132adce131802d7df00429d1a79cc0346b0a5cd374dbe9c6 --hash=sha256:3ce88b2558f3808b0376f22bfa6c263909e1c3981e2a7b629b65b451eee4a25d
+pyyaml==6.0.2 --hash=sha256:ec031d5d2feb36d1d1a24380e4db6d43695f3748343d99434e6f5f9156aaa2ed --hash=sha256:d584d9ec91ad65861cc08d42e834324ef890a082e591037abe114850ff7bbc3e
+robotic_arm==1.1.7 --hash=sha256:4bce22ccaa2863ac44105a692e0f33e7f145e9dc5657de2736b06c6dbf8ebaa8 --hash=sha256:2c2f6c1f076ae7aa627a023902e1d9ace9c5cb2a30429600dc5169825bdeb0e3
+scipy==1.11.4 --hash=sha256:933baf588daa8dc9a92c20a0be32f56d43faf3d1a60ab11b3f08c356430f6e56 --hash=sha256:90a2b78e7f5733b9de748f589f09225013685f9b218275257f8a8168ededaeaa
+toppra==0.6.11 --hash=sha256:1ec4c5a63a342af852418d703cb756b76e527351e0a62d5492d34dd2e63f014f
