@@ -56,6 +56,210 @@ def _load_traj(path):
         return json.load(fh)
 
 
+# ------------------------------------------------------- 硬件适配层检查项（hw:*）
+#
+# R010：doctor 的每条检查项都要有分级 level + **可粘贴的修复命令**。
+# 本切片（S02）新增的硬件面——SDK 在位 / 22 核心符号 / 白黑名单契约 / 限值来源——
+# 全部收敛到下面 4 条 hw:* 检查项；判定逻辑一律复用硬件适配层（rm_hw_bridge），
+# **不在 rmctl 侧另写一套**（清单与真值都在 rm_hw_bridge 里）。
+
+#: 硬件适配层的 4 条检查项名字（顺序固定）
+HW_CHECK_NAMES = ("hw:sdk", "hw:symbols", "hw:contract", "hw:limits_source")
+
+#: 硬件适配层不可导入时的修复动作（可直接粘贴）
+_HW_PYTHONPATH_ACTION = (
+    "export PYTHONPATH=$PWD/dualarm_ws/src/rm_hw_bridge:$PYTHONPATH  "
+    "# 让 rmctl 看到硬件适配层")
+
+
+def _hw_import(ws=None):
+    """惰性导入硬件适配层的三个模块（loader / audit / limits）。
+
+    返回 ``(mods, error)``：``mods`` 为 ``None`` 时 ``error`` 说明原因
+    （**不把 ImportError 堆栈直接甩给操作者**）。
+    """
+    loader = None
+    first = ""
+    try:
+        from rm_hw_bridge import loader as _loader
+    except Exception as exc:
+        first = repr(exc)
+    else:
+        loader = _loader
+    if loader is None:
+        root = ws or paths.workspace_root()
+        pkg_parent = os.path.join(root, "dualarm_ws", "src", "rm_hw_bridge")
+        if os.path.isdir(pkg_parent) and pkg_parent not in sys.path:
+            sys.path.insert(0, pkg_parent)
+        try:
+            from rm_hw_bridge import loader as _loader
+        except Exception as exc:
+            return None, "%s / 兜底路径 %s: %r" % (first, pkg_parent, exc)
+        loader = _loader
+    try:
+        from rm_hw_bridge import audit as _audit
+        from rm_hw_bridge import limits as _limits
+    except Exception as exc:
+        return None, "导入 rm_hw_bridge.audit/limits 失败: %r" % exc
+    return {"loader": loader, "audit": _audit, "limits": _limits}, ""
+
+
+def _hw_check(name, ok, detail, action, level="INFO"):
+    """构造一条 hw:* 检查项（统一字段：name / ok / detail / action / level）。"""
+    return {"name": name, "ok": bool(ok), "detail": detail,
+            "action": action, "level": level}
+
+
+def _hw_sdk_check(ws):
+    """hw:sdk —— RM-API2 动态库是否在位（.so 路径 + 契约声明版本）。
+
+    缺失是**环境未就位**（不是代码缺陷），因此 level=INFO（不阻塞退出码），
+    但必须给出可粘贴的修复动作。
+    """
+    mods, err = _hw_import(ws)
+    deps_so = os.path.join(ws or "", ".deps", "rm_api2", "libapi_c.so")
+    action = ("export RM_API2_LIB=/abs/path/to/libapi_c.so  "
+              "# 或把 SDK 物化到 %s" % deps_so)
+    if mods is None:
+        return _hw_check("hw:sdk", False,
+                         "硬件适配层 rm_hw_bridge 不可用: %s" % err,
+                         _HW_PYTHONPATH_ACTION)
+    loader = mods["loader"]
+    lib = loader.find_library(ws=ws)
+    if not lib:
+        cands = ", ".join(c for c in loader.sdk_candidates(ws=ws) if c)
+        return _hw_check("hw:sdk", False,
+                         "未找到 RM-API2 动态库（候选: %s）" % (cands or "无"),
+                         action)
+    try:
+        version = str((loader.load_contract().get("sdk") or {}).get("version") or "?")
+    except Exception:
+        version = "?"
+    return _hw_check("hw:sdk", True,
+                     "RM-API2 动态库在位: %s（契约声明版本 %s）" % (lib, version),
+                     "python3 -m rmctl connect --arm left --ip <ip>  "
+                     "# 用该 .so 连真机")
+
+
+def _hw_symbols_check(ws):
+    """hw:symbols —— 22 个核心符号能否在 .so 里解析（用 rm_hw_bridge.loader 绑定）。"""
+    mods, err = _hw_import(ws)
+    if mods is None:
+        return _hw_check("hw:symbols", False,
+                         "硬件适配层 rm_hw_bridge 不可用: %s" % err,
+                         _HW_PYTHONPATH_ACTION)
+    loader = mods["loader"]
+    lib = loader.find_library(ws=ws)
+    if not lib:
+        return _hw_check("hw:symbols", False,
+                         "SDK 未就位，无法校验 22 个核心符号",
+                         "export RM_API2_LIB=/abs/path/to/libapi_c.so  "
+                         "# 先按 hw:sdk 修复 SDK")
+    try:
+        import ctypes
+
+        binding = loader.SymbolBinding(ctypes.CDLL(lib))
+    except Exception as exc:
+        return _hw_check("hw:symbols", False,
+                         "加载 RM-API2 动态库失败: %r" % exc,
+                         "ldd %s  # 检查依赖库是否齐全" % lib,
+                         level="FAIL")
+    core = loader.core_symbols()
+    support = loader.support_symbols()
+    missing = set(binding.missing_symbols)
+    missing_core = [n for n in core if n in missing]
+    missing_support = [n for n in support if n in missing]
+    if missing_core:
+        return _hw_check("hw:symbols", False,
+                         "22 核心符号缺 %d 个: %s"
+                         % (len(missing_core), ", ".join(missing_core)),
+                         "nm -D --defined-only %s | grep rm_  "
+                         "# 核对 .so 导出符号（版本不匹配需换正确 SDK）" % lib,
+                         level="FAIL")
+    detail = "22 核心符号全部可解析（%s）；支持层 %d/%d 可解析" % (
+        lib, len(support) - len(missing_support), len(support))
+    if missing_support:
+        detail += "；缺: %s" % ", ".join(missing_support)
+    return _hw_check("hw:symbols", True, detail,
+                     "python3 -m rmctl connect --arm left --ip <ip>  "
+                     "# 符号齐备，可直接连真机")
+
+
+def _hw_contract_check(root):
+    """hw:contract —— 白名单/黑名单静态审计（跑 rm_hw_bridge.audit 的仓库扫描）。
+
+    有违规 = **阻塞**（FAIL）：黑名单调用会绕过 R003 的厂商解耦红线。
+    """
+    mods, err = _hw_import(root)
+    if mods is None:
+        return _hw_check("hw:contract", False,
+                         "静态审计不可用: %s" % err,
+                         _HW_PYTHONPATH_ACTION, level="FAIL")
+    audit = mods["audit"]
+    try:
+        report = audit.audit_repo(root=root)
+    except Exception as exc:
+        return _hw_check("hw:contract", False,
+                         "静态审计执行失败: %r" % exc,
+                         "python3 -m rm_hw_bridge.audit --repo  # 手动跑审计看具体错误",
+                         level="FAIL")
+    violations = list(report.get("violations") or [])
+    if not violations:
+        return _hw_check("hw:contract", True,
+                         "白/黑名单静态审计零违规（扫描 %d 个 .py）"
+                         % int(report.get("files_scanned") or 0),
+                         "python3 -m rm_hw_bridge.audit --repo  # 复核（退出码 0 = 零违规）")
+    items = []
+    for v in violations[:5]:
+        items.append("%s:%s [%s] %s" % (v.get("path"), v.get("line"),
+                                         v.get("kind"), v.get("message")))
+    return _hw_check("hw:contract", False,
+                     "静态审计发现 %d 项违规: %s" % (len(violations), "; ".join(items)),
+                     "python3 -m rm_hw_bridge.audit --repo  "
+                     "# 逐条打印违规（文件:行: [kind] 说明），修复后重跑 rmctl doctor",
+                     level="FAIL")
+
+
+def _hw_limits_source_check(ws):
+    """hw:limits_source —— 下发限值的默认值来源是不是**实测**基线。
+
+    口径复用 rm_hw_bridge.limits.load_limit_defaults（硬件层的唯一判定口）：
+    status=measured 才算就绪；blocked/placeholder 都**拒绝下发**。
+    未实测只是「真机窗口还没到」，level=INFO，不阻塞退出码。
+    """
+    mods, err = _hw_import(ws)
+    if mods is None:
+        return _hw_check("hw:limits_source", False,
+                         "硬件适配层 rm_hw_bridge 不可用: %s" % err,
+                         _HW_PYTHONPATH_ACTION)
+    limits = mods["limits"]
+    try:
+        rep = limits.load_limit_defaults(ws=ws)
+    except Exception as exc:
+        return _hw_check("hw:limits_source", False,
+                         "读取限值默认来源失败: %r" % exc,
+                         "python3 -m rmctl baseline check  # 先看基线齐备度")
+    status = str(rep.get("status") or "unknown")
+    source = str(rep.get("source") or "")
+    detail = "限值默认来源 status=%s source=%s" % (status, source or "<空>")
+    ok = status == "measured"
+    if not ok:
+        detail += "（%s）" % (rep.get("reason") or "基线未实测")
+    return _hw_check("hw:limits_source", ok, detail,
+                     "python3 dualarm_ws/src/rm_description/scripts/apply_measured_limits.py "
+                     "--dry-run  # 真机窗口回填 measured_limits.yaml 后把 status 改为 measured")
+
+
+def _hw_checks(ws):
+    """4 条 hw:* 检查项（顺序固定：sdk → symbols → contract → limits_source）。"""
+    return [
+        _hw_sdk_check(ws),
+        _hw_symbols_check(ws),
+        _hw_contract_check(ws),
+        _hw_limits_source_check(ws),
+    ]
+
+
 # ---------------------------------------------------------------- commands
 def cmd_init(args):
     """生成工位骨架 + 体检清单（设计 §6.6）。"""
@@ -165,6 +369,10 @@ def cmd_doctor(args):
     except Exception as exc:
         add("baselines:present", False, repr(exc),
             "python3 -m rmctl baseline scaffold")
+
+    # 硬件适配层（rm_hw_bridge）4 条：SDK 在位 / 22 符号 / 契约静态审计 / 限值来源
+    for chk in _hw_checks(ws):
+        add(chk["name"], chk["ok"], chk["detail"], chk["action"], chk["level"])
 
     ok = sum(1 for c in checks if c["ok"])
     print("体检结果: %d/%d 通过\n" % (ok, len(checks)))

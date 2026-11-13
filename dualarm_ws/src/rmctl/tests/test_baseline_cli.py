@@ -207,7 +207,12 @@ def test_doctor_limits_measured_reports_blocked_status(capsys, repo_root):
 
 
 def test_doctor_check_count_increased_by_two(capsys, repo_root):
-    """doctor 的检查项从 9 条增加到 11 条（hardware:connected 是 INFO 占位，不计入）。"""
+    """doctor 的检查项数：**稳健断言**（≥11 条 + 关键项在列）。
+
+    早期版本断言"恰好 11 条"，但检查项总数会随本切片（S02 新增 4 条 hw:*）
+    与本机环境（是否加载到厂商库 → model:load/fk/collision 是否有）漂移，
+    脆断。改为：非占位检查项 ≥ 11，且基线两项与 4 条 hw:* 都必须在列。
+    """
     _, out = _run(capsys, ["--ws", repo_root, "doctor"])
     names = []
     for line in out.splitlines():
@@ -218,8 +223,10 @@ def test_doctor_check_count_increased_by_two(capsys, repo_root):
                 names.append(rest.split()[0])
     assert "baselines:present" in names
     assert "limits:measured" in names
+    for hw in ("hw:sdk", "hw:symbols", "hw:contract", "hw:limits_source"):
+        assert hw in names, (hw, names)
     checked = [n for n in names if n != "hardware:connected"]
-    assert len(checked) == 11, checked
+    assert len(checked) >= 11, checked
 
 
 def test_doctor_baselines_present_reports_fix_command(capsys, tmp_workspace, repo_root):
