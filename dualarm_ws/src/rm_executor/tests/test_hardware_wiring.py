@@ -6,10 +6,13 @@
 * ``UdpFeedback`` 对接真实 ``rm_hw_bridge.bridge.realtime_state()``
   （``latest_joint_state()`` 拷贝语义）——真机路径的接线闭环；
 * ``BridgeTransport`` 在 ArmLink 未连接时返回 blocked 且 **0 次 SDK 调用**；
-* 执行层**不 import rmctl**、**不 import tesseract***（import 后 sys.modules 检查）。
+* 执行层**不 import rmctl**、**不 import tesseract***（干净子进程里 import 后检查
+  ``sys.modules``，避免三包合跑时的会话污染假失败）。
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 
 import pytest
@@ -166,10 +169,52 @@ def test_live_feedback_factory_builds_pump():
 
 # ------------------------------------------------------------------ 分层红线
 def test_executor_does_not_import_rmctl_or_tesseract():
-    """执行层不得 import rmctl / tesseract*（import 后 sys.modules 检查）。"""
-    import rm_executor  # noqa: F401
-    from rm_executor import clock, contract, events, executor, metrics  # noqa: F401
-    from rm_executor import report, resample  # noqa: F401
+    """执行层不得 import rmctl / tesseract*。
 
-    assert "rmctl" not in sys.modules
-    assert not [m for m in sys.modules if m.split(".")[0].startswith("tesseract")]
+    **在干净子进程里检查**：本用例与 rmctl 的用例同属一次 pytest 会话时，
+    rmctl 早已被别的用例 import 进 ``sys.modules``——在进程内直接断言
+    ``"rmctl" not in sys.modules`` 判的是**会话状态**而不是执行层的依赖，
+    会产生假失败（三包合跑时必现）。因此这里用子进程复现「只 import
+    rm_executor」的真实场景。
+    """
+    pkg_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    repo_root = os.path.abspath(os.path.join(pkg_src, "..", "..", ".."))
+    hw_src = os.path.join(repo_root, "dualarm_ws", "src", "rm_hw_bridge")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [pkg_src, hw_src] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else [])
+    )
+    code = (
+        "import sys\n"
+        "import rm_executor\n"
+        "from rm_executor import clock, contract, events, executor, metrics\n"
+        "from rm_executor import report, resample\n"
+        "bad = [m for m in sys.modules\n"
+        "       if m.split('.')[0] == 'rmctl' or m.split('.')[0].startswith('tesseract')]\n"
+        "print(','.join(bad))\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], env=env,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "", (
+        "执行层 import 后出现了禁止依赖: %s" % proc.stdout.strip())
+
+
+def test_executor_sources_have_no_forbidden_imports():
+    """静态红线：执行层源码里不得出现 ``import rmctl`` / ``import tesseract``。"""
+    pkg_src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    offenders = []
+    for root, _dirs, files in os.walk(pkg_src):
+        if os.path.basename(root) in ("__pycache__", "tests"):
+            continue
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(root, name)
+            with open(path, "r", encoding="utf-8") as fh:
+                text = fh.read()
+            for needle in ("import rmctl", "import tesseract",
+                           "from rmctl", "from tesseract"):
+                if needle in text:
+                    offenders.append("%s: %s" % (path, needle))
+    assert not offenders, offenders

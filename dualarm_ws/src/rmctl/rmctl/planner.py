@@ -6,6 +6,12 @@ import time
 
 import numpy as np
 
+from .vendor_env import ensure_libstdcxx
+
+# 厂商 nanobind wheel 需要 GLIBCXX_3.4.31+：先预加载仓库自带的
+# .deps/libstdcxx（只读引用），再 import 厂商库。
+ensure_libstdcxx()
+
 from tesseract_robotics.planning import (JointTarget, CartesianTarget, MotionProgram, TaskComposer)
 from tesseract_robotics.planning.profiles import create_freespace_pipeline_profiles
 

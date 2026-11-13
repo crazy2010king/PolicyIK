@@ -4,6 +4,12 @@
 """
 import numpy as np
 
+from .vendor_env import ensure_libstdcxx
+
+# 厂商 nanobind wheel 需要 GLIBCXX_3.4.31+：先预加载仓库自带的
+# .deps/libstdcxx（只读引用），再 import 厂商库。
+ensure_libstdcxx()
+
 from tesseract_robotics.tesseract_collision import (ContactRequest, ContactResultMap,
                                                      ContactTestType)
 

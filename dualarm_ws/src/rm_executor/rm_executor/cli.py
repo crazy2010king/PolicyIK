@@ -17,7 +17,9 @@
   完整的「预就位 → 流式 → 到位」），合并成一份等效时长的报告；
 * ``--realtime`` —— 用真实墙钟（``TickClock``）而不是确定性 ``ManualClock``；
 * ``--allow-unverified`` —— 仅供**离线假执行**放行缺 ``verify`` 的轨迹
-  （真机路径**拒绝**该放行）。
+  （真机路径**拒绝**该放行）；
+* ``--inject`` —— **仅离线 fake**：受控故障注入（跟随误差 / 反馈断流 /
+  控制器抢轨迹），用于离线复跑异常判定路径；真机路径**拒绝**任何注入。
 
 **退出码**沿用 ``rm_hw_bridge.errors`` 口径：``0`` ok / ``3`` blocked /
 ``4`` error。
@@ -38,6 +40,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 from rm_executor import contract
+from rm_executor import injection as injection_mod
 from rm_executor import metrics as metrics_mod
 from rm_executor import report as report_mod
 from rm_executor.clock import ManualClock, TickClock
@@ -58,6 +61,9 @@ DEFAULT_PERIOD_S = 0.010
 
 #: 真机反馈采集周期（秒）—— 落在计划 §5.7 的 10–20 ms 区间
 LIVE_FEEDBACK_PERIOD_S = 0.015
+
+#: 离线假传输的**调用记录保留上限**（长跑时防内存无界增长；计数不受影响）
+FAKE_CALL_RECORD_LIMIT = 2000
 
 #: status 严重度排序（合并多轮报告时取最严重者）
 _STATUS_RANK = {
@@ -250,7 +256,8 @@ def execute(mode: str = "fake",
             ip: Optional[str] = None,
             port: Optional[int] = None,
             udp_port: Optional[int] = None,
-            ws: Optional[str] = None) -> Dict[str, Any]:
+            ws: Optional[str] = None,
+            injections: Optional[List[str]] = None) -> Dict[str, Any]:
     """跑一次执行，返回**统一报告**（fake / live 同一 schema）。
 
     本函数**不抛裸异常**：任何失败都变成 ``status=blocked|error`` 的报告
@@ -272,6 +279,25 @@ def execute(mode: str = "fake",
             "报告的轨迹，再在真机路径执行",
             ["--allow-unverified 在 live 模式被拒绝"], mode)
 
+    # -- 故障注入解析（只在离线 fake 开放）
+    injection_specs: List[Dict[str, Any]] = []
+    for spec in (injections or []):
+        try:
+            injection_specs.append(injection_mod.parse_injection(spec))
+        except ValueError as exc:
+            return _failure_report(
+                contract.STATUS_BLOCKED,
+                "故障注入规格非法：%s" % exc,
+                "用法：--inject follow_error:<deg> | --inject feedback_stall:<ms> "
+                "| --inject controller_conflict",
+                ["注入规格: %r" % spec], mode)
+    if injection_specs and mode == "live":
+        return _failure_report(
+            contract.STATUS_BLOCKED,
+            "真机路径不接受故障注入（--inject 仅限离线 fake）",
+            "去掉 --inject 后重跑；故障注入只能用于离线复跑异常判定路径",
+            ["--inject 在 live 模式被拒绝"], mode)
+
     config, _config_error = _load_config(ws)
 
     # -- 轨迹时长（用于 --duration 的长跑轮数）；加载失败时**交给执行器自己
@@ -292,7 +318,7 @@ def execute(mode: str = "fake",
                                ws, duration_s)
         else:
             report = _run_fake(trajectory_path, config, ws, allow_unverified,
-                               realtime, legs)
+                               realtime, legs, injection_specs)
     except Exception as exc:  # noqa: BLE001 - 兜底：异常 → error 报告
         report = _failure_report(
             contract.STATUS_ERROR,
@@ -304,14 +330,19 @@ def execute(mode: str = "fake",
 
 def _run_fake(trajectory_path: str, config: Optional[ExecutorConfig],
               ws: Optional[str], allow_unverified: bool, realtime: bool,
-              legs: int) -> Dict[str, Any]:
+              legs: int,
+              injections: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """离线假执行（零真机依赖）；长跑 = 重复执行 ``legs`` 轮后合并报告。"""
     reports: List[Dict[str, Any]] = []
     jitter_samples: List[float] = []
     follow_errors: List[float] = []
     for leg in range(max(1, int(legs))):
-        transport = FakeTransport()
+        # 调用记录**有界**（长跑 600 s @100 Hz ≈ 6 万次下发）：计数不受影响
+        transport = FakeTransport(max_records=FAKE_CALL_RECORD_LIMIT)
         feedback = _mirror_feedback(transport, DEFAULT_PERIOD_S)
+        if injections:
+            transport, feedback = injection_mod.apply_injections(
+                transport, feedback, injections, period_s=DEFAULT_PERIOD_S)
         clock = (TickClock(period_s=DEFAULT_PERIOD_S) if realtime
                  else ManualClock(period_s=DEFAULT_PERIOD_S))
         # config=None → 执行器自己按 ws 读工位配置（读不到就记 NEEDS_PARAM 事件）
@@ -328,6 +359,8 @@ def _run_fake(trajectory_path: str, config: Optional[ExecutorConfig],
     merged.setdefault("evidence", []).append(
         "mode=fake：抖动与跟随误差来自虚拟时钟 + 理想跟随模型（代理值），"
         "**不代表真机结论**")
+    for line in injection_mod.describe(injections or []):
+        merged.setdefault("evidence", []).append(line)
     return merged
 
 
@@ -422,6 +455,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--udp-port", dest="udp_port", type=int, default=None,
                         help="控制器 UDP 主动上报端口")
     parser.add_argument("--ws", default=None, help="工作区根（默认自动发现或 $RM_WS）")
+    parser.add_argument("--inject", action="append", default=None, metavar="SPEC",
+                        help="离线故障注入（可重复，仅 fake）："
+                             "follow_error:<deg> / feedback_stall:<ms> / "
+                             "controller_conflict")
     return parser
 
 
@@ -453,7 +490,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                   ip=args.ip,
                   port=args.port,
                   udp_port=args.udp_port,
-                  ws=args.ws)
+                  ws=args.ws,
+                  injections=list(args.inject or []))
     rc = contract.EXIT_CODES.get(rep.get("status"), 4)
     if args.report:
         try:
