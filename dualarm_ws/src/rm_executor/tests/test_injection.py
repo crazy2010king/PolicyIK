@@ -68,7 +68,8 @@ def test_sample_trajectory_rejects_bad_args(tmp_path):
 def test_parse_injection_accepts_three_kinds():
     specs = [inj_mod.parse_injection(s) for s in
              ("follow_error:6", "feedback_stall:250", "controller_conflict")]
-    assert [s["kind"] for s in specs] == list(inj_mod.INJECTION_KINDS)
+    # 既有三类的**种类名与顺序不变**（S04 只是在其后追加了新注入种类）
+    assert [s["kind"] for s in specs] == list(inj_mod.INJECTION_KINDS[:3])
     assert specs[0]["value"] == 6.0
     assert specs[1]["value"] == 250.0
     assert specs[2]["value"] is None

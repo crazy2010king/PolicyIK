@@ -288,8 +288,10 @@ def execute(mode: str = "fake",
             return _failure_report(
                 contract.STATUS_BLOCKED,
                 "故障注入规格非法：%s" % exc,
-                "用法：--inject follow_error:<deg> | --inject feedback_stall:<ms> "
-                "| --inject controller_conflict",
+                "用法：--inject follow_error:<deg> | --inject follow_error_light:<deg> "
+                "| --inject feedback_stall:<ms> | --inject controller_conflict "
+                "| --inject limit_exceeded:<deg> | --inject collision:<code> "
+                "| --inject protection_stop",
                 ["注入规格: %r" % spec], mode)
     if injection_specs and mode == "live":
         return _failure_report(
@@ -458,7 +460,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--inject", action="append", default=None, metavar="SPEC",
                         help="离线故障注入（可重复，仅 fake）："
                              "follow_error:<deg> / feedback_stall:<ms> / "
-                             "controller_conflict")
+                             "controller_conflict / follow_error_light:<deg> / "
+                             "limit_exceeded:<deg> / collision:<code> / "
+                             "protection_stop")
     return parser
 
 
