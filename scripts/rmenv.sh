@@ -4,7 +4,8 @@
 set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export RM_WS="$ROOT"
-export PYTHONPATH="$ROOT/dualarm_ws/src/rmctl:${PYTHONPATH:-}"
+# 硬件适配层 rm_hw_bridge（厂商解耦层）也加入 PYTHONPATH（**追加**，不替换 rmctl）
+export PYTHONPATH="$ROOT/dualarm_ws/src/rmctl:$ROOT/dualarm_ws/src/rm_hw_bridge:${PYTHONPATH:-}"
 # nanobind 0.35 wheel 需要 GLIBCXX_3.4.31+（本机系统 libstdc++ 只有 3.4.30）。
 # 优先用本 checkout 自带的 .deps/libstdcxx；缺失时按相对路径【只读】引用同一仓库
 # 其它 checkout 的 .deps/libstdcxx（worktree 布局为 $ROOT/../../.deps/libstdcxx，
