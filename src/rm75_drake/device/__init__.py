@@ -11,6 +11,8 @@
   :class:`~rm75_drake.device.transport.ArmTransport` 协议 +
   真机实现 :class:`~rm75_drake.device.transport.SdkTransport` +
   离线替身 :class:`~rm75_drake.device.transport.ScriptedTransport`。
+* :mod:`rm75_drake.device.safety` —— **安全七闸**（纯函数）：
+  输入 = 上一拍指令 + 本拍状态，输出 = 钳位后指令 + 违规列表。
 
 本包**零 pydrake 依赖**（只依赖 numpy + 本项目的轨迹/路径层），
 因此安全七闸 / 状态机 / 执行环 / 恢复流程都能在无 SDK、无真机的环境里被测试。
@@ -48,6 +50,34 @@ from .sdk import (
     probe_capabilities,
     rad_to_deg,
     sdk_available,
+)
+from .safety import (
+    ACTION_CLAMP,
+    ACTION_PROCEED,
+    ACTION_SLOW_STOP,
+    ACTION_STOP,
+    ALL_REASONS,
+    REASON_ACCEL_CLAMP,
+    REASON_CURRENT,
+    REASON_DELTA_CLAMP,
+    REASON_FENCE,
+    REASON_SOFT_LIMIT,
+    REASON_STATE_AGE,
+    REASON_WATCHDOG,
+    SafetyLimits,
+    SafetyResult,
+    SafetyState,
+    SafetyViolation,
+    apply_safety,
+    gate_accel_clamp,
+    gate_current,
+    gate_delta_clamp,
+    gate_fence,
+    gate_soft_limit,
+    gate_state_age,
+    gate_watchdog,
+    load_safety_limits,
+    safety_limits_from_sources,
 )
 from .transport import (
     REASON_CLOSED,
@@ -107,4 +137,31 @@ __all__ = [
     "REASON_LINK_DOWN",
     "REASON_INVALID_INPUT",
     "REASON_GRIPPER_OFFLINE",
+    # safety
+    "SafetyLimits",
+    "SafetyState",
+    "SafetyViolation",
+    "SafetyResult",
+    "apply_safety",
+    "gate_soft_limit",
+    "gate_delta_clamp",
+    "gate_accel_clamp",
+    "gate_watchdog",
+    "gate_current",
+    "gate_fence",
+    "gate_state_age",
+    "safety_limits_from_sources",
+    "load_safety_limits",
+    "REASON_SOFT_LIMIT",
+    "REASON_DELTA_CLAMP",
+    "REASON_ACCEL_CLAMP",
+    "REASON_WATCHDOG",
+    "REASON_CURRENT",
+    "REASON_FENCE",
+    "REASON_STATE_AGE",
+    "ALL_REASONS",
+    "ACTION_PROCEED",
+    "ACTION_CLAMP",
+    "ACTION_SLOW_STOP",
+    "ACTION_STOP",
 ]
