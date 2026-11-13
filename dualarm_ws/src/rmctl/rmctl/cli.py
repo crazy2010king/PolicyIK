@@ -4,9 +4,12 @@
 同一实现、两种入口：每个子命令既能一次性执行（脚本/CI），也能在 repl 里连续用（交互）。
 """
 import argparse
+import contextlib
+import ipaddress
 import json
 import os
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -629,6 +632,244 @@ def cmd_bench(args):
     return 0
 
 
+# ---------------------------------------------------------------- connect
+def _import_rm_hw_bridge(ws=None):
+    """惰性导入 ``rm_hw_bridge``（硬件适配层），失败时按仓库布局兜底。
+
+    返回 ``(module, error_reason)``：``module`` 为 ``None`` 时 ``error_reason``
+    说明为什么不可用（**不允许把 ImportError 堆栈直接甩给操作者**）。
+
+    兜底顺序：
+    1. ``import rm_hw_bridge``（已在 PYTHONPATH 里：``scripts/rmenv.sh`` 已加）；
+    2. 把 ``<repo>/dualarm_ws/src/rm_hw_bridge`` 插入 ``sys.path`` 再试。
+    """
+    try:
+        import rm_hw_bridge  # noqa: F401
+        import rm_hw_bridge.bridge  # noqa: F401
+        return rm_hw_bridge, ""
+    except Exception as exc:
+        first = repr(exc)
+    root = ws or paths.workspace_root()
+    pkg_parent = os.path.join(root, "dualarm_ws", "src", "rm_hw_bridge")
+    if os.path.isdir(pkg_parent) and pkg_parent not in sys.path:
+        sys.path.insert(0, pkg_parent)
+        try:
+            import rm_hw_bridge  # noqa: F401
+            import rm_hw_bridge.bridge  # noqa: F401
+            return rm_hw_bridge, ""
+        except Exception as exc:
+            first = "%s / 兜底路径 %s: %r" % (first, pkg_parent, exc)
+    return None, first
+
+
+@contextlib.contextmanager
+def _quiet_stdout_fd():
+    """把 **fd 1** 重定向到临时文件。
+
+    RM-API2 的噪声是 **C 层 printf**（``[rm_create_robot_arm] socket connect err!``），
+    Python 层的 ``contextlib.redirect_stdout`` 拦不住；只有重定向文件描述符才行。
+    ``rmctl connect --json`` 的输出必须是**单个可 json.loads 的对象**，
+    任何一行 SDK 噪声都会让它解析失败。
+    """
+    sys.stdout.flush()
+    saved = os.dup(1)
+    tmp = tempfile.TemporaryFile()
+    try:
+        os.dup2(tmp.fileno(), 1)
+        yield tmp
+    finally:
+        sys.stdout.flush()
+        os.dup2(saved, 1)
+        os.close(saved)
+
+
+def _valid_ip(ip):
+    try:
+        ipaddress.ip_address(str(ip))
+    except ValueError:
+        return False
+    return True
+
+
+def _network_plan(ws):
+    """读网络规划基线（缺失 → ``None``）。只读 yaml，不做校验。"""
+    path = os.path.join(paths.baselines_dir(ws), "network_plan.yaml")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return yaml.safe_load(fh) or {}
+    except Exception:
+        return None
+
+
+def cmd_connect(args):
+    """`rmctl connect`：连真机并输出可信状态快照（R004 全字段）。
+
+    退出码：0 成功 / 2 输入非法 / 3 blocked（缺 SDK 等）/ 4 error（臂不可达等）。
+    """
+    ws = args.ws or paths.workspace_root()
+    arm = getattr(args, "arm", "left") or "left"
+    plan = _network_plan(ws)
+    arms = (plan or {}).get("arms") or {}
+    arm_plan = arms.get(arm) or {}
+
+    # ---- 参数解析与校验（非法 → 2）
+    ip = getattr(args, "ip", None) or arm_plan.get("ip")
+    port = getattr(args, "port", None)
+    port = int(port) if port else int(arm_plan.get("tcp_port") or 8080)
+    udp_port = getattr(args, "udp_port", None)
+    udp_port = int(udp_port) if udp_port else int(arm_plan.get("udp_port") or 0)
+    period_ms = int(((plan or {}).get("realtime_report") or {}).get("period_ms") or 5)
+
+    invalid = []
+    if not ip:
+        invalid.append("--ip 未指定，且 network_plan.yaml 里没有 arms.%s.ip" % arm)
+    elif not _valid_ip(ip):
+        invalid.append("非法 IP: %r" % ip)
+    if not (0 < port < 65536):
+        invalid.append("非法端口: %r" % port)
+    if udp_port and not (0 < udp_port < 65536):
+        invalid.append("非法 UDP 端口: %r" % udp_port)
+    if invalid:
+        for msg in invalid:
+            print("参数非法: %s" % msg, file=sys.stderr)
+        print("→ 修复: rmctl connect --arm %s --ip <ip> --port 8080 --udp-port <port>"
+              % arm, file=sys.stderr)
+        return 2
+
+    ip_source = "参数 --ip" if getattr(args, "ip", None) else (
+        "workcell/baselines/network_plan.yaml（arms.%s.ip，status=%s，**未实测连通**）"
+        % (arm, (plan or {}).get("status") or "unknown"))
+    baseline_status = (plan or {}).get("status") or "unknown"
+
+    # ---- 惰性导入硬件层（不可用 → 3，可粘贴修复动作）
+    hw, import_error = _import_rm_hw_bridge(ws)
+    if hw is None:
+        payload = {
+            "status": "blocked",
+            "reason": "硬件适配层 rm_hw_bridge 不可用：%s" % import_error,
+            "next_action": (
+                "把硬件适配层加入 PYTHONPATH 后重跑："
+                "export PYTHONPATH=%s:$PYTHONPATH" % os.path.join(
+                    ws, "dualarm_ws", "src", "rm_hw_bridge")),
+            "evidence": [import_error],
+            "mode": "connect",
+            "arm": arm,
+            "ip": ip,
+            "port": port,
+            "udp_port": udp_port,
+            "ip_source": ip_source,
+            "baseline_status": baseline_status,
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print("被阻塞: %s" % payload["reason"], file=sys.stderr)
+            print("→ 下一步: %s" % payload["next_action"], file=sys.stderr)
+        return 3
+
+    # ---- dry-run：走通参数/基线/路径解析，但**不连真机**
+    if getattr(args, "dry_run", False):
+        lib_path = hw.loader.find_library(ws=ws)
+        payload = {
+            "status": "ok",
+            "reason": "dry-run：已解析连接参数与基线，**未连接真机**（无任何实测数值）",
+            "next_action": "去掉 --dry-run 即尝试真实连接（真机窗口内执行）",
+            "evidence": [
+                "sdk: %s" % (lib_path or "未找到 RM-API2 动态库（真机路径会 blocked）"),
+                "network_plan.status=%s" % baseline_status,
+            ],
+            "mode": "dry_run",
+            "arm": arm,
+            "ip": ip,
+            "port": port,
+            "udp_port": udp_port,
+            "realtime_period_ms": period_ms,
+            "ip_source": ip_source,
+            "baseline_status": baseline_status,
+        }
+        if getattr(args, "json", False):
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print("dry-run（未连真机）")
+            print("  臂      : %s" % arm)
+            print("  控制器  : %s:%d（TCP） / UDP %d" % (ip, port, udp_port))
+            print("  上报周期: %d ms" % period_ms)
+            print("  IP 来源 : %s" % ip_source)
+            print("  基线    : status=%s" % baseline_status)
+            print("  SDK     : %s" % (lib_path or "未找到"))
+            print("→ 下一步: rmctl connect --arm %s --json" % arm)
+        return 0
+
+    # ---- 真机路径（SDK 的 C 层噪声必须隔离在 fd 1 之外）
+    with _quiet_stdout_fd():
+        link = hw.bridge.connect(
+            ip=ip, port=port, udp_port=udp_port or None,
+            enable_realtime=True, ws=ws, arm=arm,
+            realtime_period_ms=period_ms,
+            realtime_target_port=udp_port or None,
+        )
+        result = link.to_dict()
+        if link.status == "ok":
+            snap = link.snapshot()
+            result = dict(result)
+            result.update({
+                "status": snap["status"],
+                "reason": snap["reason"],
+                "next_action": snap["next_action"],
+                "evidence": list(result.get("evidence") or []) + list(snap.get("evidence") or []),
+            })
+            if snap.get("snapshot") is not None:
+                result["snapshot"] = snap["snapshot"]
+            else:
+                result["snapshot"] = None
+        link.close()
+
+    result.update({
+        "mode": "connect",
+        "arm": arm,
+        "ip": ip,
+        "port": port,
+        "udp_port": udp_port,
+        "realtime_period_ms": period_ms,
+        "ip_source": ip_source,
+        "baseline_status": baseline_status,
+    })
+    result.setdefault("snapshot", None)
+    code = {"ok": 0, "blocked": 3, "error": 4}.get(result.get("status"), 4)
+
+    if getattr(args, "json", False):
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return code
+
+    if code == 0:
+        snap = result.get("snapshot") or {}
+        print("已连接 %s:%s（%s）" % (ip, port, arm))
+        print("  IP 来源 : %s" % ip_source)
+        print("  关节角  : %s" % _fmt_vec(snap.get("joint_deg") or [], 3))
+        print("  电流mA  : %s" % _fmt_vec(snap.get("joint_current_mA") or [], 1))
+        print("  温度℃   : %s" % _fmt_vec(snap.get("joint_temperature_c") or [], 1))
+        print("  电压V   : %s" % _fmt_vec(snap.get("joint_voltage_v") or [], 2))
+        print("  使能位  : %s" % (snap.get("joint_en_flag")))
+        print("  错误码  : %s" % (snap.get("joint_err_code")))
+        print("  臂错误  : %s" % (snap.get("arm_err")))
+        print("  抱闸    : %s" % ((snap.get("brake_state") or {}).get("brake_open")))
+        print("  规划类型: %s (%s)" % (snap.get("controller_trajectory_type"),
+                                      snap.get("controller_trajectory_type_name")))
+        print("  控制器态: %s (%s)" % (snap.get("arm_current_status"),
+                                      snap.get("arm_current_status_name")))
+        print("  实时上报: %s" % (snap.get("realtime")))
+        print("  控制器位姿: %s（scope=%s，仅供 FK 交叉校验）"
+              % (snap.get("controller_pose"), snap.get("controller_pose_scope")))
+        return 0
+    print("连接失败[%s]: %s" % (result.get("status"), result.get("reason")), file=sys.stderr)
+    for ev in result.get("evidence") or []:
+        print("  · %s" % ev, file=sys.stderr)
+    print("→ 下一步: %s" % result.get("next_action"), file=sys.stderr)
+    return code
+
+
 def cmd_repl(args):
     """交互式会话：提示符里直接 fk / ik / plan / exec。"""
     from .planner import plan_joint, freespace_profiles
@@ -798,6 +1039,18 @@ def build_parser():
                    help="拒绝采样：只测无碰撞目标（默认开）")
     s.add_argument("--no-rejection", dest="rejection", action="store_false")
     s.set_defaults(func=cmd_bench)
+
+    s = sub.add_parser("connect", help="连真机并输出状态快照（R004 全字段）")
+    s.add_argument("--arm", choices=["left", "right"], default="left",
+                   help="选哪条臂（默认 left）")
+    s.add_argument("--ip", default=None, help="覆盖基线里的控制器 IP")
+    s.add_argument("--port", type=int, default=None, help="TCP 端口（默认取基线 8080）")
+    s.add_argument("--udp-port", dest="udp_port", type=int, default=None,
+                   help="UDP 主动上报端口（默认取基线）")
+    s.add_argument("--json", action="store_true", help="机器可读输出（单个 JSON 对象）")
+    s.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="走通全路径但不连真机")
+    s.set_defaults(func=cmd_connect)
 
     s = sub.add_parser("repl", help="交互式会话")
     s.set_defaults(func=cmd_repl)

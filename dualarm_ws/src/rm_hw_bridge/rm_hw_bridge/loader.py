@@ -56,8 +56,10 @@ ENV_SDK_LIB = "RM_API2_LIB"
 #: 仓库内物化 SDK 的相对路径（.deps/ 是 gitignored，不入库）
 DEPS_REL = os.path.join(".deps", "rm_api2", "libapi_c.so")
 
-#: RM-API2 三线程模式（不开三线程收不到 UDP 主动上报）
-RM_TRIPLE_MODE_E = 0x00000001
+#: RM-API2 三线程模式（不开三线程收不到 UDP 主动上报）。
+#: 取值来自 ABI 唯一真值（rm_define.h 的 rm_thread_mode_e 枚举）：
+#: SINGLE=0 / DUAL=1 / **TRIPLE=2**——与 abi_spec.yaml + 生成物一致。
+RM_TRIPLE_MODE_E = 2
 
 
 # --------------------------------------------------------------------- 契约
@@ -167,6 +169,30 @@ def validate_contract(contract: Optional[Dict[str, Any]] = None) -> List[str]:
         if unknown:
             problems.append("契约符号不在 ABI 规格符号表中: %s" % ", ".join(unknown))
     return problems
+
+
+# --------------------------------------------------------------------- 句柄 id
+def _handle_id(handle: Any) -> Optional[int]:
+    """读句柄 id。
+
+    RM-API2 的句柄是 ``rm_robot_handle*``（结构体只有一个 ``int id``），
+    因此真实指针的 id 在 ``handle.contents.id``；兼容注入的假 SDK（直接暴露
+    ``handle.id``）。返回 ``None`` 表示读不出 id（调用方应视为可疑）。
+    """
+    if handle is None:
+        return None
+    contents = getattr(handle, "contents", None)
+    if contents is not None:
+        value = getattr(contents, "id", None)
+        if value is not None:
+            return int(value)
+    value = getattr(handle, "id", None)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # ------------------------------------------------------------------ 库查找
@@ -354,6 +380,9 @@ class RmBridge:
         self._strict = strict
         self._lib_path: Optional[str] = None
         self._arms: List[RobotArm] = []
+        #: **必须持有**日志回调对象的引用（ctypes 回调被 GC 后，
+        #: SDK 持有的是悬空函数指针 → 第一次打日志就段错误）。
+        self._log_callbacks: List[Any] = []
 
         if lib is None:
             path = find_library(ws=ws, env=env)
@@ -397,6 +426,9 @@ class RmBridge:
 
         失败（符号缺失 / 库不支持）时**安静返回 False**，不抛异常——
         日志接管是尽力而为，不应阻断主流程。
+
+        **回调对象的引用必须被持有**：ctypes 回调若被 GC，SDK 里就剩一个
+        悬空函数指针，下次 SDK 打日志会直接段错误（真机路径实测过）。
         """
         fn = getattr(self.binding, "rm_set_log_call_back", None)
         if fn is None:
@@ -408,6 +440,7 @@ class RmBridge:
             if cb_t is None:  # pragma: no cover - 生成物异常
                 return False
             cb = cb_t(lambda *args: None)
+            self._log_callbacks.append(cb)   # 关键：防止被 GC
             fn(cb, level)
             return True
         except Exception:
@@ -432,8 +465,8 @@ class RmBridge:
                 "rm_create_robot_arm 返回 NULL（连接数达上限 5 或参数非法）: %s:%s" % (ip, port)
             )
         # RM-API2 失败时仍返回非空指针，但 id == -1
-        handle_id = getattr(handle, "id", None)
-        if handle_id is not None and int(handle_id) < 0:
+        handle_id = _handle_id(handle)
+        if handle_id is not None and handle_id < 0:
             raise RmBridgeError(
                 "rm_create_robot_arm 返回无效句柄 id=%s（控制器不可达？）: %s:%s"
                 % (handle_id, ip, port)
