@@ -1,0 +1,548 @@
+{
+  "source": "rm_75_official.urdf",
+  "joints": [
+    {
+      "name": "joint1",
+      "type": "revolute",
+      "parent": "base_link",
+      "child": "Link1",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.2405
+      ],
+      "origin_rpy": [
+        -1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "limit": {
+        "lower": "-3.106",
+        "upper": "3.106",
+        "effort": "60",
+        "velocity": "3.14"
+      }
+    },
+    {
+      "name": "joint2",
+      "type": "revolute",
+      "parent": "Link1",
+      "child": "Link2",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "origin_rpy": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "limit": {
+        "lower": "-2.2689",
+        "upper": "2.2689",
+        "effort": "60",
+        "velocity": "3.14"
+      }
+    },
+    {
+      "name": "joint3",
+      "type": "revolute",
+      "parent": "Link2",
+      "child": "Link3",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.255999999998273
+      ],
+      "origin_rpy": [
+        -1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "limit": {
+        "lower": "-3.106",
+        "upper": "3.106",
+        "effort": "30",
+        "velocity": "3.14"
+      }
+    },
+    {
+      "name": "joint4",
+      "type": "revolute",
+      "parent": "Link3",
+      "child": "Link4",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "origin_rpy": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "limit": {
+        "lower": "-2.356",
+        "upper": "2.356",
+        "effort": "30",
+        "velocity": "3.14"
+      }
+    },
+    {
+      "name": "joint5",
+      "type": "revolute",
+      "parent": "Link4",
+      "child": "Link5",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.209999999998583
+      ],
+      "origin_rpy": [
+        -1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "limit": {
+        "lower": "-3.106",
+        "upper": "3.106",
+        "effort": "10",
+        "velocity": "3.14"
+      }
+    },
+    {
+      "name": "joint6",
+      "type": "revolute",
+      "parent": "Link5",
+      "child": "Link6",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "origin_rpy": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "limit": {
+        "lower": "-2.234",
+        "upper": "2.234",
+        "effort": "10",
+        "velocity": "3.14"
+      }
+    },
+    {
+      "name": "joint7",
+      "type": "revolute",
+      "parent": "Link6",
+      "child": "Link7",
+      "origin_xyz": [
+        0.0,
+        0.0,
+        0.143999999999028
+      ],
+      "origin_rpy": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "limit": {
+        "lower": "-3.141592653589793",
+        "upper": "3.141592653589793",
+        "effort": "10",
+        "velocity": "3.14"
+      }
+    }
+  ],
+  "links": [
+    {
+      "link": "base_link",
+      "status": "box",
+      "mesh": "base_link.STL",
+      "mesh_triangles": 30289,
+      "box_size_mm": [
+        98.5,
+        110.0,
+        138.5
+      ],
+      "box_center_mm": [
+        5.7,
+        0.0,
+        69.3
+      ]
+    },
+    {
+      "link": "Link1",
+      "status": "box",
+      "mesh": "link1.STL",
+      "mesh_triangles": 3792,
+      "box_size_mm": [
+        82.0,
+        142.5,
+        109.0
+      ],
+      "box_center_mm": [
+        0.0,
+        30.8,
+        -13.5
+      ]
+    },
+    {
+      "link": "Link2",
+      "status": "box",
+      "mesh": "link2.STL",
+      "mesh_triangles": 3806,
+      "box_size_mm": [
+        81.0,
+        82.0,
+        193.0
+      ],
+      "box_center_mm": [
+        0.0,
+        6.0,
+        56.0
+      ]
+    },
+    {
+      "link": "Link3",
+      "status": "box",
+      "mesh": "link3.STL",
+      "mesh_triangles": 3562,
+      "box_size_mm": [
+        70.0,
+        137.5,
+        102.0
+      ],
+      "box_center_mm": [
+        0.0,
+        34.8,
+        -16.0
+      ]
+    },
+    {
+      "link": "Link4",
+      "status": "box",
+      "mesh": "link4.STL",
+      "mesh_triangles": 3714,
+      "box_size_mm": [
+        68.0,
+        74.0,
+        162.5
+      ],
+      "box_center_mm": [
+        -0.0,
+        8.0,
+        47.3
+      ]
+    },
+    {
+      "link": "Link5",
+      "status": "box",
+      "mesh": "link5.STL",
+      "mesh_triangles": 3682,
+      "box_size_mm": [
+        58.0,
+        110.0,
+        83.0
+      ],
+      "box_center_mm": [
+        0.0,
+        26.5,
+        -12.5
+      ]
+    },
+    {
+      "link": "Link6",
+      "status": "box",
+      "mesh": "link6.STL",
+      "mesh_triangles": 3914,
+      "box_size_mm": [
+        57.2,
+        68.5,
+        143.5
+      ],
+      "box_center_mm": [
+        -0.0,
+        5.8,
+        43.3
+      ]
+    },
+    {
+      "link": "Link7",
+      "status": "box",
+      "mesh": "link7.STL",
+      "mesh_triangles": 3432,
+      "box_size_mm": [
+        68.0,
+        73.3,
+        29.0
+      ],
+      "box_center_mm": [
+        5.0,
+        -0.0,
+        -14.5
+      ]
+    }
+  ],
+  "changes": [
+    {
+      "joint": "joint1",
+      "field": "axis",
+      "before": [
+        0.0,
+        -0.999999999993254,
+        -3.67320510330504e-06
+      ],
+      "after": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint1",
+      "field": "origin.rpy",
+      "before": [
+        -1.5708,
+        0.0,
+        0.0
+      ],
+      "after": [
+        -1.5707963267948966,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint2",
+      "field": "axis",
+      "before": [
+        0.0,
+        0.999999999993254,
+        -3.67320510330504e-06
+      ],
+      "after": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint2",
+      "field": "origin.rpy",
+      "before": [
+        1.5708,
+        0.0,
+        0.0
+      ],
+      "after": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint3",
+      "field": "axis",
+      "before": [
+        0.0,
+        -0.999999999993254,
+        -3.67320510330504e-06
+      ],
+      "after": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint3",
+      "field": "origin.xyz",
+      "before": [
+        0.0,
+        9.40340506446091e-07,
+        0.255999999998273
+      ],
+      "after": [
+        0.0,
+        0.0,
+        0.255999999998273
+      ]
+    },
+    {
+      "joint": "joint3",
+      "field": "origin.rpy",
+      "before": [
+        -1.5708,
+        0.0,
+        0.0
+      ],
+      "after": [
+        -1.5707963267948966,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint4",
+      "field": "axis",
+      "before": [
+        0.0,
+        0.999999999993253,
+        -3.67320510330504e-06
+      ],
+      "after": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint4",
+      "field": "origin.rpy",
+      "before": [
+        1.5708,
+        0.0,
+        0.0
+      ],
+      "after": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint5",
+      "field": "axis",
+      "before": [
+        0.0,
+        -0.999999999993253,
+        -3.67320510330504e-06
+      ],
+      "after": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint5",
+      "field": "origin.xyz",
+      "before": [
+        0.0,
+        7.71373071694059e-07,
+        0.209999999998583
+      ],
+      "after": [
+        0.0,
+        0.0,
+        0.209999999998583
+      ]
+    },
+    {
+      "joint": "joint5",
+      "field": "origin.rpy",
+      "before": [
+        -1.5708,
+        0.0,
+        0.0
+      ],
+      "after": [
+        -1.5707963267948966,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint6",
+      "field": "axis",
+      "before": [
+        0.0,
+        0.999999999993253,
+        -3.67320510330504e-06
+      ],
+      "after": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint6",
+      "field": "origin.rpy",
+      "before": [
+        1.5708,
+        0.0,
+        0.0
+      ],
+      "after": [
+        1.5707963267948966,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "joint": "joint7",
+      "field": "origin.xyz",
+      "before": [
+        0.0,
+        5.28941534875926e-07,
+        0.143999999999028
+      ],
+      "after": [
+        0.0,
+        0.0,
+        0.143999999999028
+      ]
+    },
+    {
+      "joint": "joint7",
+      "field": "limit",
+      "before": [
+        "-6.28",
+        "6.28"
+      ],
+      "after": [
+        -3.141592653589793,
+        3.141592653589793
+      ]
+    }
+  ]
+}

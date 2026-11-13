@@ -47,3 +47,7 @@ vendor/
 coverage/
 .cache/
 tmp/
+
+# 依赖补丁（GLIBCXX 补齐等）
+.deps/
+core

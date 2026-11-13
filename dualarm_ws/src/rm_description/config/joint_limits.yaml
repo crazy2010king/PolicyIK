@@ -1,0 +1,11 @@
+# 自建关节限值（唯一真值）。来源：睿尔曼官方 RM75 参数页 + 本项目实测计划。
+# 注意：不使用官方 URDF 里统一的 velocity=3.14 rad/s（官方实际 J3–J7 可到 225°/s = 3.927 rad/s）。
+# 加速度上限官方未给出 RM75 数值，暂用保守值，实测后更新（设计 §5.2 / R1）。
+rm75_arm:
+  joint1: {lower: -3.106,  upper: 3.106,  velocity: 3.1416, acceleration: 5.2359, jerk: 30.0}   # ±178°, 180°/s
+  joint2: {lower: -2.2689, upper: 2.2689, velocity: 3.1416, acceleration: 5.2359, jerk: 30.0}   # ±130°, 180°/s
+  joint3: {lower: -3.106,  upper: 3.106,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±178°, 225°/s
+  joint4: {lower: -2.356,  upper: 2.356,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±135°, 225°/s
+  joint5: {lower: -3.106,  upper: 3.106,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±178°, 225°/s
+  joint6: {lower: -2.234,  upper: 2.234,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±128°, 225°/s
+  joint7: {lower: -3.14159, upper: 3.14159, velocity: 3.9270, acceleration: 5.2359, jerk: 30.0} # 规划域 ±180°（执行域 ±360°）

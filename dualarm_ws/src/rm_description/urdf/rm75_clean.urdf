@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="rm75_clean" xmlns:tesseract="https://github.com/tesseract-robotics/tesseract" tesseract:make_convex="false">
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0.00049987 5.2709E-05 0.060019" rpy="0 0 0" />
+      <mass value="1.862" />
+      <inertia ixx="0.0017232" ixy="-3.1058E-06" ixz="-3.7924E-05" iyy="0.0017051" iyz="1.3691E-06" izz="0.00090158" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/rm_75_arm/base_link.STL" tesseract:make_convex="false" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.005749952048063278 1.862645149230957e-09 0.06925000243233337" rpy="0 0 0" />
+      <geometry><box size="0.09849990159273148 0.10999980941414833 0.13850000514891359" /></geometry></collision>
+  </link>
+  <link name="Link1">
+    <inertial>
+      <origin xyz="0.000241 0.00995004875438421 -0.0132729634515197" rpy="0 0 0" />
+      <mass value="1.574" />
+      <inertia ixx="0.002487573" ixy="7.90896450576573e-06" ixz="9.66302905131397e-06" iyy="0.00145055531790631" iyz="-0.00017939619746143" izz="0.00232103668209369" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0" />
+      <geometry>
+        <mesh filename="../meshes/rm_75_arm/link1.STL" tesseract:make_convex="false" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="1.862645149230957e-09 0.030750136094062595 -0.013513969608560737" rpy="0 0 0" />
+      <geometry><box size="0.08200008794665337 0.1425000249386641 0.10902854357467713" /></geometry></collision>
+  </link>
+  <joint name="joint1" type="revolute">
+    <origin xyz="0.0 0.0 0.2405" rpy="-1.5707963267948966 0.0 0.0" />
+    <parent link="base_link" />
+    <child link="Link1" />
+    <axis xyz="0.0 -1.0 0.0" />
+    <limit lower="-3.106" upper="3.106" effort="60" velocity="3.14" />
+  </joint>
+  <link name="Link2">
+    <inertial>
+      <origin xyz="-0.000357 0.00532939225786383 0.10678898042477" rpy="0 0 0" />
+      <mass value="1.217" />
+      <inertia ixx="0.003494121" ixy="-5.61301072939424e-06" ixz="-2.92097938228005e-06" iyy="0.00344408428941695" iyz="0.000583874628319345" izz="0.000892716710583047" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="-1.5708 0 0" />
+      <geometry>
+        <mesh filename="../meshes/rm_75_arm/link2.STL" tesseract:make_convex="false" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="1.862645149230957e-09 0.0060001847999368516 0.05600000999806998" rpy="0 0 0" />
+      <geometry><box size="0.08100006356835365 0.08199962718087946 0.19300024398290272" /></geometry></collision>
+  </link>
+  <joint name="joint2" type="revolute">
+    <origin xyz="0.0 0.0 0.0" rpy="1.5707963267948966 0.0 0.0" />
+    <parent link="Link1" />
+    <child link="Link2" />
+    <axis xyz="0.0 1.0 0.0" />
+    <limit lower="-2.2689" upper="2.2689" effort="60" velocity="3.14" />
+  </joint>
+  <link name="Link3">
+    <inertial>
+      <origin xyz="3e-06 0.0113240513513309 -0.0139799584045311" rpy="0 0 0" />
+      <mass value="1.11" />
+      <inertia ixx="0.001836663" ixy="4.21599170220123e-06" ixz="2.25901548621747e-06" iyy="0.00106254527304991" iyz="-3.71686027285797e-05" izz="0.00149887472695008" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0" />
+      <geometry>
+        <mesh filename="../meshes/rm_75_arm/link3.STL" tesseract:make_convex="false" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="2.4065375328063965e-06 0.03475005763226313 -0.01599991201095494" rpy="0 0 0" />
+      <geometry><box size="0.0699952021241188 0.13750014409716665 0.1020003730308697" /></geometry></collision>
+  </link>
+  <joint name="joint3" type="revolute">
+    <origin xyz="0.0 0.0 0.255999999998273" rpy="-1.5707963267948966 0.0 0.0" />
+    <parent link="Link2" />
+    <child link="Link3" />
+    <axis xyz="0.0 -1.0 0.0" />
+    <limit lower="-3.106" upper="3.106" effort="30" velocity="3.14" />
+  </joint>
+  <link name="Link4">
+    <inertial>
+      <origin xyz="-5e-06 0.00474731096616561 0.0846579825627242" rpy="0 0 0" />
+      <mass value="0.685" />
+      <inertia ixx="0.001282444" ixy="-6.29997976059737e-07" ixz="5.51002314115497e-07" iyy="0.00125617870497235" iyz="0.000232080755951225" izz="0.000373011295027649" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="-1.5708 0 0" />
+      <geometry>
+        <mesh filename="../meshes/rm_75_arm/link4.STL" tesseract:make_convex="false" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-8.046627044677734e-07 0.008000097016713972 0.04725000670079178" rpy="0 0 0" />
+      <geometry><box size="0.0680122971534729 0.07399979464116316 0.1625001987126871" /></geometry></collision>
+  </link>
+  <joint name="joint4" type="revolute">
+    <origin xyz="0.0 0.0 0.0" rpy="1.5707963267948966 0.0 0.0" />
+    <parent link="Link3" />
+    <child link="Link4" />
+    <axis xyz="0.0 1.0 0.0" />
+    <limit lower="-2.356" upper="2.356" effort="30" velocity="3.14" />
+  </joint>
+  <link name="Link5">
+    <inertial>
+      <origin xyz="7.79999999999999e-05 0.00878104752019518 -0.0129369677454987" rpy="0 0 0" />
+      <mass value="0.619" />
+      <inertia ixx="0.000627336" ixy="1.34499399062738e-06" ixz="1.63600494044982e-06" iyy="0.000370291256906287" iyz="-3.49706323927397e-05" izz="0.000542454743093712" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0" />
+      <geometry>
+        <mesh filename="../meshes/rm_75_arm/link5.STL" tesseract:make_convex="false" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="1.862645149230957e-09 0.0265000345226971 -0.012499890984567599" rpy="0 0 0" />
+      <geometry><box size="0.05799999460577965 0.11000013156996569 0.08300023121854071" /></geometry></collision>
+  </link>
+  <joint name="joint5" type="revolute">
+    <origin xyz="0.0 0.0 0.209999999998583" rpy="-1.5707963267948966 0.0 0.0" />
+    <parent link="Link4" />
+    <child link="Link5" />
+    <axis xyz="0.0 -1.0 0.0" />
+    <limit lower="-3.106" upper="3.106" effort="10" velocity="3.14" />
+  </joint>
+  <link name="Link6">
+    <inertial>
+      <origin xyz="-1.4e-05 0.00281928843473851 0.078523989644705" rpy="0 0 0" />
+      <mass value="0.602" />
+      <inertia ixx="0.000780774" ixy="-4.68999555539018e-07" ixz="1.21001722732377e-07" iyy="0.000763955885331537" iyz="0.000120511258963647" izz="0.000289972114668462" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="-1.5708 0 0" />
+      <geometry>
+        <mesh filename="../meshes/rm_75_arm/link6.STL" tesseract:make_convex="false" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-9.08970832824707e-07 0.005750149750615873 0.04326256245641828" rpy="0 0 0" />
+      <geometry><box size="0.05721135064959526 0.06849968399358661 0.1434750726426892" /></geometry></collision>
+  </link>
+  <joint name="joint6" type="revolute">
+    <origin xyz="0.0 0.0 0.0" rpy="1.5707963267948966 0.0 0.0" />
+    <parent link="Link5" />
+    <child link="Link6" />
+    <axis xyz="0.0 1.0 0.0" />
+    <limit lower="-2.234" upper="2.234" effort="10" velocity="3.14" />
+  </joint>
+  <link name="Link7">
+    <inertial>
+      <origin xyz="0.001094 -0.000077 -0.010119" rpy="0 0 0" />
+      <mass value="0.107" />
+      <inertia ixx="0.000044123" ixy="-0.000000064" ixz="0.0000003" iyy="0.000035078" iyz="-0.000000029" izz="0.000065445" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/rm_75_arm/link7.STL" tesseract:make_convex="false" />
+      </geometry>
+      <material name="">
+        <color rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0.00501259695738554 -1.1274591088294983e-05 -0.014499998392164759" rpy="0 0 0" />
+      <geometry><box size="0.06799069978296757 0.07328381761908531 0.029000001546740428" /></geometry></collision>
+  </link>
+  <joint name="joint7" type="revolute">
+    <origin xyz="0.0 0.0 0.143999999999028" rpy="0.0 0.0 0.0" />
+    <parent link="Link6" />
+    <child link="Link7" />
+    <axis xyz="0.0 0.0 1.0" />
+    <limit lower="-3.141592653589793" upper="3.141592653589793" effort="10" velocity="3.14" />
+  </joint>
+</robot>

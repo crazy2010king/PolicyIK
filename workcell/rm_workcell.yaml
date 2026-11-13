@@ -1,0 +1,34 @@
+# 双臂工位定义（rm_workcell.yaml）
+# 所有可配置项集中在这里；换机型 = 换这份文件 + 重新标定，不改代码。
+version: 1
+robot:
+  description: rm_description
+  urdf: urdf/rm75_clean.urdf
+  srdf: srdf/rm75.srdf
+  joint_limits: config/joint_limits.yaml
+  groups:
+    - name: rm75_arm
+      base: base_link
+      tip: Link7
+      dof: 7
+execution:
+  period_s: 0.010          # 10 ms 单时钟
+  follow: false            # 低跟随
+  trajectory_mode: 1       # 曲线拟合
+  radio: 30
+  pre_position_speed: 10   # rm_movej 预就位速度百分比
+safety:
+  collision_margin_m: 0.005
+  self_collision: true
+  joint_limit_margin_deg: 1.0
+planning:
+  num_planners: 2
+  planning_time_s: 5.0
+  planner_range: 0.01
+gripper:                   # 待接：型号、供电、协议
+  model: RMG22-65
+  power: external_24v     # 法兰供电上限 1.5A < 额定 1.9A，必须外部供电
+  protocol: modbus_rtu
+calibration:
+  tcp: null
+  base_to_base: null

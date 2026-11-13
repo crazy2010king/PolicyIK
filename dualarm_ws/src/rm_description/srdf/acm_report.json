@@ -1,0 +1,255 @@
+{
+  "urdf": "rm75_clean.urdf",
+  "group": "rm75_arm",
+  "base": "base_link",
+  "tip": "Link7",
+  "samples": 3000,
+  "seed": 42,
+  "links": [
+    "base_link",
+    "Link1",
+    "Link2",
+    "Link3",
+    "Link4",
+    "Link5",
+    "Link6",
+    "Link7"
+  ],
+  "pairs_ever_overlap": [
+    [
+      "Link1",
+      "Link2"
+    ],
+    [
+      "Link1",
+      "Link3"
+    ],
+    [
+      "Link1",
+      "Link4"
+    ],
+    [
+      "Link1",
+      "Link5"
+    ],
+    [
+      "Link1",
+      "Link6"
+    ],
+    [
+      "Link1",
+      "Link7"
+    ],
+    [
+      "Link1",
+      "base_link"
+    ],
+    [
+      "Link2",
+      "Link3"
+    ],
+    [
+      "Link2",
+      "Link4"
+    ],
+    [
+      "Link2",
+      "Link5"
+    ],
+    [
+      "Link2",
+      "Link6"
+    ],
+    [
+      "Link2",
+      "Link7"
+    ],
+    [
+      "Link2",
+      "base_link"
+    ],
+    [
+      "Link3",
+      "Link4"
+    ],
+    [
+      "Link3",
+      "Link5"
+    ],
+    [
+      "Link3",
+      "Link6"
+    ],
+    [
+      "Link3",
+      "Link7"
+    ],
+    [
+      "Link3",
+      "base_link"
+    ],
+    [
+      "Link4",
+      "Link5"
+    ],
+    [
+      "Link4",
+      "Link6"
+    ],
+    [
+      "Link4",
+      "Link7"
+    ],
+    [
+      "Link4",
+      "base_link"
+    ],
+    [
+      "Link5",
+      "Link6"
+    ],
+    [
+      "Link5",
+      "Link7"
+    ],
+    [
+      "Link5",
+      "base_link"
+    ],
+    [
+      "Link6",
+      "Link7"
+    ],
+    [
+      "Link6",
+      "base_link"
+    ],
+    [
+      "Link7",
+      "base_link"
+    ]
+  ],
+  "disabled": [
+    {
+      "a": "Link1",
+      "b": "base_link",
+      "reason": "Adjacent"
+    },
+    {
+      "a": "Link1",
+      "b": "Link2",
+      "reason": "Adjacent"
+    },
+    {
+      "a": "Link2",
+      "b": "Link3",
+      "reason": "Adjacent"
+    },
+    {
+      "a": "Link3",
+      "b": "Link4",
+      "reason": "Adjacent"
+    },
+    {
+      "a": "Link4",
+      "b": "Link5",
+      "reason": "Adjacent"
+    },
+    {
+      "a": "Link5",
+      "b": "Link6",
+      "reason": "Adjacent"
+    },
+    {
+      "a": "Link6",
+      "b": "Link7",
+      "reason": "Adjacent"
+    }
+  ],
+  "enabled_pairs": [
+    [
+      "Link2",
+      "Link4"
+    ],
+    [
+      "Link2",
+      "Link6"
+    ],
+    [
+      "Link4",
+      "base_link"
+    ],
+    [
+      "Link2",
+      "Link5"
+    ],
+    [
+      "Link3",
+      "Link6"
+    ],
+    [
+      "Link2",
+      "base_link"
+    ],
+    [
+      "Link3",
+      "Link7"
+    ],
+    [
+      "Link5",
+      "base_link"
+    ],
+    [
+      "Link3",
+      "base_link"
+    ],
+    [
+      "Link4",
+      "Link7"
+    ],
+    [
+      "Link4",
+      "Link6"
+    ],
+    [
+      "Link2",
+      "Link7"
+    ],
+    [
+      "Link6",
+      "base_link"
+    ],
+    [
+      "Link5",
+      "Link7"
+    ],
+    [
+      "Link7",
+      "base_link"
+    ],
+    [
+      "Link1",
+      "Link6"
+    ],
+    [
+      "Link1",
+      "Link4"
+    ],
+    [
+      "Link1",
+      "Link5"
+    ],
+    [
+      "Link1",
+      "Link7"
+    ],
+    [
+      "Link1",
+      "Link3"
+    ],
+    [
+      "Link3",
+      "Link5"
+    ]
+  ]
+}

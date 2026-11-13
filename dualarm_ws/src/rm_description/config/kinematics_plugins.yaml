@@ -1,0 +1,27 @@
+# 运动学插件配置（Tesseract 方言）。类名与官方 support 示例一致（KDL fwd + KDL inv NR/LMA）。
+kinematic_plugins:
+  search_libraries:
+    - tesseract_kinematics_kdl_factories
+  fwd_kin_plugins:
+    rm75_arm:
+      default: KDLFwdKinChain
+      plugins:
+        KDLFwdKinChain:
+          class: KDLFwdKinChainFactory
+          config:
+            base_link: base_link
+            tip_link: Link7
+  inv_kin_plugins:
+    rm75_arm:
+      default: KDLInvKinChainNR
+      plugins:
+        KDLInvKinChainNR:
+          class: KDLInvKinChainNRFactory
+          config:
+            base_link: base_link
+            tip_link: Link7
+        KDLInvKinChainLMA:
+          class: KDLInvKinChainLMAFactory
+          config:
+            base_link: base_link
+            tip_link: Link7
