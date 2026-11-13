@@ -42,7 +42,9 @@ usage() {
             骨架单测（路径层 / 锁 / 禁用名单扫描器）、versions.lock 自洽性、
             厂商解算接口禁用名单静态扫描、**模型回归**（碰撞/质量/FK/限位/夹爪，
             模型本体零外部资产依赖 → 恒跑；Drake 不可用时显式 SKIP）、
-            **规划回归**（场景 / 轨迹 / CLI / 回放，Drake 不可用时显式 SKIP）。
+            **规划回归**（场景 / 轨迹 / CLI / 回放，Drake 不可用时显式 SKIP）、
+            **设备层与安全闸（零硬件）**（安全七闸 / 状态机 / 执行环 / 恢复流程 /
+            全链路运行日志 / 硬件门控脚本，恒跑——零硬件也能回归）。
   medium    在 fast 之上追加：constraints ↔ versions.lock 依赖锁一致性、
             package:// 解析测试、wheel 离线归档 sha256 校验（归档缺失时 SKIP）。
   nightly   在 medium 之上追加：**规划统计真实调用**（scripts/plan_stats.py，
@@ -213,6 +215,27 @@ if "$PYTHON" -c "import pydrake" >/dev/null 2>&1; then
 else
     record_skip "tests/planning" "Drake（pydrake）不可用：规划回归断言跳过（环境未就绪）"
 fi
+
+# 9) **设备层与安全闸（零硬件）**（S03-T08 接入）。
+#    安全七闸 / 状态机 / 执行环 / 恢复流程 / 全链路运行日志 / 硬件门控脚本
+#    全部可在**无真机、无 SDK** 的环境里被真实验证 ⇒ **恒跑**，不得 SKIP。
+#    新增项失败即整体失败（run_check 的语义）。
+DEVICE_TESTS=(
+    tests/test_device_config.py
+    tests/test_device_sdk.py
+    tests/test_device_transport.py
+    tests/test_device_safety.py
+    tests/test_device_state_source.py
+    tests/test_device_state_machine.py
+    tests/test_device_exec_loop.py
+    tests/test_device_metrics.py
+    tests/test_device_recovery.py
+    tests/test_device_run_log.py
+    tests/test_device_scripts.py
+    tests/test_rm_device_driver.py
+)
+run_check "tests/device" "设备层与安全闸回归（零硬件：七闸 / 状态机 / 执行环 / 恢复 / 运行日志 / 脚本）" -- \
+    "$PYTHON" -m pytest -q "${DEVICE_TESTS[@]}"
 
 # --------------------------------------------------------------------------- #
 # medium 档

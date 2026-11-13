@@ -94,3 +94,30 @@ def test_ci_usage_mentions_model_regression():
     result = run_ci("--help", timeout=60)
     assert result.returncode == 0
     assert "模型回归" in result.stdout
+
+
+def test_ci_fast_tier_runs_device_suite():
+    """fast 档必须纳入「设备层与安全闸（零硬件）」回归项。
+
+    设备层（安全七闸 / 状态机 / 执行环 / 恢复流程 / 运行日志 / 硬件门控脚本）
+    **零硬件即可验证** ⇒ 必须**恒跑**，不得因环境缺硬件而 SKIP。
+    """
+    result = run_ci("fast")
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "tests/device" in combined
+    assert "[SKIP] tests/device" not in combined
+
+
+def test_ci_fast_tier_device_check_fails_the_build():
+    """新增的设备层回归项失败即整体失败（不得被降级成 SKIP）。"""
+    text = CI_SCRIPT.read_text(encoding="utf-8")
+    assert 'run_check "tests/device"' in text, "设备层回归项必须用 run_check（失败即整体失败）"
+    assert 'run_check_skippable "tests/device"' not in text
+
+
+def test_ci_usage_mentions_device_suite():
+    """--help 必须说明 fast 档已含设备层回归（避免"以为没跑"）。"""
+    result = run_ci("--help", timeout=60)
+    assert result.returncode == 0
+    assert "设备层" in result.stdout

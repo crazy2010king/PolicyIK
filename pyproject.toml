@@ -26,6 +26,14 @@ dev = [
     "pytest-cov",
     "pyyaml",
 ]
+# 设备层（S03）可选依赖：厂商 SDK。
+# 分发名是 robotic-arm（小写连字符），**导入名**是 Robotic_Arm（大写 R/A）——
+# 两者不一致是经典陷阱，详见 src/rm75_drake/device/sdk.py。
+# 版本与 versions.lock:packages.robotic_arm 严格一致（1.1.7）。
+# 未安装时设备层**懒加载**并抛显式 NotAvailableError，绝不静默降级。
+device = [
+    "robotic-arm==1.1.7",
+]
 
 [tool.setuptools]
 package-dir = { "" = "src" }
@@ -42,4 +50,6 @@ rm75_drake = ["py.typed", "calibration/*.yaml"]
 testpaths = ["tests"]
 markers = [
     "slow: 规划重负载用例（如 IRIS 区域生成，单例数秒至数十秒）；CI fast 档用 -m 'not slow' 跳过",
+    "hardware: 需要真机（机械臂）在场才可断言的用例；无真机时必须 SKIP 而不是失败",
+    "device: 设备层用例（安全七闸 / 状态机 / 执行环 / 恢复流程 / 运行日志）；零硬件可跑，恒跑",
 ]

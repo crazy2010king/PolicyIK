@@ -14,7 +14,8 @@
 #   upstream        上游资产 commit 锁定
 #   platform        目标平台标签
 #   forbidden_apis  厂商解算接口禁用名单（主链路禁止调用）
-#   allowed_apis    白名单（避免前缀误伤，例如 rm_movej_canfd 是允许的透传接口）
+#   allowed_apis    白名单（避免前缀误伤，例如 rm_movej_canfd 是允许的透传接口；
+#                    S03 起同时登记设备层使用的非解算接口）
 #   wheels          文件名 → sha256 映射（T03 由 vendor/wheels/SHA256SUMS 回写）
 #
 # 注意：packages 中的版本必须与 constraints/*.txt 完全一致，由 tests/test_env_lock.py 断言。
@@ -158,6 +159,26 @@ forbidden_apis:
 allowed_apis:
   - rm_movej_canfd
   - rm_get_current_joint_current
+  # ── S03 设备层白名单（与 device/sdk.py::SDK_CALL_WHITELIST 同源）────────
+  # 设备层只允许调用「透传 + 使能 + 清错 + 停机 + 限位 + 状态读取 + 夹爪」
+  # 这几类**非解算**接口；任何运动学/轨迹解算接口一律留在 forbidden_apis。
+  - rm_set_joint_en_state
+  - rm_set_joint_clear_err
+  - rm_clear_system_err
+  - rm_clear_system_runtime
+  - rm_get_joint_err_flag
+  - rm_set_arm_emergency_stop
+  - rm_set_arm_slow_stop
+  - rm_set_arm_pause
+  - rm_set_arm_continue
+  - rm_set_arm_stop
+  - rm_set_joint_min_pos
+  - rm_set_joint_max_pos
+  - rm_get_current_arm_state
+  - rm_set_gripper_position
+  - rm_get_gripper_state
+  - rm_set_realtime_push
+  - rm_realtime_arm_state_call_back
 
 wheels:
   PyYAML-6.0.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl: 80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476
