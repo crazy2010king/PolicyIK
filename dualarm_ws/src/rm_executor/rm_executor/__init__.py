@@ -23,19 +23,36 @@ T3 交付的是**传输与反馈抽象**：透传通道接口（:mod:`rm_executo
 含离线 ``FakeTransport`` 与真机 ``BridgeTransport``）与反馈源接口
 （:mod:`rm_executor.feedback`，含 ``ScriptedFeedback`` / ``PollFeedback`` /
 ``UdpFeedback`` 与后台采集泵 ``FeedbackPump``）。
+
+T4 交付的是**执行内核**：主循环（:mod:`rm_executor.executor`，阶段
+预校验 → 预就位 → 10 ms tick 流式透传 → 到位判定 → 收尾）与统一报告
+（:mod:`rm_executor.report`，fake 与 live 同一份 schema、同一份生成代码）。
 """
 from __future__ import annotations
 
-from rm_executor import clock, contract, events, feedback, metrics, paths, resample, transport
+from rm_executor import (
+    clock,
+    contract,
+    events,
+    executor,
+    feedback,
+    metrics,
+    paths,
+    report,
+    resample,
+    transport,
+)
 
 __all__ = [
     "__version__",
     "clock",
     "contract",
     "events",
+    "executor",
     "feedback",
     "metrics",
     "paths",
+    "report",
     "resample",
     "transport",
 ]
