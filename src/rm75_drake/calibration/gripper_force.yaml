@@ -1,0 +1,36 @@
+# 夹爪夹持力标定占位（S01-T04）
+#
+# 官方 Two-Finger-Gripper 仓（commit 91f587b1d4ef…）**没有给出** u→N 的力曲线：
+# 手册只说明"力矩夹取（速度 + 力矩，力矩超限停止）"的接口语义，未给数值标定表。
+# 因此本文件**显式标注未标定**，禁止任何伪造的牛顿数值。
+#
+# rm75_drake.gripper.force_from_position() 在 calibrated=false 时会抛出
+# GripperNotCalibratedError（异常信息含"未标定"），而不是返回编造的力值。
+
+calibrated: false
+
+# u（0–1000 无量纲）→ 夹持力（N）的标定曲线。
+# 未标定前保持为空列表；标定后应为 [{u: 0, force_n: 0.0}, ..., {u: 1000, force_n: ...}]
+# 且 calibrated 置为 true，并注明标定日期与设备。
+curve: []
+
+# 标定方法（计划）：用测力计（量程覆盖夹爪实际夹持力）夹在两指之间，
+# 逐档下发 rm_set_gripper_position(u) / rm_set_gripper_pick(speed, force)，
+# 稳定后记录测力计读数，得到 u→N 单调曲线（至少 11 个采样点：0,100,…,1000）。
+method: "测力计夹持法：逐档开口指令 u，稳态读取测力计力值，记录 u→N 单调曲线"
+
+# 所需设备（标定前不可用的原因）：
+required_equipment:
+  - "夹持力测力计（量程 0–50 N，分度 ≤0.1 N）"
+  - "官方 RM75 机械臂 + 夹爪固件（可下发 rm_set_gripper_position）"
+  - "标定工装（保证夹爪法向受力）"
+
+# 为何当前不可用：本切片（S01）只交付模型与映射层，未接入真机，
+# 也未获得官方力曲线数据；本项目**禁止**用经验值替代标定值。
+unavailable_reason: "本切片未接入真机，无标定数据；官方未发布 u→N 曲线"
+
+# 标定完成时需要补齐的元信息（自检用，避免"半标定"绿灯）。
+required_metadata:
+  - calibrated_at
+  - device_serial
+  - operator

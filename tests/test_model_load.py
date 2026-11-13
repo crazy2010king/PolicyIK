@@ -280,10 +280,13 @@ def test_missing_model_file_raises(monkeypatch, tmp_path):
         models.load_rm75()
 
 
-def test_gripper_loader_fails_loudly_until_t04():
-    """夹爪 URDF 在 S01-T04 之前不存在 → 必须显式报错，不返回“半个模型”。"""
-    with pytest.raises(Exception):
-        models.load_rm75_gripper()
+def test_gripper_loader_loads_after_t04():
+    """S01-T04 起夹爪 URDF 已落地 → 装配层必须能正常加载（2 个 prismatic DoF）。"""
+    plant, _instance, _parser = models.load_rm75_gripper()
+    plant.Finalize()
+    assert plant.num_positions() == 2
+    assert plant.HasFrameNamed(models.GRIPPER_BASE_LINK)
+    assert plant.HasFrameNamed(models.GRIPPER_TCP_LINK)
 
 
 def test_models_module_has_no_hardcoded_absolute_paths():

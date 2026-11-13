@@ -17,6 +17,9 @@
     Drake 版本差异的薄封装。
 ``models``
     模型装配层（S01）：解析 ``package://`` URDF、固定基座、位姿求值入口。
+``gripper``
+    夹爪开口量映射层（S01-T04）：``u``（0–1000）↔ 开口（mm/m）、两指对称位移、
+    夹爪动作调度数据结构；力曲线未标定时**显式抛“未标定”**，不伪造牛顿值。
 ``kinematics``
     独立运动学层（S01-T03）：官方 MDH 表与纯 numpy 正解，**零 Drake 依赖**，
     作为 Drake FK 的独立被测对照。
@@ -25,6 +28,7 @@
 from __future__ import annotations
 
 from . import drake_compat
+from . import gripper
 from . import kinematics
 from . import models
 from . import package_map
@@ -33,6 +37,7 @@ from . import paths
 __all__ = [
     "__version__",
     "drake_compat",
+    "gripper",
     "kinematics",
     "models",
     "package_map",

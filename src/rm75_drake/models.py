@@ -50,6 +50,9 @@ __all__ = [
     "RM75_JOINT_NAMES",
     "RM75_BASE_LINK",
     "RM75_TIP_LINK",
+    "GRIPPER_BASE_LINK",
+    "GRIPPER_TCP_LINK",
+    "GRIPPER_JOINT_NAMES",
     "make_plant",
     "attach_scene_graph",
     "load_rm75",
@@ -76,6 +79,15 @@ RM75_BASE_LINK = "base_link"
 
 #: 末端 link（法兰）。
 RM75_TIP_LINK = "link_7"
+
+#: 夹爪本体 link（自研 URDF；**不叫** base_link，避免与 RM75-B 同 plant 时 frame 重名）。
+GRIPPER_BASE_LINK = "gripper_base"
+
+#: 夹爪 TCP link（两指中点、指尖高度）。
+GRIPPER_TCP_LINK = "tcp"
+
+#: 夹爪两个开合关节名（顺序 = 左、右）。
+GRIPPER_JOINT_NAMES: Tuple[str, ...] = ("finger_joint_left", "finger_joint_right")
 
 #: 全部 link 名（顺序 = 运动链顺序）。
 RM75_LINK_NAMES: Tuple[str, ...] = (
@@ -158,13 +170,29 @@ def load_rm75(
 
 def load_rm75_gripper(
     plant=None,
-    weld: bool = False,
+    weld: bool = True,
     scene_graph=None,
+    base_link: str = GRIPPER_BASE_LINK,
+    attach_to: Optional[str] = None,
 ) -> Tuple[Any, Any, Any]:
     """把自研两指夹爪（``rmg24_drake.urdf``）装配进 plant。
 
-    与 :func:`load_rm75` 同构；夹爪 URDF 由 S01-T04 落地，在那之前调用会
-    得到 Drake 的解析错误（文件不存在）——错误**显式冒泡**，不静默吞掉。
+    与 :func:`load_rm75` 同构。夹爪本体 link 名为 ``gripper_base``
+    （**不叫** ``base_link``）：夹爪与 RM75-B 常被装进**同一个 plant**，
+    frame 名必须全局唯一。
+
+    参数
+    ----
+    weld:
+        是否把夹爪本体固定住。默认 ``True``：夹爪基座若自由浮动，Drake 会给它
+        6 个自由度 + 2 个四元数（``num_positions`` 从 2 变成 9），与
+        “夹爪恰有 2 个 prismatic 位置自由度”的模型契约冲突。
+    attach_to:
+        指定夹爪挂载的 frame 名（例如机械臂法兰 ``"link_7"``），
+        此时夹爪本体被 weld 到该 frame（**优先于** ``weld``），
+        可与机械臂同 plant 装配成一条运动链。
+
+    参数 ``base_link`` 可覆盖可焊基座 link 名（默认 :data:`GRIPPER_BASE_LINK`）。
     """
     if plant is None:
         plant = make_plant()
@@ -175,8 +203,14 @@ def load_rm75_gripper(
     indices = _parse_url(parser, GRIPPER_URDF_URL)
     if not indices:
         raise RuntimeError(f"解析 {GRIPPER_URDF_URL} 没有得到任何 model instance")
-    if weld:
-        _weld_base(plant, "base_link")
+    if attach_to is not None:
+        if not plant.HasFrameNamed(attach_to):
+            raise RuntimeError(f"挂载目标 frame {attach_to!r} 不存在，无法装配夹爪")
+        plant.WeldFrames(
+            plant.GetFrameByName(attach_to), plant.GetFrameByName(base_link)
+        )
+    elif weld:
+        _weld_base(plant, base_link)
     return plant, indices[0], parser
 
 

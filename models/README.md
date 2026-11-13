@@ -155,3 +155,77 @@ python3 -m pytest tests/test_package_map.py -q
 ```bash
 python3 -m pytest tests/test_model_load.py -q
 ```
+
+---
+
+## S01 自研夹爪模型：`rm75_drake/rmg24_drake.urdf`（S01-T04 落地）
+
+官方仓 `https://github.com/RealManRobot/Two-Finger-Gripper`（commit
+`91f587b1d4efaab235f3d227ee614b28f35060c9`，许可 OpenAtom Open Hardware 1.0，
+见 `third_party/MANIFEST.yaml`）**没有 URDF、也没有网格**：只有固件、PCB、
+`Hardware/CAD/RMG24 Claw 3D Model.stp`（11.9 MB STEP）、手册 PDF 与上位机软件。
+因此夹爪模型是**完全自研**的原始几何体模型（原始几何体 = box，零外部资产依赖）。
+
+### 模型结构
+
+| 项 | 值 |
+|----|----|
+| 本体 link | `gripper_base`（**不叫** `base_link`：夹爪与机械臂常同 plant，frame 名必须全局唯一） |
+| 手指 link | `finger_left` / `finger_right` |
+| 开合关节 | `finger_joint_left`（axis `0 1 0`）、`finger_joint_right`（axis `0 -1 0`），均 `prismatic`，限位 `[0, 0.0325] m` |
+| TCP | link `tcp`，经 fixed 关节 `tcp_joint` 挂在 `gripper_base`（`xyz = 0 0 0.06`），位于两指中点、指尖高度，z 朝外 |
+| collision | 3 个 box，名字 `gripper_base_collision` / `finger_left_collision` / `finger_right_collision` |
+
+**关键约束：禁止 `<mimic>`**——实测 Drake 1.51.1 / 1.55.0 解析 mimic 后仍把两个
+prismatic 各自计入 DoF（dof=9），存在双驱动风险。双指对称由
+`src/rm75_drake/gripper.py` 的映射层实现（两关节 `q` 都取单指偏移量，
+方向差异由 URDF 的 axis 符号承担）。
+
+### 夹爪真值来源
+
+| 真值 | 来源 | 原文 / 数值 |
+|------|------|-------------|
+| 开口指令量纲与范围 | 官方手册 `Related Files/Two-Finger Parallel Gripper User Manual V1.0.pdf` | 开口参数 **0–1000，无量纲**，其中 **1000 对应标准夹指 65 mm** |
+| 动作语义 | 同上手册 | 打开/闭合（最大速度）、力矩夹取（速度 + 力矩，力矩超限停止）三种动作 |
+| SDK 接口 | `robotic_arm` 1.1.7（本地 wheel 已解包核验） | `rm_set_gripper_position(position:int)` 绝对开口 0–1000；`rm_set_gripper_pick(speed:int, force:int)` 力控夹取；`rm_set_gripper_release(speed, block, timeout)`；`rm_get_gripper_state()` 开口反馈（判"夹空/夹住"） |
+| 单指最大行程 | 由 65 mm 推导 | `65 mm / 2 = 32.5 mm`（`GRIPPER_FINGER_TRAVEL_MAX_M = 0.0325`） |
+| 几何尺寸 | **自研**（无官方网格/URDF） | box 近似，尺寸以"标准夹指 65 mm"为锚；官方 STEP（`Hardware/CAD/RMG24 Claw 3D Model.stp`）本项目未解析（无 CAD 内核依赖） |
+| u→N 力曲线 | **官方未给出** | 落地为 `src/rm75_drake/calibration/gripper_force.yaml`（`calibrated: false`）；`force_from_position()` 显式抛"未标定"，**禁止伪造牛顿数值** |
+
+### 上游夹爪仓可取得的信息（来自元数据归档）
+
+归档：`third_party/archives/two_finger_gripper-91f587b1d4ef-metadata.tar.gz`
+（sha256 `975b5474afbac9de17bf2ea2601d6eacd0267ecdc54c0f46640115ac64d154a5`，
+480 个文件条目，仅记录**文件名与字节大小**，不含二进制内容）。
+
+从该归档取得的固件文件名 / 版本信息：
+
+* 应用固件：`Software/gripper_app/Keil/MDK-ARM/board/gripper_app.bin`（58 692 B）、
+  `gripper_app.hex`（161 476 B）、`app.bin`（65 612 B）、
+  `board.hex`（180 500 B）、`jiazhua_D103.bin`（49 842 B）、
+  `RD03_one_loop_formal_D101_H.bin`（49 842 B）、`RD10(1).bin`（45 150 B）；
+* 引导固件：`Software/gripper_boot/Keil/MDK-ARM/board/gripper_boot.bin`（18 616 B）、
+  `gripper_boot.hex`（51 248 B）、`boot.bin`（18 636 B）、`tool.bin`（20 284 B）、
+  `board.hex`（51 300 B）；
+* 上位机：`Software/Two-Finger Parallel Claw Master Control v1.0.3/gripper_tools.exe`；
+* 机械/电气资料：`Hardware/CAD/RMG24 Claw 3D Model.stp`、
+  `Hardware/BOM/Claw Interface Board BOM.xls`、Gerber 与 PCB 文件。
+
+**R019 剩余项：夹爪固件哈希未取得**——本项目的归档策略是 metadata-only
+（只归档文件名与大小，不归档二进制内容），因此固件二进制的 sha256 **未取得**，
+本节**不写任何伪造哈希**。需要固化固件哈希时，应改为完整归档并把 sha256 写入
+`third_party/MANIFEST.yaml`。
+
+### 装配要点（`src/rm75_drake/models.py`）
+
+* `load_rm75_gripper()` 默认把 `gripper_base` **weld 到 world**：若夹爪基座自由浮动，
+  Drake 会给它 6 个自由度 + 2 个四元数（`num_positions` 从 2 变 9），与"夹爪恰有
+  2 个 prismatic 位置自由度"的模型契约冲突；
+* `load_rm75_gripper(plant=..., attach_to="link_7")` 把夹爪挂到机械臂法兰，
+  与机械臂同 plant 装配成一条运动链（DoF = 7 + 2）。
+
+### 复现本节结论
+
+```bash
+python3 -m pytest tests/test_gripper.py -q
+```

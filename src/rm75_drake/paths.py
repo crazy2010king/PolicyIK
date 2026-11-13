@@ -18,6 +18,8 @@ __all__ = [
     "MODEL_PATH_ENV_VAR",
     "REPO_ROOT_ENV_VAR",
     "REPO_ROOT",
+    "package_dir",
+    "calibration_dir",
     "models_dir",
     "scenarios_dir",
     "vendor_dir",
@@ -56,6 +58,12 @@ def resolve_repo_root() -> Path:
 
 
 REPO_ROOT = resolve_repo_root()
+
+#: 本 Python 包所在目录（``<root>/src/rm75_drake``）。
+package_dir = Path(__file__).resolve().parent
+
+#: 标定数据目录（夹爪力曲线等，随包分发）。
+calibration_dir = package_dir / "calibration"
 
 #: 仓库内模型根目录（package:// 的默认来源）。
 models_dir = REPO_ROOT / "models"

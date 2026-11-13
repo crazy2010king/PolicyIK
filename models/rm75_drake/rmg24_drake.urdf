@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RMG24 两指平行夹爪 —— 自研 URDF（S01-T04）
+
+  官方 Two-Finger-Gripper 仓（commit 91f587b1d4ef…）里**没有 URDF、也没有网格**：
+  只有固件、PCB、`Hardware/CAD/RMG24 Claw 3D Model.stp`（11.9 MB STEP）与手册 PDF。
+  因此本文件是**完全自研**的原始几何体模型（R009），不引用任何外部资产。
+
+  真值来源
+  ========
+  * 官方手册（`Related Files/Two-Finger Parallel Gripper User Manual V1.0.pdf`）：
+    开口指令参数范围 **0–1000，无量纲，其中 1000 对应标准夹指 65 mm**。
+  * SDK（robotic_arm 1.1.7）：`rm_set_gripper_position(position:int)` /
+    `rm_set_gripper_pick(speed:int, force:int)` / `rm_get_gripper_state()`。
+  * 单指最大行程 = 65 mm / 2 = **32.5 mm**（= GRIPPER_FINGER_TRAVEL_MAX_M）。
+
+  关键设计约束
+  ============
+  1. **禁止使用 `<mimic>`**：实测 Drake 1.51.1 / 1.55.0 解析 mimic 后仍把两个
+     prismatic 各自计入 DoF（dof=9），存在双驱动风险。双指对称由
+     `src/rm75_drake/gripper.py` 的映射层实现（两关节 q 各自 = 单指偏移量，
+     方向由 URDF 的 axis 符号区分）。
+  2. **零外部资产依赖**：collision 全部用 box 原始几何体；入 git 的模型不引用
+     任何网格文件（官方 STEP 不在归档内，也不可再分发）。
+  3. collision 名字沿用 `<link>_collision` 约定，Drake 据此生成唯一几何名
+     （如 "RMG24::finger_left_collision"），供自碰撞断言映射。
+  4. TCP frame 固定在两指**中点**、指尖高度，z 轴朝外（= 本体 z 轴）：
+     `tcp` 挂在 `gripper_base` 上，y = 0（两指对称中心），z = 0.06 m（指尖）。
+  5. 本体 link 名用 `gripper_base`（**不是** `base_link`）：夹爪与 RM75-B 常被
+     装进**同一个 plant**，frame 名必须全局唯一，否则 Drake 报重复 frame 名。
+     装配层 `rm75_drake.models.load_rm75_gripper()` 因此把可焊基座名参数化。
+-->
+<robot name="RMG24" xmlns:drake="http://drake.edu">
+  <link name="gripper_base">
+    <inertial>
+      <origin xyz="0 0 0.01" rpy="0 0 0"/>
+      <mass value="0.15"/>
+      <inertia ixx="3.625e-05" ixy="0" ixz="0"
+               iyy="3.625e-05" iyz="0" izz="6.25e-05"/>
+    </inertial>
+    <collision name="gripper_base_collision">
+      <origin xyz="0 0 0.01" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.05 0.05 0.02"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="finger_left">
+    <inertial>
+      <origin xyz="0 0.004 0.02" rpy="0 0 0"/>
+      <mass value="0.03"/>
+      <inertia ixx="4.16e-06" ixy="0" ixz="0"
+               iyy="4.36e-06" iyz="0" izz="5.2e-07"/>
+    </inertial>
+    <collision name="finger_left_collision">
+      <origin xyz="0 0.004 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.012 0.008 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="finger_right">
+    <inertial>
+      <origin xyz="0 -0.004 0.02" rpy="0 0 0"/>
+      <mass value="0.03"/>
+      <inertia ixx="4.16e-06" ixy="0" ixz="0"
+               iyy="4.36e-06" iyz="0" izz="5.2e-07"/>
+    </inertial>
+    <collision name="finger_right_collision">
+      <origin xyz="0 -0.004 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.012 0.008 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- 左指：沿 +y 张开；q ∈ [0, 0.0325] m，即单指偏移量（q=0 = 闭合）。 -->
+  <joint name="finger_joint_left" type="prismatic">
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+    <parent link="gripper_base"/>
+    <child link="finger_left"/>
+    <axis xyz="0 1 0"/>
+    <limit lower="0" upper="0.0325" effort="10" velocity="0.5"/>
+  </joint>
+
+  <!-- 右指：沿 -y 张开；q ∈ [0, 0.0325] m（符号由 axis 承担，q 同样是偏移量）。 -->
+  <joint name="finger_joint_right" type="prismatic">
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+    <parent link="gripper_base"/>
+    <child link="finger_right"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="0" upper="0.0325" effort="10" velocity="0.5"/>
+  </joint>
+
+  <!-- TCP：两指中点、指尖高度，z 朝外（本体 z 轴）。
+       用 fixed 关节挂在 gripper_base 上（Drake 的 URDF 不支持游离 link：
+       没有关节连接的 link 会成为脱离主体的独立体）。 -->
+  <link name="tcp"/>
+
+  <joint name="tcp_joint" type="fixed">
+    <origin xyz="0 0 0.06" rpy="0 0 0"/>
+    <parent link="gripper_base"/>
+    <child link="tcp"/>
+  </joint>
+</robot>

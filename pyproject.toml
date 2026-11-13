@@ -29,7 +29,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-rm75_drake = ["py.typed"]
+rm75_drake = ["py.typed", "calibration/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
