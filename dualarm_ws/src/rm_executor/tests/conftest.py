@@ -17,9 +17,12 @@ REPO_ROOT = os.path.abspath(os.path.join(TESTS_DIR, "..", "..", "..", ".."))
 HW_BRIDGE_SRC = os.path.abspath(
     os.path.join(REPO_ROOT, "dualarm_ws", "src", "rm_hw_bridge")
 )
+SAFETY_SRC = os.path.abspath(
+    os.path.join(REPO_ROOT, "dualarm_ws", "src", "rm_safety")
+)
 
-# 执行层包 + 硬件适配层（限值唯一数据源）都在 sys.path 上
-for _p in (PKG_SRC, HW_BRIDGE_SRC):
+# 执行层包 + 硬件适配层（限值唯一数据源）+ 安全层（唯一动作权威）都在 sys.path 上
+for _p in (PKG_SRC, HW_BRIDGE_SRC, SAFETY_SRC):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 

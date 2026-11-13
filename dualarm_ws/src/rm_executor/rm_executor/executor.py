@@ -32,15 +32,37 @@ E 收尾       末点保持发送若干拍 → 跟随误差 RMS/峰值 → 限�
 重放（测试断言因此是确定性的），``TickClock`` 下走真实墙钟。
 
 **零 rmctl 依赖、零 tesseract 依赖**。
+
+**安全包接线（S04）**
+------------------
+
+本执行器**不再自己二分安全动作**：跟随误差 / 断流的**判定**与**动作**统一
+交给安全包 ``rm_safety``（依赖方向 ``rm_hw_bridge < rm_safety < rm_executor
+< rmctl``）：
+
+* 阈值唯一来源 = :mod:`rm_executor.contract` 的冻结常量；策略开关唯一来源 =
+  ``rm_safety.config.load_safety_config(ws)``；
+* 动作唯一权威 = ``SafetySupervisor`` → ``SafetyActuator``（L1 降速 / L2 暂停
+  / L3 缓停 / L4 急停），**消除双重动作**（不再「既 pause 又被安全线程
+  再 stop」）；
+* 控制器错误态（``arm_err`` / ``arm_current_status``）由**看门狗线程**采集并
+  缓存，tick 线程**只读缓存**（零 SDK 进 tick 线程，红线同 P003 / P007）；
+* S03 既有事件类型与退出码口径（0 / 3 / 4）**保持不变**，安全包额外产出
+  ``safety_*`` / ``fault_*`` 事件；
+* 安全层不可用 → **降级**就地二分并留 ``safety_layer_unavailable`` 事件
+  （**不静默**）。
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 import queue
+import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rm_executor import contract
 from rm_executor import events as events_mod
@@ -86,6 +108,62 @@ DEFAULT_WATCHDOG_WAIT_TIMEOUT_S = 2.0
 
 class _BridgeUnavailable(RuntimeError):
     """硬件适配层不可用（取不到 ``RAD2DEG`` 单点换算常量）。"""
+
+
+def _format_evidence(items: Any) -> List[str]:
+    """把安全包的证据（dict 列表）格式化成**字符串**列表（事件日志口径）。
+
+    事件日志的 ``evidence`` 口径是字符串列表（见 :mod:`rm_executor.events`）；
+    安全包的证据是结构化 dict（字段固定、可离线逐条核对）。这里用
+    ``json.dumps(sort_keys=True)`` **保字段**地降级成字符串——不丢字段、
+    不改口径。
+    """
+    out: List[str] = []
+    for item in items or []:
+        if isinstance(item, str):
+            out.append(item)
+        elif isinstance(item, Mapping):
+            out.append(json.dumps(dict(item), ensure_ascii=False,
+                                  sort_keys=True, default=str))
+        else:
+            out.append(str(item))
+    return out
+
+
+def _import_safety_modules() -> Optional[Dict[str, Any]]:
+    """惰性导入安全层 ``rm_safety``（失败 → ``None``，**不抛裸异常**）。
+
+    依赖方向固定为 ``rm_hw_bridge < rm_safety < rm_executor < rmctl``：
+    执行层**依赖**安全层，安全层**不反向依赖**执行层。
+
+    本函数是执行层**唯一**触碰 ``rm_safety`` 的入口（便于静态审计
+    「安全层不被反向依赖」）。导入失败时按「安全层不可用」降级处理，
+    并由调用方**留证据**（不静默）。
+    """
+    try:
+        import rm_safety  # noqa: F401
+    except Exception:  # noqa: BLE001 - 兜底：兄弟包目录
+        sibling = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "rm_safety",
+        )
+        if os.path.isdir(sibling) and sibling not in sys.path:
+            sys.path.insert(0, sibling)
+    try:
+        from rm_safety import config as safety_config
+        from rm_safety import error_codes as safety_error_codes
+        from rm_safety import levels as safety_levels
+        from rm_safety import policy as safety_policy
+        from rm_safety.supervisor import SafetySupervisor
+    except Exception:  # noqa: BLE001 - 安全层不可用 → 降级（不抛裸异常）
+        return None
+    return {
+        "config": safety_config,
+        "error_codes": safety_error_codes,
+        "levels": safety_levels,
+        "policy": safety_policy,
+        "supervisor": SafetySupervisor,
+    }
 
 
 @dataclass(frozen=True)
@@ -174,6 +252,13 @@ class ControllerWatchdog:
         self._check_count = 0
         self._thread: Optional[threading.Thread] = None
 
+        # -- 控制器错误态缓存（S04）----------------------------------------
+        #: 控制器错误态缓存（**看门狗线程写、tick 线程只读**）
+        self._state_lock = threading.Lock()
+        self._latest_state: Optional[Dict[str, Any]] = None
+        self._state_query_count = 0
+        self._state_error = ""
+
     # -- 线程生命周期 -----------------------------------------------------
     def start(self) -> None:
         """启动后台看门狗线程（幂等）。"""
@@ -204,6 +289,30 @@ class ControllerWatchdog:
     def check_count(self) -> int:
         """已完成的检查次数（含已被上限淘汰的记录）。"""
         return self.total_checks
+
+    # -- 控制器错误态（只读缓存，tick 线程零 SDK）-----------------------
+    @property
+    def latest_state(self) -> Optional[Dict[str, Any]]:
+        """最近一次控制器错误态快照（**只读拷贝**）。
+
+        tick 线程**只读这里**，绝不调 ``transport.controller_state()``
+        （沿用「零 SDK 进 tick 线程」红线，与 ``type_query_threads``
+        断言同风格）。
+        """
+        with self._state_lock:
+            return dict(self._latest_state) if self._latest_state else None
+
+    @property
+    def state_query_count(self) -> int:
+        """控制器错误态采集次数（用于审计「查询确实发生过」）。"""
+        with self._state_lock:
+            return self._state_query_count
+
+    @property
+    def state_error(self) -> str:
+        """最近一次控制器错误态采集失败的原因（空 = 无失败）。"""
+        with self._state_lock:
+            return self._state_error
 
     def request_check(self) -> None:
         """请求一次检查（**不等**）——tick 线程唯一允许做的动作。"""
@@ -236,6 +345,38 @@ class ControllerWatchdog:
                 self.check()
             except Exception as exc:  # noqa: BLE001 - 看门狗线程绝不能死
                 self.last_error = "看门狗内部异常（%s）: %s" % (type(exc).__name__, exc)
+            try:
+                self._poll_controller_state()
+            except Exception as exc:  # noqa: BLE001 - 采集失败也不得打死看门狗
+                with self._state_lock:
+                    self._state_error = "控制器错误态采集异常（%s）: %s" % (
+                        type(exc).__name__, exc)
+
+    def _poll_controller_state(self) -> None:
+        """采集一次控制器错误态（**只在看门狗线程**）。
+
+        结果缓存到 :attr:`latest_state`；失败只留错误串，**不伪造**
+        ``arm_err`` / ``arm_current_status``（不返回空错误码冒充「无错误」）。
+        """
+        try:
+            result = self.transport.controller_state()
+        except Exception as exc:  # noqa: BLE001 - SDK 异常不得打死看门狗
+            with self._state_lock:
+                self._state_error = "controller_state 调用异常（%s）: %s" % (
+                    type(exc).__name__, exc)
+            return
+        if not isinstance(result, dict):
+            with self._state_lock:
+                self._state_error = ("controller_state 返回格式不合法（%s）"
+                                     % type(result).__name__)
+            return
+        with self._state_lock:
+            self._latest_state = dict(result)
+            self._state_query_count += 1
+            if result.get("status") == "ok":
+                self._state_error = ""
+            else:
+                self._state_error = str(result.get("reason") or "控制器错误态查询失败")
 
     def check(self) -> Optional[str]:
         """执行一次查询；返回观测到的轨迹类型名（无 → ``None``）。
@@ -409,6 +550,9 @@ class Executor:
         #: tick 线程标识（证明 SDK 状态查询不在 tick 线程）
         self._tick_thread_ident: Optional[int] = None
 
+        # -- 安全包接线（S04）-------------------------------------------
+        self._init_safety()
+
     # ------------------------------------------------------------------ 工具
     def _now(self) -> float:
         """当前时刻（秒，主时钟域）。"""
@@ -514,9 +658,14 @@ class Executor:
         return max(0.0, (self._now() - self._last_frame_time) * 1000.0)
 
     def _check_stream_health(self) -> bool:
-        """断流两档：>50 ms → RECOVERABLE；>200 ms → FATAL + 停机。
+        """断流两档：>50 ms → RECOVERABLE；>200 ms → FATAL。
 
-        返回 ``True`` = 已触发 FATAL 停机（调用方应立即中止执行）。
+        返回 ``True`` = 已判定断流（调用方应立即中止执行）。
+
+        **动作权威（S04）**：本方法**只发事件、不动动作**——急停动作由安全包
+        （``SafetySupervisor`` → ``SafetyActuator``）统一发出，避免
+        「执行器就地 stop + 安全线程再 stop」的双重动作。仅当安全层不可用
+        （降级）时才就地急停（并留证据）。
         """
         age_ms = self._stream_age_ms()
         if age_ms is None:
@@ -537,7 +686,16 @@ class Executor:
                     "检查反馈链路（SDK 连接 / UDP 订阅 / 网线）后重跑；"
                     "执行器已调用 transport.stop()",
                 )
-                self._stop_transport()
+                if self._safety is None:
+                    # 降级：安全层不可用 → 就地急停（并留证据）
+                    self._add_event(
+                        "safety_layer_unavailable_fallback", "FATAL",
+                        "安全层不可用 → 执行器就地急停（降级路径）",
+                        ["fallback=stop",
+                         "safety_error=%s" % (self._safety_error or "未知原因")],
+                        "立即人工确认机械臂安全状态并断电",
+                    )
+                    self._stop_transport()
             return True
         if age_ms > contract.STREAM_WARN_MS:
             if not self._stream_lag_active:
@@ -562,11 +720,14 @@ class Executor:
     # -------------------------------------------------- 反馈闭环（跟随误差）
     def _check_follow_error(self, error: float, cmd_deg: Sequence[float],
                             snapshot: Optional[Dict[str, Any]]) -> bool:
-        """跟随误差两档：>2° → RECOVERABLE；>5° → NEEDS_HUMAN + 暂停。
+        """跟随误差两档：>2° → RECOVERABLE；>5° → NEEDS_HUMAN。
 
-        返回 ``True`` = 已触发暂停（调用方应立即中止执行）。
-        S03 **不实现降速策略**（降速 / 缓停处置属 S04 安全链路），
-        这里只发事件 + 调 ``transport.pause()``。
+        返回 ``True`` = 已判定超限（调用方应立即中止执行）。
+
+        **动作权威（S04）**：本方法**只发事件、不动动作**——暂停动作由安全包
+        （``SafetySupervisor`` → ``SafetyActuator``）统一发出，避免
+        「既 pause 又被安全线程再 stop」的双重动作。仅当安全层不可用
+        （降级）时才就地暂停（并留证据）。
         """
         actual = self._position_deg(snapshot)
         evidence = [
@@ -587,7 +748,16 @@ class Executor:
                     "立即人工确认机械臂状态（负载 / 碰撞 / 指令可达性）；"
                     "执行器已调用 transport.pause()，排查后重跑",
                 )
-                self._pause_transport()
+                if self._safety is None:
+                    # 降级：安全层不可用 → 就地暂停（并留证据）
+                    self._add_event(
+                        "safety_layer_unavailable_fallback", "NEEDS_HUMAN",
+                        "安全层不可用 → 执行器就地暂停（降级路径）",
+                        ["fallback=pause",
+                         "safety_error=%s" % (self._safety_error or "未知原因")],
+                        "立即人工确认机械臂安全状态并断电",
+                    )
+                    self._pause_transport()
             return True
         if error > contract.FOLLOW_WARN_DEG:
             if not self._follow_warn_active:
@@ -603,9 +773,274 @@ class Executor:
         self._follow_warn_active = False
         return False
 
+    # ------------------------------------------------- 安全包接线（S04）
+    def _init_safety(self) -> None:
+        """构造安全监督器（**唯一动作权威**）。
+
+        * 阈值唯一来源 = :mod:`rm_executor.contract` 的冻结常量
+          （``FOLLOW_WARN_DEG`` / ``FOLLOW_STOP_DEG`` /
+          ``STREAM_WARN_MS`` / ``STREAM_STOP_MS``）；
+        * 策略开关唯一来源 = ``rm_safety.config.load_safety_config(ws)``
+          （读 ``workcell/rm_workcell.yaml::safety``）；
+        * 声明式错误码表 = ``rm_safety.error_codes.load_error_codes()``。
+
+        安全层不可用 → **不静默**：记 ``safety_layer_unavailable`` 事件并
+        退回 S03 的就地二分（降级路径，仍会停机 / 暂停）。
+        """
+        self._safety_modules = _import_safety_modules()
+        self._safety = None
+        self._safety_thresholds = None
+        self._safety_error = ""
+        self._safety_config: Dict[str, Any] = {}
+        self._safety_config_evidence: List[str] = []
+        self._safety_error_codes = None
+        self._safety_error_code_warnings: List[str] = []
+        self._self_triggered_stop = False
+        self._limit_check = "unavailable"
+        self._limit_check_reason = ""
+        self._limits_cache: Optional[Dict[str, Any]] = None
+        self._limits_error = ""
+
+        if self._safety_modules is None:
+            self._safety_error = "无法导入安全层 rm_safety（安全动作权威不可用）"
+            return
+        policy = self._safety_modules["policy"]
+        config_mod = self._safety_modules["config"]
+        error_codes_mod = self._safety_modules["error_codes"]
+
+        try:
+            thresholds = policy.SafetyThresholds(
+                follow_warn_deg=contract.FOLLOW_WARN_DEG,
+                follow_stop_deg=contract.FOLLOW_STOP_DEG,
+                stream_warn_ms=contract.STREAM_WARN_MS,
+                stream_stop_ms=contract.STREAM_STOP_MS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._safety_error = "安全阈值构造失败（%s）: %s" % (type(exc).__name__, exc)
+            return
+
+        cfg_res = config_mod.load_safety_config(self.ws)
+        self._safety_config_evidence = list(cfg_res.get("evidence") or [])
+        if cfg_res.get("status") == config_mod.STATUS_OK:
+            cfg = dict(cfg_res.get("config") or {})
+            self._safety_config = cfg
+            try:
+                thresholds = policy.SafetyThresholds(
+                    follow_warn_deg=contract.FOLLOW_WARN_DEG,
+                    follow_stop_deg=contract.FOLLOW_STOP_DEG,
+                    stream_warn_ms=contract.STREAM_WARN_MS,
+                    stream_stop_ms=contract.STREAM_STOP_MS,
+                    l1_speed_scale=cfg.get("l1_speed_scale", 0.5),
+                    enable_l1_slowdown=bool(cfg.get("enable_l1_slowdown", True)),
+                    enable_l2_pause_on_stream_lag=bool(
+                        cfg.get("enable_l2_pause_on_stream_lag", False)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._safety_error = "安全配置非法（%s）: %s" % (type(exc).__name__, exc)
+                return
+            try:
+                table = error_codes_mod.load_error_codes(
+                    str(cfg.get("error_codes_path") or ""))
+                self._safety_error_codes = table
+                self._safety_error_code_warnings = list(table.warnings)
+            except Exception as exc:  # noqa: BLE001
+                self._safety_error_codes = None
+                self._safety_error_code_warnings = [
+                    "错误码表读取失败（%s）: %s" % (type(exc).__name__, exc)]
+        else:
+            # 安全配置不可用 → 用契约冻结阈值 + 默认策略开关（**留证据**）
+            self._safety_error = "安全配置不可用：%s" % (cfg_res.get("reason") or "未知原因")
+            self._safety_config_evidence.append(
+                "safety config blocked → 使用契约冻结阈值 + 默认策略开关"
+                "（l1_speed_scale=0.5, enable_l1_slowdown=true, "
+                "enable_l2_pause_on_stream_lag=false）")
+
+        self._safety_thresholds = thresholds
+        self._safety = self._create_supervisor()
+
+    def _create_supervisor(self) -> Any:
+        """新建安全监督器（每次 run 重建：等级单调状态**不跨 run** 泄漏）。"""
+        if self._safety_modules is None or self._safety_thresholds is None:
+            return None
+        supervisor_cls = self._safety_modules["supervisor"]
+        return supervisor_cls(self.transport, self._safety_thresholds,
+                              on_event=self._on_safety_event)
+
+    # -------------------------------------------------------- 安全信号
+    def _watchdog_state(self) -> Optional[Dict[str, Any]]:
+        """看门狗缓存的控制器错误态（**只读缓存**，tick 线程零 SDK）。"""
+        watchdog = self._watchdog
+        if watchdog is None:
+            return None
+        return watchdog.latest_state
+
+    def _load_limits(self) -> Optional[Dict[str, Any]]:
+        """取声明限位（SI）；不可用 → ``None``（**不伪造限值**）。"""
+        if self.limits is not None:
+            return self.limits
+        if self._limits_cache is not None:
+            return self._limits_cache
+        try:
+            from rm_hw_bridge import limits as hw_limits  # 惰性导入：唯一限值源
+            self._limits_cache = hw_limits.load_joint_limits(self.ws)
+        except Exception as exc:  # noqa: BLE001
+            self._limits_error = ("读取声明限值失败（%s）: %s"
+                                  % (type(exc).__name__, exc))
+            return None
+        return self._limits_cache
+
+    def _limit_violations(self, snapshot: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """运行期限值越界条目（实际关节角（度）vs 声明限位）。
+
+        * 限值唯一来源 = ``rm_hw_bridge.limits.load_joint_limits()``（SI）；
+        * SI → 度换算收敛在 :meth:`_rad2deg` **单点**；
+        * 限值不可用 → **跳过超限判据**并把 ``limit_check`` 置为
+          ``unavailable``（**不静默**：报告 evidence 里会记下原因）。
+        """
+        actual = self._position_deg(snapshot)
+        if actual is None:
+            self._limit_check = "unavailable"
+            self._limit_check_reason = "反馈快照无关节角数据 → 跳过超限判据"
+            return []
+        limits = self._load_limits()
+        if not limits:
+            self._limit_check = "unavailable"
+            self._limit_check_reason = self._limits_error or "声明限值不可用"
+            return []
+        try:
+            factor = self._rad2deg()
+        except _BridgeUnavailable as exc:
+            self._limit_check = "unavailable"
+            self._limit_check_reason = str(exc)
+            return []
+        violations: List[Dict[str, Any]] = []
+        for index, (name, item) in enumerate(limits.items()):
+            if index >= len(actual):
+                break
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                lower = float(item["min_pos"]) * factor
+                upper = float(item["max_pos"]) * factor
+            except (KeyError, TypeError, ValueError):
+                continue
+            pos = float(actual[index])
+            if pos < lower:
+                violations.append({"joint": name, "observed_deg": pos,
+                                   "limit_deg": lower, "margin": pos - lower})
+            elif pos > upper:
+                violations.append({"joint": name, "observed_deg": pos,
+                                   "limit_deg": upper, "margin": pos - upper})
+        self._limit_check = "ok"
+        self._limit_check_reason = ""
+        return violations
+
+    def _safety_signals(self, follow_error: Optional[float],
+                        snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """组装安全判据输入（**纯读**：不产生任何 SDK 调用）。"""
+        signals: Dict[str, Any] = {
+            "follow_error_deg": follow_error,
+            "stream_age_ms": self._stream_age_ms(),
+            "limit_violations": self._limit_violations(snapshot),
+            "self_triggered_stop": bool(self._self_triggered_stop),
+            "error_code_map": self._safety_error_codes,
+        }
+        arm_err: List[int] = []
+        arm_status: Optional[int] = None
+        state = self._watchdog_state()
+        if state and state.get("status") == contract.STATUS_OK:
+            raw_err = state.get("arm_err")
+            if isinstance(raw_err, (list, tuple)):
+                for item in raw_err:
+                    if isinstance(item, bool) or not isinstance(item, (int, float)):
+                        continue
+                    arm_err.append(int(item))
+            raw_status = state.get("arm_current_status")
+            if isinstance(raw_status, int) and not isinstance(raw_status, bool):
+                arm_status = int(raw_status)
+        signals["arm_err"] = arm_err
+        signals["arm_current_status"] = arm_status
+        return signals
+
+    def _on_safety_event(self, type: str, severity: str, reason: str,
+                          evidence: Any, next_action: str) -> None:
+        """安全包事件回调 → 执行器事件日志（安全层**不碰** EventLog）。"""
+        self._add_event(type, severity, reason, _format_evidence(evidence),
+                        next_action)
+
+    def _apply_safety(self, follow_error: Optional[float],
+                      snapshot: Optional[Dict[str, Any]]) -> bool:
+        """把故障信号交给安全包判定（**唯一动作权威**）。
+
+        跟随误差 / 断流的**判定**在安全包里，安全动作也只由安全包发出
+        一次（消除「既 pause 又被安全线程再 stop」的双重动作）。
+
+        返回 ``True`` = 需要中止本次执行（L2 / L3 / L4 或动作失败）。
+        """
+        supervisor = self._safety
+        if supervisor is None:
+            return False
+        signals = self._safety_signals(follow_error, snapshot)
+        try:
+            decision = supervisor.evaluate(signals)
+        except Exception as exc:  # noqa: BLE001 - 判据异常不得假装正常
+            self._add_event(
+                "safety_evaluation_failed", "FATAL",
+                "安全判据执行异常（%s）: %s" % (type(exc).__name__, exc),
+                ["fallback=stop"],
+                "立即人工确认机械臂安全状态并断电",
+            )
+            self._self_triggered_stop = True
+            self._stop_transport()
+            return True
+        action = supervisor.last_action
+        if action is not None and action.status == "fatal":
+            # 动作失败（含 L4 急停失败）→ 执行器兜底停机（**不假装成功**）
+            self._add_event(
+                "safety_action_failed", "FATAL",
+                "安全动作失败：%s" % action.reason,
+                _format_evidence(action.evidence),
+                action.next_action or "立即人工确认机械臂安全状态并断电",
+            )
+            self._self_triggered_stop = True
+            self._stop_transport()
+            return True
+        levels = self._safety_modules["levels"]
+        if decision.level:
+            effective = action.effective_level if action is not None else decision.level
+        else:
+            effective = ""
+        if effective == levels.LEVEL_L4:
+            self._self_triggered_stop = True
+        return effective in (levels.LEVEL_L2, levels.LEVEL_L3, levels.LEVEL_L4)
+
+    def _safety_summary(self) -> str:
+        """安全层状态摘要（报告 evidence 用）。"""
+        if self._safety is None:
+            return "unavailable（%s）" % (self._safety_error or "未知原因")
+        data = self._safety.to_dict()
+        return ("current_level=%s peak_level=%s speed_scaled=%s event_count=%s "
+                "action_count=%s" % (data["current_level"], data["peak_level"],
+                                     data["speed_scaled"], data["event_count"],
+                                     data["action_count"]))
+
+    @property
+    def safety_status(self) -> Dict[str, Any]:
+        """安全层状态（``rmctl safety status`` 与报告共用）。"""
+        if self._safety is None:
+            return {"status": "unavailable", "reason": self._safety_error}
+        out = dict(self._safety.to_dict())
+        out["status"] = "ok"
+        return out
+
     # -------------------------------------------------- 安全动作（停机 / 暂停）
     def _stop_transport(self) -> None:
-        """立即停机（硬红线）并留痕（失败也要留证据）。"""
+        """立即停机（硬红线）并留痕（失败也要留证据）。
+
+        S04 起本方法**降级为兜底**：正常路径的急停由安全包发出；本方法只在
+        「安全动作失败」「判据异常」「控制器抢轨迹」「安全层不可用」时兜底
+        调用。
+        """
         try:
             result = self.transport.stop()
         except Exception as exc:  # noqa: BLE001 - 停机异常也要留痕
@@ -625,7 +1060,11 @@ class Executor:
             )
 
     def _pause_transport(self) -> None:
-        """暂停执行（跟随误差超限时的安全动作）；失败 → FATAL + 停机。"""
+        """暂停执行；失败 → FATAL + 停机。
+
+        S04 起本方法**降级为兜底**：正常路径的暂停由安全包发出；本方法只在
+        「安全层不可用（降级）」时兜底调用。
+        """
         try:
             result = self.transport.pause()
         except Exception as exc:  # noqa: BLE001
@@ -952,13 +1391,16 @@ class Executor:
             # ③ 读反馈快照 + 记跟随误差（纯读，零 SDK 调用进 tick 线程）
             snapshot = self._read_feedback()
             error = self._position_error(snapshot, cmd_deg)
+            follow_abort = False
             if error is not None:
                 self._follow_errors.append(error)
-                # 跟随误差两档（>2° 预警 / >5° 暂停）
-                if self._check_follow_error(error, cmd_deg, snapshot):
-                    return None
-            # ④ 断流两档（>50 ms 预警 / >200 ms 停机）
-            if self._check_stream_health():
+                # 跟随误差两档（>2° 预警 / >5° 暂停）——**只发事件**
+                follow_abort = self._check_follow_error(error, cmd_deg, snapshot)
+            # ④ 断流两档（>50 ms 预警 / >200 ms 停机）——**只发事件**
+            stream_abort = self._check_stream_health()
+            # ④' 安全包判定（**唯一动作权威**：动作只由 supervisor 发一次）
+            safety_abort = self._apply_safety(error, snapshot)
+            if follow_abort or stream_abort or safety_abort:
                 return None
             # ⑤ 看门狗（控制器抢轨迹）：先并入已产生的事件，再看标志位
             self._drain_pending_events()
@@ -995,11 +1437,14 @@ class Executor:
             self._hold_ticks += 1
             snapshot = self._read_feedback()
             position_error = self._position_error(snapshot, goal_deg)
+            follow_abort = False
             if position_error is not None:
                 self._follow_errors.append(position_error)
-                if self._check_follow_error(position_error, goal_deg, snapshot):
-                    return False
-            if self._check_stream_health():
+                follow_abort = self._check_follow_error(position_error, goal_deg,
+                                                       snapshot)
+            stream_abort = self._check_stream_health()
+            safety_abort = self._apply_safety(position_error, snapshot)
+            if follow_abort or stream_abort or safety_abort:
                 return False
             now = self._now()
             speed = self._speed_deg_s(snapshot)
@@ -1083,6 +1528,11 @@ class Executor:
         self._drain_pending_events()
         if watchdog_info:
             evidence.append(watchdog_info)
+        evidence.append("safety: %s" % self._safety_summary())
+        evidence.append("limit_check=%s%s" % (
+            self._limit_check,
+            ("（%s）" % self._limit_check_reason) if self._limit_check_reason else "",
+        ))
         event_list = self._events.to_list()
         status = report_mod.status_from_events(event_list)
         worst = self._events.worst_severity()
@@ -1140,11 +1590,30 @@ class Executor:
         self._stream_lost_active = False
         self._tick_thread_ident = threading.get_ident()
 
+        # -- 安全包状态重置（S04）-----------------------------------------
+        # 监督器每次 run 重建：等级单调状态**不跨 run** 泄漏
+        self._self_triggered_stop = False
+        self._limit_check = "unavailable"
+        self._limit_check_reason = ""
+        self._safety = self._create_supervisor()
+        if self._safety is None:
+            self._add_event(
+                "safety_layer_unavailable", "NEEDS_PARAM",
+                "安全层 rm_safety 不可用：%s" % (self._safety_error or "未知原因"),
+                list(self._safety_config_evidence),
+                "确认 dualarm_ws/src/rm_safety 在 sys.path 上"
+                "（export PYTHONPATH=<repo>/dualarm_ws/src/rm_safety）后重跑",
+            )
+
         t_start = self._now()
         self._last_frame_time = t_start  # 断流 age 的起点
         evidence: List[str] = [
             "mode=%s transport=%s" % (self.mode, getattr(self.transport, "name", "?")),
         ]
+        for item in self._safety_config_evidence:
+            evidence.append("safety config: %s" % item)
+        for item in self._safety_error_code_warnings:
+            evidence.append("safety error codes: %s" % item)
 
         # ---------------- 阶段 A：预校验 ----------------
         if self._config is None:
