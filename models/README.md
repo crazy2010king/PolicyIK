@@ -84,3 +84,74 @@ models/
 ```bash
 python3 -m pytest tests/test_package_map.py -q
 ```
+
+---
+
+## S01 改造版模型：`rm75_drake/rm75_drake.urdf`（S01-T02 落地）
+
+上游基线：官方 RM75-B URDF
+（`https://github.com/RealManRobot/rm_models`，commit `cff49bb40f5ed0728505c03bff0e521a0dc21acd`，
+路径 `RM75/urdf/RM75-B/urdf/RM75-B.urdf`；归档 sha256 见 `third_party/MANIFEST.yaml`）。
+
+### 官方 → 改造差异清单
+
+| # | 项 | 官方 | 改造版 | 理由 |
+|---|----|------|--------|------|
+| 1 | 速度限位 | 7 轴一律 `3.14` rad/s | J1/J2 `3.1416`，J3–J7 `3.927` rad/s | 官方参数表（J1/J2 180°/s，J3–J7 225°/s）。**本切片唯一的数值修正项** |
+| 2 | joint_7 位置限位 | `±6.28` | `±6.283185307179586`（±360°） | 官方参数表；官方 URDF 是十进制截断 |
+| 3 | collision 几何 | `.STL` 网格 | `<box>` 原始几何体（8 个 link 全部） | Drake 1.51/1.55 不解析 `.stl`（只吃 .obj/.vtk/.gltf），且凸包化会扭曲形状 |
+| 4 | collision 尺寸/原点 | 网格文件 | 官方 STL 实测轴对齐包围盒（容差 1e-4 m） | 见下方包围盒表 |
+| 5 | `<visual>` | 8 个网格引用 | **全部删除** | 官方网格许可未明示、不可再分发；入 git 的模型必须零外部资产依赖。视觉版由 `python3 scripts/convert_meshes.py` 在本机生成到 `models/rm75_drake/meshes/`（`.gitignore` 已排除） |
+| 6 | collision 命名 | 无 | 每个 collision 加 `name="<link>_collision"` | Drake 据此生成唯一几何名 `RM75-B::link_N_collision`，供自碰撞断言映射 |
+| 7 | 基座固定 | 无（DoF=14） | 装配层 `plant.WeldFrames(world, base_link)`（`Finalize()` 之前） | URDF 里写 `parent link="world"` 被项目禁止（见上文陷阱 2/3） |
+| 8 | 自碰撞过滤声明 | 无 | `<drake:disable_collision>` + 7 组相邻 link 对 | 见下方「碰撞过滤策略」 |
+| 9 | 惯量 / 质量 / COM / joint rpy / axis | 官方值 | **逐字沿用** | 官方 URDF 是唯一真值来源；总质量 7.776 kg |
+
+### collision box 尺寸与原点（官方 STL 实测，`tools/mesh_tools.py`）
+
+| link | size (m) | origin (m) |
+|------|----------|------------|
+| base_link | 0.1143 × 0.1100 × 0.1385 | -0.00215, 0.0, 0.06925 |
+| link_1 | 0.0820 × 0.1090 × 0.1425 | 0.0, -0.0135, -0.03075 |
+| link_2 | 0.0810 × 0.1930 × 0.0820 | 0.0, -0.0560, 0.0060 |
+| link_3 | 0.0700 × 0.1020 × 0.1375 | 0.0, -0.0160, -0.03475 |
+| link_4 | 0.0680 × 0.1625 × 0.0740 | 0.0, -0.04725, 0.0080 |
+| link_5 | 0.0580 × 0.0830 × 0.1100 | 0.0, -0.0125, -0.0265 |
+| link_6 | 0.0572 × 0.1435 × 0.0685 | 0.0, -0.04325, 0.00575 |
+| link_7 | 0.0680 × 0.0733 × 0.0290 | 0.0050, 0.0, -0.0145 |
+
+* 测量方法：`python3 scripts/convert_meshes.py --print-boxes`（binary STL 解析 +
+  轴对齐包围盒）；复测容差 1e-4 m。
+* 注：`link_7` 的网格 z 上界为 0（不是 z 厚度为 0）——实测 z 向**厚度为 0.029 m**，
+  因此不需要人为加厚；若后续实测出现真退化尺寸，至少取 0.005 m。
+
+### 碰撞过滤策略（重要，勿删）
+
+**Drake 1.51.1 与 1.55.0 的 URDF 解析器都不实现 `drake:disable_collision` /
+`drake:disable_collide` 标签**（已逐字节扫描两版 `libdrake.so`：字符串
+`disable_collision` / `default_collide` 出现 **0** 次；两版都只实现了
+`drake:collision_filter_group`）。因此：
+
+* URDF 里的 `<drake:disable_collision>` 块是**声明性意图**，不是生效机制；
+* 真正生效的是 **Drake 的默认父子相邻体过滤**：由 joint 直接相连的两个 body
+  默认被过滤——本模型的 7 组相邻 link 对（`base_link–link_1` … `link_6–link_7`）
+  由此被过滤；非相邻对（`base_link–link_3`、`link_1–link_3` …）默认不过滤；
+* 该行为已被 `tests/test_model_load.py::test_adjacent_pairs_are_collision_filtered`
+  与 `::test_non_adjacent_pairs_are_not_filtered` 锁死（S01-T05 会再补回归套件）。
+
+**为什么写 `default_collide="true"` 而不是 `"false"`**：若将来某版本 Drake 真的实现
+该标签，`"false"` 意味着"除这 7 组外全部过滤"，等于**静默关掉自碰撞检测**——
+那是安全相关的失效模式。`"true"`（默认碰撞 + 显式禁用这 7 组）与当前实际行为
+一致，且对未来实现是安全的。
+
+### 零位高度锚点
+
+零位末端高度 `0.8505 m` = `d1 + d3 + d5 + d7` = 240.5 + 256 + 210 + 144 mm
+（官方 MDH）。实测 Drake FK：`[0.0, 2.24e-06, 0.8505]`——y 的 2.24e-6 偏差来自
+官方 URDF 的 `rpy = 1.5708` 舍入（不是模型错误），断言用 `|y| < 1e-5`。
+
+### 复现本节结论
+
+```bash
+python3 -m pytest tests/test_model_load.py -q
+```

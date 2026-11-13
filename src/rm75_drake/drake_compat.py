@@ -72,20 +72,46 @@ def baseline_profile() -> str:
 
 
 # ── 差异项 1：位姿求值 ────────────────────────────────────────────────
-def eval_body_pose_in_world(context, body) -> Any:
+def eval_body_pose_in_world(context, body, plant=None) -> Any:
     """返回 body 在世界系下的位姿。
 
     新版用 ``plant.EvalBodyPoseInWorld``，旧版只有 ``EvalPoseInWorld``；这里优先调用新版，
-    旧版自动回落。TODO(S01)：确认 RM75-B 的 base link 语义后收敛为单一调用。
+    旧版自动回落。
+
+    ``plant`` 可显式给出（**推荐**：Drake 1.51 的 ``RigidBody`` 只有
+    ``model_instance()``，没有 ``get_model()``，无法从 body 反推 plant）；
+    未给出时尝试从 body 自身反推（兼容较新版本的 ``body.get_model()``）。
     """
-    plant = body.get_model().GetPlant() if hasattr(body, "get_model") else None
     if plant is None:
-        raise TypeError("eval_body_pose_in_world 需要传入 MultibodyPlant 或其 body")
+        plant = _plant_from_body(body)
+    if plant is None:
+        raise TypeError(
+            "eval_body_pose_in_world 需要 plant（或能提供 plant 的 body）；"
+            "Drake 1.51 的 RigidBody 无法反推 plant，请显式传 plant=。"
+        )
     if hasattr(plant, "EvalBodyPoseInWorld"):
         return plant.EvalBodyPoseInWorld(context, body)
     if hasattr(plant, "EvalPoseInWorld"):  # pragma: no cover - 老版本路径
         return plant.EvalPoseInWorld(context, body)
     raise AttributeError("该 Drake 版本既无 EvalBodyPoseInWorld 也无 EvalPoseInWorld")
+
+
+def _plant_from_body(body) -> Any:
+    """尝试从 body 反推所属 MultibodyPlant；无法反推时返回 ``None``。
+
+    兼容两种形态：
+    * 较新版本：``body.get_model()`` 返回 MultibodyPlant；
+    * 旧版本：``body.get_model()`` 返回 ModelInstance（需要 ``.GetPlant()``）。
+    """
+    getter = getattr(body, "get_model", None)
+    if not callable(getter):
+        return None
+    model = getter()
+    if hasattr(model, "GetPlant"):
+        return model.GetPlant()
+    if hasattr(model, "EvalBodyPoseInWorld"):
+        return model
+    return None
 
 
 # ── 差异项 2：RPY 取值 ────────────────────────────────────────────────

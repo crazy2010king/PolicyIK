@@ -1,0 +1,233 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  RM75-B 定点改造版 URDF（S01-T02）
+
+  基线：官方 RM75-B URDF
+        上游 repo  : https://github.com/RealManRobot/rm_models
+        上游 commit: cff49bb40f5ed0728505c03bff0e521a0dc21acd
+        路径       : RM75/urdf/RM75-B/urdf/RM75-B.urdf
+        （归档 sha256 见 third_party/MANIFEST.yaml；官方文件本身 sha256 =
+          4a5ea3978135602209cda328ab87a11e238e337d74eac022dcd862e7c29cffa1）
+
+  相对官方的**唯一数值修正**：速度限位（官方 URDF 一律 3.14，与官方参数表不符）
+        joint_1 / joint_2 = 3.1416 rad/s（180°/s）
+        joint_3..joint_7 = 3.927  rad/s（225°/s）
+
+  其他结构性改造（逐项理由见 models/README.md「官方 → 改造差异清单」）：
+    1. collision：官方 .STL 网格 → 原始几何体 box，size/原点 = 官方 STL 实测
+       轴对齐包围盒（tools/mesh_tools.py，容差 1e-4 m）。
+    2. 删除全部 <visual> 网格引用（官方网格不可再分发；入 git 的模型零外部
+       资产依赖）。视觉版由 scripts/convert_meshes.py 在本机生成到
+       models/rm75_drake/meshes/（.gitignore 已排除）。
+    3. joint_7 位置限位统一为 ±6.283185307179586（官方表 ±360°；官方 URDF
+       原值 ±6.28）。
+    4. 基座**不**写 parent link="world"：Drake 的 URDF 解析器不提供这种写法，
+       基座由装配层 src/rm75_drake/models.py 在 Finalize() 之前
+       plant.WeldFrames(world, base_link) 显式固定。
+
+  自碰撞过滤声明（重要说明，勿删）：
+    Drake 1.51.1 与 1.55.0 的 URDF 解析器**都不实现** drake:disable_collision /
+    drake:disable_collide 标签（已在本机 libdrake.so 与基线容器 libdrake.so 中
+    逐字节扫描确认：字符串 "disable_collision" 出现 0 次）。因此下面的
+    <drake:disable_collision> 块是**声明性意图**，不是生效机制。
+    真正生效的是 Drake 的默认相邻体过滤：父子（joint 直接相连）body 对默认被
+    过滤，本模型的 7 组相邻 link 对（base_link–link_1 … link_6–link_7）由此被
+    过滤；非相邻对（link_1–link_3 等）默认不过滤。
+    这里写 default_collide="true"（= 默认碰撞 + 显式禁用 7 组相邻对）而不是
+    "false"：若将来某版本 Drake 真的实现该标签，"false" 会让除这 7 组以外的
+    所有对都被过滤，等于静默关掉自碰撞检测 —— 那是安全相关的失效模式。
+-->
+<robot name="RM75-B" xmlns:drake="http://drake.edu">
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0.00049987 5.2709E-05 0.060019" rpy="0 0 0"/>
+      <mass value="1.862"/>
+      <inertia ixx="0.0017232" ixy="-3.1058E-06" ixz="-3.7924E-05"
+               iyy="0.0017051" iyz="1.3691E-06" izz="0.00090158"/>
+    </inertial>
+    <collision name="base_link_collision">
+      <origin xyz="-0.00215 0 0.06925" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.1143 0.11 0.1385"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="link_1">
+    <inertial>
+      <origin xyz="0.000241 -0.013273 -0.00995" rpy="0 0 0"/>
+      <mass value="1.574"/>
+      <inertia ixx="0.002487573" ixy="0.000009663" ixz="-0.000007909"
+               iyy="0.002321038" iyz="0.000179393" izz="0.001450554"/>
+    </inertial>
+    <collision name="link_1_collision">
+      <origin xyz="0 -0.0135 -0.03075" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.082 0.109 0.1425"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint_1" type="revolute">
+    <origin xyz="0 0 0.2405" rpy="0 0 0"/>
+    <parent link="base_link"/>
+    <child link="link_1"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.106" upper="3.106" effort="60" velocity="3.1416"/>
+  </joint>
+
+  <link name="link_2">
+    <inertial>
+      <origin xyz="-0.000357 -0.106789 0.005329" rpy="0 0 0"/>
+      <mass value="1.217"/>
+      <inertia ixx="0.003494121" ixy="0.000002921" ixz="-0.000005613"
+               iyy="0.000892721" iyz="-0.000583884" izz="0.003444080"/>
+    </inertial>
+    <collision name="link_2_collision">
+      <origin xyz="0 -0.056 0.006" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.081 0.193 0.082"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint_2" type="revolute">
+    <origin xyz="0 0 0" rpy="-1.5708 0 0"/>
+    <parent link="link_1"/>
+    <child link="link_2"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.2689" upper="2.2689" effort="60" velocity="3.1416"/>
+  </joint>
+
+  <link name="link_3">
+    <inertial>
+      <origin xyz="0.000003 -0.01398 -0.011324" rpy="0 0 0"/>
+      <mass value="1.11"/>
+      <inertia ixx="0.001836663" ixy="0.000002259" ixz="-0.000004216"
+               iyy="0.001498875" iyz="0.000037167" izz="0.001062545"/>
+    </inertial>
+    <collision name="link_3_collision">
+      <origin xyz="0 -0.016 -0.03475" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.07 0.102 0.1375"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint_3" type="revolute">
+    <origin xyz="0 -0.256 0" rpy="1.5708 0 0"/>
+    <parent link="link_2"/>
+    <child link="link_3"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.106" upper="3.106" effort="30" velocity="3.927"/>
+  </joint>
+
+  <link name="link_4">
+    <inertial>
+      <origin xyz="-0.000005 -0.084658 0.004747" rpy="0 0 0"/>
+      <mass value="0.685"/>
+      <inertia ixx="0.001282444" ixy="-0.000000551" ixz="-0.000000630"
+               iyy="0.000373013" iyz="-0.000232084" izz="0.001256177"/>
+    </inertial>
+    <collision name="link_4_collision">
+      <origin xyz="0 -0.04725 0.008" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.068 0.1625 0.074"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint_4" type="revolute">
+    <origin xyz="0 0 0" rpy="-1.5708 0 0"/>
+    <parent link="link_3"/>
+    <child link="link_4"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.356" upper="2.356" effort="30" velocity="3.927"/>
+  </joint>
+
+  <link name="link_5">
+    <inertial>
+      <origin xyz="0.000078 -0.012937 -0.008781" rpy="0 0 0"/>
+      <mass value="0.619"/>
+      <inertia ixx="0.000627336" ixy="0.000001636" ixz="-0.000001345"
+               iyy="0.000542455" iyz="0.000034970" izz="0.000370291"/>
+    </inertial>
+    <collision name="link_5_collision">
+      <origin xyz="0 -0.0125 -0.0265" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.058 0.083 0.11"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint_5" type="revolute">
+    <origin xyz="0 -0.21 0" rpy="1.5708 0 0"/>
+    <parent link="link_4"/>
+    <child link="link_5"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.106" upper="3.106" effort="10" velocity="3.927"/>
+  </joint>
+
+  <link name="link_6">
+    <inertial>
+      <origin xyz="-0.000014 -0.078524 0.002819" rpy="0 0 0"/>
+      <mass value="0.602"/>
+      <inertia ixx="0.000780774" ixy="-0.000000121" ixz="-0.000000469"
+               iyy="0.000289973" iyz="-0.000120513" izz="0.000763955"/>
+    </inertial>
+    <collision name="link_6_collision">
+      <origin xyz="0 -0.04325 0.00575" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.0572 0.1435 0.0685"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint_6" type="revolute">
+    <origin xyz="0 0 0" rpy="-1.5708 0 0"/>
+    <parent link="link_5"/>
+    <child link="link_6"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-2.234" upper="2.234" effort="10" velocity="3.927"/>
+  </joint>
+
+  <link name="link_7">
+    <inertial>
+      <origin xyz="0.001094 -0.000077 -0.010119" rpy="0 0 0"/>
+      <mass value="0.107"/>
+      <inertia ixx="0.000044123" ixy="-0.000000064" ixz="0.0000003"
+               iyy="0.000035078" iyz="-0.000000029" izz="0.000065445"/>
+    </inertial>
+    <collision name="link_7_collision">
+      <origin xyz="0.005 0 -0.0145" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.068 0.0733 0.029"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="joint_7" type="revolute">
+    <origin xyz="0 -0.144 0" rpy="1.5708 0 0"/>
+    <parent link="link_6"/>
+    <child link="link_7"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-6.283185307179586" upper="6.283185307179586" effort="10" velocity="3.927"/>
+  </joint>
+
+  <!--
+    相邻 link 对的显式碰撞禁用声明（7 组，父子直接相连的 body 对）。
+    说明见文件头：Drake 1.51.1 / 1.55.0 不实现本标签，实际生效的是 Drake
+    默认的父子相邻体过滤；本块是声明性意图 + 未来兼容的安全写法
+    （default_collide="true" = 默认碰撞、显式禁用这 7 组）。
+    禁止写 link="world"（基座由装配层 weld 固定）。
+  -->
+  <drake:disable_collision default_collide="true">
+    <drake:disable_collide link1="base_link" link2="link_1"/>
+    <drake:disable_collide link1="link_1" link2="link_2"/>
+    <drake:disable_collide link1="link_2" link2="link_3"/>
+    <drake:disable_collide link1="link_3" link2="link_4"/>
+    <drake:disable_collide link1="link_4" link2="link_5"/>
+    <drake:disable_collide link1="link_5" link2="link_6"/>
+    <drake:disable_collide link1="link_6" link2="link_7"/>
+  </drake:disable_collision>
+</robot>
