@@ -12,6 +12,11 @@
   在**同一次碰撞查询**中统一判定（R005）；并把「q 维度必须等于
   ``plant.num_positions()``（否则 Drake 直接 abort）」收口成可捕获的
   :class:`SceneError`。
+* :mod:`rm75_drake.bimanual.collision_filter` —— **双臂碰撞过滤矩阵**：
+  程序化地把「同臂相邻过滤 / 左右臂互检 / 夹爪指 vs 被抓物体放行 / 夹爪指 vs
+  本臂掌部放行」四条规则翻译成 Drake 的
+  ``CollisionFilterDeclaration`` 并**真正施加到场景图**（碰撞判定结果会变，
+  不是只记日志）。
 
 **为什么必须走「变体」路线（实测钉死，S04-T01）**
 
@@ -60,15 +65,16 @@ __all__ = [
     "variant_robot_name",
     "write_variants",
     "dual_scene",
+    "collision_filter",
 ]
 
 
 def __getattr__(name: str) -> Any:
     """PEP 562 惰性子模块导入（``dual_scene`` 依赖 pydrake，import 时不拉起）。"""
-    if name == "dual_scene":
+    if name in ("dual_scene", "collision_filter"):
         import importlib
 
-        module = importlib.import_module(f"{__name__}.dual_scene")
+        module = importlib.import_module(f"{__name__}.{name}")
         globals()[name] = module
         return module
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

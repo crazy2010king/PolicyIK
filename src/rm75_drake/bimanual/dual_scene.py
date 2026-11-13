@@ -247,6 +247,7 @@ def build_dual_scene(
     edge_step_size: float = 0.01,
     gripper_urdfs: Optional[Mapping[str, str]] = None,
     include_grippers_in_collision: bool = False,
+    adjacent_bodies_collision_filters: bool = True,
 ) -> DualSceneBundle:
     """把双臂场景装配成**同一个 plant**。
 
@@ -263,6 +264,11 @@ def build_dual_scene(
         夹爪是否进入碰撞检查器的 ``robot_model_instances``。
         默认 ``False``（夹爪排除在碰撞判定外）。置 ``True`` 时 **q 必须包含
         夹爪的 4 个 prismatic 自由度**（否则几何不随 q 更新）。
+    adjacent_bodies_collision_filters:
+        **同臂父子相邻体过滤**开关（Drake 的
+        ``plant.set_adjacent_bodies_collision_filters``）。Drake 只允许在
+        ``Finalize()`` **之前**设置，因此只能在这里（装配期）给。
+        默认 ``True``（保留 Drake 默认：相邻体不过滤会误报）。
 
     装配顺序（**固定**，违反会出问题）
     ----------------------------------
@@ -371,6 +377,9 @@ def build_dual_scene(
             plant.GetFrameByName(spec.base_link),
             _extrinsic_transform(extrinsic),
         )
+
+    # ── 相邻体过滤：只能在 Build() 之前设置（post-finalize 会抛）──
+    plant.set_adjacent_bodies_collision_filters(bool(adjacent_bodies_collision_filters))
 
     # ── 障碍物：静态几何挂在世界系上（anchored），并显式分配 proximity 角色 ──
     source_id = scene_graph.RegisterSource(OBSTACLE_SOURCE_NAME)
