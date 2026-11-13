@@ -83,6 +83,10 @@ class SceneBundle:
         障碍物几何所在的 ``SourceId``。
     obstacle_geometry_ids:
         障碍物几何 id 列表（顺序 = ``scenario.obstacles`` 顺序）。
+    urdf_paths:
+        机器人 URDF 的**本地绝对路径**（顺序 = ``scenario.robots`` 顺序）。
+        供 S02-T04 的 IRIS 区域缓存计算**模型版本标识**（URDF 内容 sha256），
+        以便缓存文件能拒绝「模型换了还复用旧凸区域」。
     """
 
     robot_diagram: Any
@@ -96,6 +100,7 @@ class SceneBundle:
     obstacle_geometry_ids: Tuple[Any, ...] = ()
     model_instances: Tuple[Any, ...] = ()
     robot_name: str = ""
+    urdf_paths: Tuple[str, ...] = ()
 
 
 def _robot_joint_names(plant) -> List[str]:
@@ -148,15 +153,19 @@ def build_scene(scenario, edge_step_size: float = 0.01) -> SceneBundle:
     scene_graph = builder.scene_graph()
     parser = builder.parser()
 
-    package_map.attach_package_map(parser, package_map.build_package_map())
+    pkg_map = package_map.build_package_map()
+    package_map.attach_package_map(parser, pkg_map)
 
     model_instances: List[Any] = []
+    urdf_paths: List[str] = []
     for spec in scenario.robots:
         # url= 必须是关键字（位置参数会被 Drake 当成相对 cwd 的文件名）。
         indices = parser.AddModels(url=spec.urdf)
         if not indices:
             raise SceneError(f"解析 {spec.urdf} 没有得到任何 model instance")
         model_instances.append(indices[0])
+        # 解析出本地路径（供 IRIS 区域缓存算模型版本标识）。
+        urdf_paths.append(package_map.resolve_package_url(pkg_map, spec.urdf))
 
     # 固定基座：必须在 Build() 之前（build 之后 plant 已 Finalize）。
     for spec in scenario.robots:
@@ -211,6 +220,7 @@ def build_scene(scenario, edge_step_size: float = 0.01) -> SceneBundle:
         obstacle_geometry_ids=tuple(geometry_ids),
         model_instances=tuple(model_instances),
         robot_name=primary.name,
+        urdf_paths=tuple(urdf_paths),
     )
 
 

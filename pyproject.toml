@@ -33,3 +33,6 @@ rm75_drake = ["py.typed", "calibration/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: 规划重负载用例（如 IRIS 区域生成，单例数秒至数十秒）；CI fast 档用 -m 'not slow' 跳过",
+]
