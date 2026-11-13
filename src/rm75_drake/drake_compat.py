@@ -13,6 +13,13 @@
 5. ``DifferentialInverseKinematicsParameters(num_positions, num_velocities)``——
    老版本允许 ``num_velocities=None``，新版本必须显式给出。
 6. ``DiffIKResult.status`` 的判定方式随版本变化（新版返回枚举，旧版可能是布尔/字符串）。
+7. ``CollisionCheckerParams.model`` 在 1.51/1.55 **只接受 ``RobotDiagram``**：传
+   ``MultibodyPlant`` 或 ``ModelInstanceIndex`` 会抛 pybind 的
+   ``RuntimeError: Unable to cast Python instance of type ... to C++ type '?'``。
+   ``SceneGraphCollisionChecker`` 的构造器在这两档**只接受**
+   ``CollisionCheckerParams`` 一个参数（ kwargs 重载虽然存在，但同样受 §7 限制）。
+   因此 :func:`make_collision_checker_params` 会把非法 ``model`` 显式转成
+   可读的 :class:`TypeError`，并由 :func:`make_collision_checker` 提供工厂入口。
 
 ## 反模式（差异项 0 的翻版）：解析前不得预预留 model instance 槽位
 
@@ -39,8 +46,10 @@ __all__ = [
     "baseline_profile",
     "eval_body_pose_in_world",
     "roll_pitch_yaw",
+    "rotation_from_rpy",
     "joint_by_index",
     "make_collision_checker_params",
+    "make_collision_checker",
     "diff_ik_parameters",
     "diff_ik_succeeded",
 ]
@@ -132,6 +141,22 @@ def roll_pitch_yaw(rpy) -> Tuple[float, float, float]:
     )
 
 
+def rotation_from_rpy(rpy):
+    """把 ``(roll, pitch, yaw)``（**弧度**）转成 :class:`pydrake.math.RotationMatrix`。
+
+    Drake 1.51/1.55 的 ``pydrake.math.RotationMatrix`` **没有**静态方法
+    ``RPY(...)``（只有 ``RotationMatrix(RollPitchYaw(...))``、四元数、AngleAxis
+    等构造重载），因此统一走 ``RollPitchYaw``——1.51/1.55/1.58 同构。
+
+    约定：rpy 是**内旋 xyz**（``R = Rz(yaw)·Ry(pitch)·Rx(roll)``），与
+    :class:`rm75_drake.scenario.Scenario` 的 rpy 字段一致。
+    """
+    from pydrake.math import RollPitchYaw, RotationMatrix
+
+    roll, pitch, yaw = (float(v) for v in rpy)
+    return RotationMatrix(RollPitchYaw(roll, pitch, yaw))
+
+
 # ── 差异项 3：关节索引取关节 ──────────────────────────────────────────
 def joint_by_index(plant, index: int):
     """按**序号**取关节（兼容 ``get_joint(GetJointIndices()[i])`` 与旧的 ``joint(i)``）。"""
@@ -141,6 +166,43 @@ def joint_by_index(plant, index: int):
 
 
 # ── 差异项 4：碰撞检查参数 ────────────────────────────────────────────
+def _coerce_collision_model(model: Any) -> Any:
+    """把 ``model`` 参数规范化成 Drake 接受的 ``RobotDiagram``。
+
+    Drake 1.51/1.55 的 ``CollisionCheckerParams.model`` 字段只接受
+    ``RobotDiagram``（pybind 里是 C++ ``Model*``）。传入 ``MultibodyPlant`` 或
+    ``ModelInstanceIndex`` 会抛不透明的
+    ``RuntimeError: Unable to cast Python instance of type ... to C++ type '?'``。
+
+    这里把两类误用转成**可读的** :class:`TypeError`，并指明正确用法：
+
+    * ``MultibodyPlant`` → 请用 ``RobotDiagramBuilder`` 构建 ``RobotDiagram``
+      （见 :func:`rm75_drake.planning.scene.build_scene`）；
+    * ``ModelInstanceIndex`` → 请用 ``robot_model_instances=[...]`` 表达。
+    """
+    from pydrake.multibody.plant import MultibodyPlant
+    from pydrake.multibody.tree import ModelInstanceIndex
+    from pydrake.planning import RobotDiagram
+
+    if isinstance(model, RobotDiagram):
+        return model
+    if isinstance(model, MultibodyPlant):
+        raise TypeError(
+            "CollisionCheckerParams.model 只接受 RobotDiagram（Drake 1.51/1.55 实测）："
+            "传 MultibodyPlant 会抛 pybind 的 'Unable to cast' RuntimeError。"
+            "请改用 RobotDiagramBuilder 构建 RobotDiagram 后传入"
+            "（见 rm75_drake.planning.scene.build_scene）。"
+        )
+    if isinstance(model, ModelInstanceIndex):
+        raise TypeError(
+            "CollisionCheckerParams.model 不接受 ModelInstanceIndex："
+            "机器人模型实例请用 robot_model_instances=[...] 表达。",
+        )
+    raise TypeError(
+        f"model 必须是 RobotDiagram，收到 {type(model).__name__}"
+    )
+
+
 def make_collision_checker_params(
     robot_model_instances: Optional[Sequence[Any]] = None,
     edge_step_size: float = 0.01,
@@ -149,21 +211,69 @@ def make_collision_checker_params(
     """构造 ``CollisionCheckerParams``。
 
     * ``robot_model_instances`` 必须是 ``ModelInstanceIndex``（传入裸整数会被 Drake CHECK 拒绝）；
-    * ``edge_step_size`` 必须 > 0，否则 Drake CHECK 失败。
+    * ``edge_step_size`` 必须 > 0，否则 Drake CHECK 失败（本函数提前抛
+      :class:`ValueError`，把不透明的 CHECK 变成可读错误）；
+    * ``model`` 只能是 ``RobotDiagram``（``MultibodyPlant`` / ``ModelInstanceIndex``
+      会被 :func:`_coerce_collision_model` 转成可读的 :class:`TypeError`）。
+      ``None`` 表示**不设置**该字段（保持旧行为）。
     """
     from pydrake.multibody.tree import ModelInstanceIndex
     from pydrake.planning import CollisionCheckerParams
 
+    if not isinstance(edge_step_size, (int, float)) or isinstance(edge_step_size, bool):
+        raise ValueError(f"edge_step_size 必须是数值，收到 {edge_step_size!r}")
+    if edge_step_size <= 0.0:
+        raise ValueError(f"edge_step_size 必须 > 0（m），收到 {edge_step_size!r}")
+
     params = CollisionCheckerParams()
     params.edge_step_size = edge_step_size
     if model is not None:
-        params.model = model
+        params.model = _coerce_collision_model(model)
     if robot_model_instances:
         params.robot_model_instances = [
             mi if isinstance(mi, ModelInstanceIndex) else ModelInstanceIndex(int(mi))
             for mi in robot_model_instances
         ]
     return params
+
+
+def make_collision_checker(
+    robot_model_instances: Optional[Sequence[Any]] = None,
+    edge_step_size: float = 0.01,
+    model: Optional[Any] = None,
+    robot_diagram: Optional[Any] = None,
+):
+    """构造 ``SceneGraphCollisionChecker``（Drake 1.51/1.55 的版本差异收口点）。
+
+    参数
+    ----
+    robot_diagram:
+        ``RobotDiagram``（推荐用这个参数名，与 ``model`` 等价但更明确）。
+    model:
+        ``model`` 的别名（两者给其一即可）；只接受 ``RobotDiagram``。
+    robot_model_instances:
+        机器人模型实例（``ModelInstanceIndex`` 列表或裸整数列表）。
+    edge_step_size:
+        边采样步长（m），必须 > 0。
+
+    返回
+    ----
+    :class:`pydrake.planning.SceneGraphCollisionChecker`
+    """
+    from pydrake.planning import SceneGraphCollisionChecker
+
+    diagram = robot_diagram if robot_diagram is not None else model
+    if diagram is None:
+        raise TypeError(
+            "make_collision_checker 需要 RobotDiagram（robot_diagram= / model=）："
+            "Drake 1.51/1.55 的 CollisionCheckerParams.model 不接受 MultibodyPlant。"
+        )
+    params = make_collision_checker_params(
+        robot_model_instances=robot_model_instances,
+        edge_step_size=edge_step_size,
+        model=diagram,
+    )
+    return SceneGraphCollisionChecker(params)
 
 
 # ── 差异项 5/6：DiffIK 参数与结果判定 ────────────────────────────────

@@ -1,29 +1,53 @@
-# scenario schema 占位模板（T02）
+# 单臂场景：RM75-D + 一个箱体障碍物（scenario **正式 schema**，schema_version: 1）
 #
-# TODO(S02): 填充正式 schema —— 本文件当前只是**顶层键占位**，
-# 键名与语义约定如下，S02 落地后不得随意改名（改名会击穿 golden-file 回归）：
+# 单位约定（全表 SI，详见 src/rm75_drake/scenario.py 的模块 docstring）：
+#   * 长度：m（米）
+#   * 角度：**rad（弧度）**，**不接收度**
+#   * 时间：s（秒）
+#   * 夹爪开口：u ∈ [0, 1000]
 #
-#   robots         机器人列表（每项含 name / urdf(package:// URL) / base_link / 关节顺序等）
-#   base_extrinsics 机器人基座外参（相对场景世界系的位置/姿态）
-#   obstacles      障碍物列表（几何体 + 位姿）
-#   calibration    标定参数（关节零位、工具偏置等）
+# 顶层四键固定为 robots / base_extrinsics / obstacles / calibration
+# （S02 落地后**不得改名**：改名会击穿 S07 的 golden-file 回归）。
 #
-# S02 会补充：字段校验、单位约定（SI）、默认值与版本号字段 schema_version。
+# 未知键 / 缺字段 / 维度或单位写错 → rm75_drake.scenario.ScenarioError
+# （禁止静默默认值）。
 
-schema_version: 0
+schema_version: 1
 
-robots: []
-#  - name: rm75
-#    urdf: package://rm75_drake/rm75_b.urdf
-#    base_link: base_link
+# 机器人列表（关节顺序 = 规划链路的变量顺序）。
+robots:
+  - name: rm75
+    urdf: package://rm75_drake/rm75_drake.urdf
+    base_link: base_link
+    joint_names:
+      - joint_1
+      - joint_2
+      - joint_3
+      - joint_4
+      - joint_5
+      - joint_6
+      - joint_7
 
-base_extrinsics: {}
-#  rm75:
-#    xyz: [0.0, 0.0, 0.0]
-#    rpy: [0.0, 0.0, 0.0]
+# 机器人基座相对场景世界系的外参（m / rad）。
+base_extrinsics:
+  rm75:
+    xyz: [0.0, 0.0, 0.0]
+    rpy: [0.0, 0.0, 0.0]
 
-obstacles: []
+# 静态障碍物。
+#   type: 目前支持 box
+#   size: **外形全长**（m，x/y/z），不是半长（Drake Box 用半长，装配层自动换算）
+#   pose: xyz（m）+ rpy（rad）
+obstacles:
+  - name: workbench_box
+    type: box
+    size: [0.60, 0.60, 0.05]
+    pose:
+      xyz: [0.45, 0.0, 0.025]
+      rpy: [0.0, 0.0, 0.0]
 
-calibration: {}
-#  joint_zero_offset: {}
-#  tool_offset: {}
+# 标定参数（键必须存在，可以是空映射 {}）。
+calibration:
+  gripper_force:
+    # 相对 src/rm75_drake/calibration/ 解析
+    file: gripper_force.yaml
