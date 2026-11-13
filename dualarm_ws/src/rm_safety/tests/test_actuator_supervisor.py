@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 
 import pytest
@@ -407,11 +409,31 @@ def test_supervisor_does_not_touch_event_log():
     assert not [name for name in dir(supervisor_mod) if "EventLog" in name]
 
 
-def test_safety_layer_has_no_reverse_dependency():
-    """import rm_safety 后不得出现执行层 / 体验层 / 规划内核模块。"""
-    for name in ("rm_executor", "rm_hw_bridge", "rmctl"):
-        assert name not in sys.modules, "安全层不得 import %s" % name
-    assert not [m for m in sys.modules if m.startswith("tesseract")]
+def test_safety_layer_has_no_reverse_dependency(safety_pkg_root):
+    """``import rm_safety`` 后不得出现执行层 / 体验层 / 规划内核模块。
+
+    **子进程隔离**断言（与 ``test_levels_policy.py`` 的等价检查同风格）：
+    当前 pytest 会话可能已经由其它包（rmctl / rm_hw_bridge / rm_executor）
+    导入过上层模块，直接查 ``sys.modules`` 会把「会话状态」误判为
+    「被测包反向依赖」。因此在**只把 rm_safety 包根**放进 PYTHONPATH 的
+    独立子进程里导入，再检查其 sys.modules。
+    """
+    code = (
+        "import sys, json\n"
+        "import rm_safety\n"
+        "bad = sorted(m for m in sys.modules\n"
+        "             if m == 'rmctl' or m.startswith('rmctl.')\n"
+        "             or m == 'rm_executor' or m.startswith('rm_executor.')\n"
+        "             or m == 'rm_hw_bridge' or m.startswith('rm_hw_bridge.')\n"
+        "             or m.startswith('tesseract'))\n"
+        "print(json.dumps(bad))\n"
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = safety_pkg_root
+    proc = subprocess.run([sys.executable, "-c", code], env=env,
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().endswith("[]"), proc.stdout
 
 
 def test_supervisor_status_dict(thresholds):
