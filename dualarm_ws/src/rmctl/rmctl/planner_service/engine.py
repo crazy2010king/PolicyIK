@@ -396,18 +396,55 @@ def _extract_trajectory(composite: Any) -> Tuple[List[List[float]], List[float]]
     return points, times
 
 
+def _emit_stage(on_stage: Optional[Any], stage: str) -> None:
+    """发阶段心跳（**回调异常绝不掀翻规划**）。
+
+    阶段名：``"plan"``（开始规划）/ ``"verify"``（开始四道校验）/
+    ``"done"``（结束）。服务端据此在超时 / 取消响应里说明「在哪个阶段被
+    中断」。
+    """
+    if on_stage is None:
+        return
+    try:
+        on_stage(stage)
+    except Exception:  # noqa: BLE001 - 心跳失败不影响规划本身
+        pass
+
+
 def plan(
     request: PlanRequest,
     ws: Optional[str] = None,
     model: Any = None,
+    on_stage: Optional[Any] = None,
+    seed_applied: bool = False,
 ) -> PlanResponse:
     """执行一次规划，返回契约层的 :class:`PlanResponse`。
 
     :param request: :class:`PlanRequest`（非法请求由构造层逐字段指名地抛出）
     :param ws: 工作区根（决定 ``workcell/planner/*.yaml`` 与模型解析位置）
     :param model: 已加载的 ``rmctl.model.Model``（``None`` → 按 ``ws`` 加载）
+    :param on_stage: 阶段心跳回调（可选）：``on_stage("plan"|"verify"|"done")``
+    :param seed_applied: 进程级种子**已由调用方设定**（worker 子进程在启动
+        时就调了 :func:`apply_seed`）→ 本函数不再重复设定
     :raises InvalidRequest: 请求非法时**透出**（引擎不吞异常）
     """
+    try:
+        return _plan_inner(
+            request, ws=ws, model=model, on_stage=on_stage,
+            seed_applied=seed_applied,
+        )
+    finally:
+        _emit_stage(on_stage, "done")
+
+
+def _plan_inner(
+    request: PlanRequest,
+    ws: Optional[str] = None,
+    model: Any = None,
+    on_stage: Optional[Any] = None,
+    seed_applied: bool = False,
+) -> PlanResponse:
+    """:func:`plan` 的实现（外层负责发 ``done`` 心跳）。"""
     if not isinstance(request, PlanRequest):
         raise InvalidRequest(
             "<request>", "必须是 PlanRequest 实例，当前是 %s" % type(request).__name__
@@ -449,7 +486,9 @@ def plan(
         max_scale = min(max_scale, float(requested_scale))
 
     # 种子必须在**任何规划之前**设定（OMPL 开始采样后不可再改）。
-    apply_seed(request.seed)
+    # seed_applied=True：调用方（worker 子进程）已在进程启动时设定过种子。
+    if not seed_applied:
+        apply_seed(request.seed)
 
     if model is None:
         from rmctl.model import Model
@@ -524,6 +563,7 @@ def plan(
     data.setData("environment", AnyPoly_wrap_EnvironmentConst(model.env))
     data.setData("profiles", AnyPoly_wrap_ProfileDictionary(profiles))
 
+    _emit_stage(on_stage, "plan")
     plan_started = time.time()
     future = composer.executor.run(task, data)
     future.wait()
@@ -560,6 +600,7 @@ def plan(
             request, "规划成功但输出为空（键 %s）" % output_key, started, metrics=metrics
         )
 
+    _emit_stage(on_stage, "verify")
     healed = verify_and_heal(
         model, points, times, do_continuous=do_continuous, max_scale=max_scale
     )

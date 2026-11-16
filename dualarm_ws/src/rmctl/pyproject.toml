@@ -7,6 +7,7 @@ dependencies = ["numpy", "pyyaml", "tesseract-robotics-nanobind==0.35.0.8"]
 
 [project.scripts]
 rmctl = "rmctl.cli:main"
+rm-planner = "rmctl.planner_service.server:main"
 
 [build-system]
 requires = ["setuptools>=61"]
