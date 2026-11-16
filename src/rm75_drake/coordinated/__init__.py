@@ -16,6 +16,15 @@
   把「双臂相对位姿固定」从 14 维里的零测集约束流形降成 **8 维参数**
   （leader 7 关节 + follower ψ 1），并由 **leader FK + 常数相对变换 +
   follower 解析 IK** 的映射**构造性**保证相对位姿约束成立（残差 ~1e-15 m）。
+* :mod:`rm75_drake.coordinated.regions` —— **最小坐标（8 维）凸区域生成 + 缓存**：
+  Drake 的 ``IrisNp`` 绑定的是 plant 的**完整关节空间**，无法表达
+  「8 维最小坐标 + 映射回 14 维判碰撞」的自定义空间 ⇒ 区域**自研**
+  （numpy 膨胀 / 保守切割 + 采样验证）；碰撞 oracle 是**纯 numpy 接口**
+  （一批 x → free/busy 布尔数组），便于后续 pybind11 机械移植（D031 延期项）；
+  缓存为**另立类名**（``MinimalRegionSpec`` / ``MinimalRegion`` /
+  ``MinimalRegionCache``），**不改** S02 冻结的 ``planning/regions.py``；
+  区域生成失败 ⇒ **显式降级**到采样基线（同一套 oracle），``stage`` /
+  ``reason`` 标注降级，**禁止静默降级**。
 * :mod:`rm75_drake.coordinated.trajectory` —— **共享时间轴**的双臂轨迹：
   **不新建 14 维轨迹类型**（S02 的 7 维 ``Trajectory`` 是冻结的交接面），
   而是把 14 维联合路径拆成两条 7 维 ``Trajectory`` 组成
@@ -25,7 +34,7 @@
 
 零 pydrake 依赖
 ---------------
-本包的 ``limits`` / ``trajectory`` 两个模块只依赖 ``numpy`` +
+本包的 ``limits`` / ``trajectory`` / ``regions`` 三个模块只依赖 ``numpy`` +
 :mod:`rm75_drake.planning.trajectory`（后者同样是 numpy-only），
 **不 import pydrake**，也不通过 ``rm75_drake.models`` /
 ``rm75_drake.drake_compat`` 绕回 Drake；``parameterization`` 模块的
@@ -43,6 +52,7 @@ __all__ = [
     "limits",
     "trajectory",
     "parameterization",
+    "regions",
     "CoordinatedLimitError",
     "DualLimits",
     "derive_dual_limits",
@@ -53,10 +63,17 @@ __all__ = [
     "CoordinatedParameterizationError",
     "RelativePoseResidual",
     "ParameterizationDiagnostics",
+    "MinimalRegionError",
+    "MinimalRegionSpec",
+    "MinimalRegion",
+    "MinimalRegionResult",
+    "MinimalRegionCache",
+    "generate_minimal_region",
+    "generate_region_with_fallback",
 ]
 
 #: 惰性子模块（PEP 562）：import 本包不拉起任何重依赖。
-_LAZY_MODULES = ("limits", "trajectory", "parameterization")
+_LAZY_MODULES = ("limits", "trajectory", "parameterization", "regions")
 
 #: 从 ``limits`` 子模块透出的符号。
 _LIMITS_EXPORTS = (
@@ -80,6 +97,17 @@ _PARAMETERIZATION_EXPORTS = (
     "ParameterizationDiagnostics",
 )
 
+#: 从 ``regions`` 子模块透出的符号。
+_REGION_EXPORTS = (
+    "MinimalRegionError",
+    "MinimalRegionSpec",
+    "MinimalRegion",
+    "MinimalRegionResult",
+    "MinimalRegionCache",
+    "generate_minimal_region",
+    "generate_region_with_fallback",
+)
+
 
 def __getattr__(name: str) -> Any:
     """PEP 562 惰性导入 / 符号透出。"""
@@ -99,6 +127,11 @@ def __getattr__(name: str) -> Any:
         return value
     if name in _PARAMETERIZATION_EXPORTS:
         module = importlib.import_module(f"{__name__}.parameterization")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _REGION_EXPORTS:
+        module = importlib.import_module(f"{__name__}.regions")
         value = getattr(module, name)
         globals()[name] = value
         return value
