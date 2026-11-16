@@ -364,7 +364,15 @@ def measure_e1(repo_root: str, ws: str, scenarios: Dict[str, Any],
             results.append((name, runner(cmd, cwd=tmp, env=child_env,
                                          timeout_s=300.0)))
 
-        chain_ok = all(res.ok for _name, res in results)
+        # doctor 的退出码口径是 0/3/4（S09/T6）：3 = 存在**需人工/外部条件**
+        # 的项（doctor 本身执行成功），4 = 存在硬红线（真回归）。
+        # 因此 doctor 这一步「跑通」的判据是退出码 ∈ {0, 3}，不能只看 0。
+        def _step_ok(name: str, res: CommandResult) -> bool:
+            if name == "doctor":
+                return res.exit_code in (0, 3)
+            return res.ok
+
+        chain_ok = all(_step_ok(_name, res) for _name, res in results)
         t2fm = sum(res.duration_s for _name, res in results)
 
         # -- T2FM -------------------------------------------------------
@@ -396,10 +404,24 @@ def measure_e1(repo_root: str, ws: str, scenarios: Dict[str, Any],
                 doctor_out = res.stdout
                 doctor_res = res
         parsed = parse_doctor(doctor_out)
-        _metric("error_count", parsed["errors"], status="measured",
+        # 「接入新机型」的报错数 = doctor 的需处理项里**排除真机/外部条件类**
+        # （供电 / 控制器状态 / 网络连通 / 零位采集 —— 它们的阻塞原因天然在
+        # 真机窗口，不属于「接入新机型」的报错；口径唯一来源 =
+        # rmctl.doctor.EXTERNAL_CONDITION_CHECKS）。
+        from rmctl.doctor import EXTERNAL_CONDITION_CHECKS
+
+        onboarding_errors = [n for n in parsed["error_names"]
+                             if n not in EXTERNAL_CONDITION_CHECKS]
+        excluded = [n for n in parsed["error_names"]
+                    if n in EXTERNAL_CONDITION_CHECKS]
+        _metric("error_count", len(onboarding_errors), status="measured",
                 evidence=["doctor 检查项 %d 条（非 PASS %d，其中需处理 %d）"
                           % (parsed["checks"], parsed["non_pass"],
                              parsed["errors"])]
+                + (["计入接入报错: %s" % (", ".join(onboarding_errors) or "无")]
+                   if onboarding_errors else ["计入接入报错: 无"])
+                + (["真机/外部条件项（不计入接入报错）: %s" % ", ".join(excluded)]
+                   if excluded else [])
                 + (["doctor 退出码 %s" % doctor_res.exit_code]
                    if doctor_res else []))
         _metric("doctor_check_count", parsed["checks"], status="measured",

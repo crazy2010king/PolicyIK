@@ -298,7 +298,7 @@ def test_registry_exposes_registered_segments():
     """
     assert orch.segment_ids() == ["gripper_offline", "process_offline",
                                   "planner_golden", "planner_acceptance",
-                                  "perf_baseline", "experience"]
+                                  "perf_baseline", "experience", "doctor"]
     for seg_id, spec in orch.SPECS.items():
         # 子进程段必须有脚本；自带 runner 的段（如 perf_baseline）没有脚本
         if spec.script:

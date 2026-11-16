@@ -138,15 +138,17 @@ def diff_py_lines(dir_a: str, dir_b: str) -> Tuple[int, List[str]]:
 
 
 def parse_doctor(stdout: str) -> Dict[str, Any]:
-    """解析 doctor 输出 → ``{checks, errors, non_pass, names}``。
+    """解析 doctor 输出 → ``{checks, errors, non_pass, names, error_names}``。
 
     ``errors`` = 非 PASS 且非 INFO 的检查项条数（与 doctor 自己的「需处理」
-    口径一致）；``non_pass`` = 全部非 PASS 条数。
+    口径一致）；``non_pass`` = 全部非 PASS 条数；``error_names`` = 计入
+    ``errors`` 的检查项**名字**（供调用方按检查项粒度做口径过滤）。
     """
     checks = 0
     errors = 0
     non_pass = 0
     names: List[str] = []
+    error_names: List[str] = []
     for line in (stdout or "").splitlines():
         matched = DOCTOR_LINE.match(line)
         if not matched:
@@ -160,5 +162,6 @@ def parse_doctor(stdout: str) -> Dict[str, Any]:
         non_pass += 1
         if level != "INFO":
             errors += 1
+            error_names.append(name)
     return {"checks": checks, "errors": errors, "non_pass": non_pass,
-            "names": names}
+            "names": names, "error_names": error_names}

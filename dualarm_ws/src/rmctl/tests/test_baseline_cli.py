@@ -187,7 +187,7 @@ def test_doctor_contains_baseline_checks(capsys, repo_root):
     code, out = _run(capsys, ["--ws", repo_root, "doctor"])
     assert "baselines:present" in out
     assert "limits:measured" in out
-    assert code in (0, 1)  # 取决于本机是否有厂商库，不影响检查项存在性
+    assert code in (0, 3, 4)  # 取决于本机是否有厂商库/真机，不影响检查项存在性
 
 
 def test_doctor_limits_measured_is_info_not_blocking(capsys, repo_root):

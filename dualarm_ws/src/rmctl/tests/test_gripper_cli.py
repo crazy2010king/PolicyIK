@@ -217,7 +217,7 @@ def test_gripper_judge_single_fault(capsys, repo_root):
 def test_doctor_still_runs_and_lists_hw_gripper(capsys, repo_root):
     """doctor 仍能跑通，且 hw:gripper 出现在输出里。"""
     code, out, _err = _run(capsys, ["--ws", repo_root, "doctor"])
-    assert code in (0, 1), out
+    assert code in (0, 3, 4), out
     assert "hw:gripper" in out
 
 

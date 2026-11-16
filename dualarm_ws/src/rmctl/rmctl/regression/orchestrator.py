@@ -617,3 +617,160 @@ register_runner(
     mode="offline",
     report_name="s09_segment_experience.json",
 )
+
+
+def _run_doctor(ctx: SegmentContext) -> Dict[str, Any]:
+    """``doctor`` 段的 runner（跑 ``rmctl doctor --json`` → 段级结果）。
+
+    **段级语义（唯一口径，写在此处以免散落）**：
+
+    * doctor 退出码 ``0``（全部检查项 PASS）→ 段 ``pass``；
+    * doctor 退出码 ``3``（存在**需人工 / 外部条件**的项：供电 / 控制器状态 /
+      网络连通 / 零位采集等）→ 段**仍为 ``pass``**——doctor 本身**执行成功**，
+      这些项是「真机窗口还没到」，**不是**代码回归；但 blocked 明细**逐条**
+      列入 evidence（不隐藏、不当 pass 蒙混）；
+    * doctor 退出码 ``4``（存在**硬红线**项：黑名单调用 / SDK 核心符号缺失 /
+      夹爪配置非法）→ 段 ``fail``（这才是代码或契约回归）；
+    * doctor **执行失败**（超时 / 启动失败 / 报告缺失 / JSON 不可解析）
+      → 段 ``fail``（编排器契约问题）。
+    """
+    out_path = os.path.join(ctx.reports_dir, "s09_doctor.json")
+    # 依赖预检：工作区未初始化（缺工位定义）→ **blocked**（外部产物未就绪，
+    # 不是回归），与其它段的预检口径一致（不跑 doctor、不产出数字）。
+    workcell_cfg = os.path.join(ctx.ws, "workcell", "rm_workcell.yaml")
+    if not os.path.exists(workcell_cfg):
+        return seg_mod.segment_result(
+            "blocked",
+            reason="工作区未初始化（缺工位定义 %s）：doctor 段未运行" % workcell_cfg,
+            next_action="先执行 `python3 -m rmctl init` 初始化工作区后重跑一键回归",
+            evidence=["缺工位定义: %s" % workcell_cfg],
+            mode="offline",
+            report_path="",
+            id="doctor",
+        )
+    try:
+        os.makedirs(ctx.reports_dir, exist_ok=True)
+    except OSError as exc:
+        return seg_mod.segment_result(
+            "fail",
+            reason="无法创建报告目录 %s: %s" % (ctx.reports_dir, exc),
+            next_action="修正报告目录权限后重跑",
+            evidence=[repr(exc)],
+            mode="offline",
+            report_path=out_path,
+            id="doctor",
+        )
+
+    cmd = [ctx.python, "-m", "rmctl", "--ws", ctx.ws, "doctor",
+           "--json", "--report", out_path]
+    try:
+        proc = subprocess.run(
+            cmd, cwd=ctx.repo_root, env=ctx.env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=300.0,
+        )
+    except subprocess.TimeoutExpired:
+        return seg_mod.segment_result(
+            "fail",
+            reason="doctor 执行超时（>300 s，被编排器中止）",
+            next_action="排查 doctor 挂死原因（厂商内核 / 网络）后重跑",
+            evidence=["命令: %s" % " ".join(cmd)],
+            mode="offline", report_path=out_path, id="doctor")
+    except OSError as exc:
+        return seg_mod.segment_result(
+            "fail",
+            reason="doctor 无法启动: %s" % exc,
+            next_action="确认 python3 -m rmctl 可用（PYTHONPATH 含 dualarm_ws/src/rmctl）后重跑",
+            evidence=[repr(exc)],
+            mode="offline", report_path=out_path, id="doctor")
+
+    report = None
+    report_error = ""
+    if os.path.isfile(out_path):
+        try:
+            with open(out_path, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            report = loaded if isinstance(loaded, dict) else None
+            if report is None:
+                report_error = "doctor 报告 JSON 顶层不是对象"
+        except (OSError, ValueError) as exc:
+            report_error = "%s: %s" % (type(exc).__name__, exc)
+    else:
+        report_error = "doctor 未产出报告文件: %s" % out_path
+    if report is None:
+        return seg_mod.segment_result(
+            "fail",
+            reason="doctor 报告缺失或无法解析（%s）" % (report_error or "未知原因"),
+            next_action="查看 doctor 的 stdout/stderr；确认它写出了 %s 且内容是合法 JSON 对象后重跑" % out_path,
+            evidence=[report_error, _tail(proc.stderr or "")],
+            mode="offline", report_path=out_path, id="doctor")
+
+    exit_code = proc.returncode
+    report_exit = report.get("exit_code")
+    try:
+        report_exit = int(report_exit)
+    except (TypeError, ValueError):
+        report_exit = None
+    checks = report.get("checks") or []
+    blocked_items = [c for c in checks
+                     if isinstance(c, dict) and not c.get("ok")
+                     and str(c.get("level")) != "INFO"]
+    hard_items = [c for c in checks
+                  if isinstance(c, dict) and not c.get("ok")
+                  and str(c.get("level")) == "FAIL"]
+    matrix = report.get("coverage_matrix") or []
+    uncovered = [str(m.get("label") or m.get("category"))
+                 for m in matrix if isinstance(m, dict) and not m.get("covered")]
+
+    evidence = [
+        "doctor 退出码 %s（报告 exit_code=%s）" % (exit_code, report_exit),
+        "检查项 %d 条（未通过 %d 条，其中硬红线 %d 条）"
+        % (len(checks), len(blocked_items), len(hard_items)),
+        "自检覆盖 %d/%d 类%s"
+        % (len(matrix) - len(uncovered), len(matrix),
+           ("（未覆盖: %s）" % ", ".join(uncovered)) if uncovered else ""),
+        "报告: %s" % out_path,
+    ]
+    for item in blocked_items:
+        evidence.append("blocked %s: %s"
+                        % (item.get("name"), item.get("detail")))
+
+    if exit_code == 0 and report_exit in (0, None):
+        verdict = "pass"
+        reason = "doctor 全部检查项通过（%d 条检查项）" % len(checks)
+        next_action = ""
+    elif exit_code == 3 or report_exit == 3:
+        # doctor 执行成功，只是有需人工/外部条件的项 → 段仍 pass
+        verdict = "pass"
+        reason = ("doctor 执行成功，但有 %d 项需人工/外部条件"
+                  "（不影响段判定，doctor 本身没回归）" % len(blocked_items))
+        next_action = next((str(c.get("action")) for c in blocked_items
+                            if c.get("action")), "")
+    else:
+        verdict = "fail"
+        reason = ("doctor 报出 %d 项硬红线（退出码 %s）"
+                  % (len(hard_items), exit_code))
+        next_action = next((str(c.get("action")) for c in hard_items
+                            if c.get("action")), "")
+    if verdict == "fail" and not next_action:
+        next_action = "按 doctor 报告里的「下一步」逐条处理后重跑"
+
+    return seg_mod.segment_result(
+        verdict,
+        reason=reason,
+        next_action=next_action,
+        evidence=evidence,
+        mode="offline",
+        report_path=out_path,
+        id="doctor",
+        exit_code=exit_code,
+        coverage=matrix,
+    )
+
+
+register_runner(
+    seg_id="doctor",
+    runner=_run_doctor,
+    mode="offline",
+    report_name="s09_segment_doctor.json",
+)

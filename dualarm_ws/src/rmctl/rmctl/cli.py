@@ -17,6 +17,7 @@ import numpy as np
 import yaml
 
 from . import baseline as bl
+from . import doctor
 from . import paths
 from .executor import MockExecutor
 from .model import Model
@@ -292,101 +293,69 @@ def cmd_init(args):
     return 0
 
 
-def cmd_doctor(args):
-    """一条命令体检（设计 §6.5 / §6.8）。"""
-    checks = []
-
-    def add(name, ok, detail, action=None, level="RECOVERABLE"):
-        checks.append({"name": name, "ok": bool(ok), "detail": detail,
-                       "action": action, "level": "INFO" if ok else level})
-
-    ws = args.ws or paths.workspace_root()
-    add("workspace", paths._find_src(ws) is not None,
-        "工作区: %s" % ws, "检查 RM_WS 或目录结构")
-    for label, p in (("urdf", paths.urdf_path(ws)), ("srdf", paths.srdf_path(ws)),
-                     ("joint_limits", paths.joint_limits_path(ws))):
-        add("model:" + label, os.path.exists(p), p, "rmctl init / 重新生成模型")
-    try:
-        import tesseract_robotics  # noqa
-        add("dep:nanobind", True, "tesseract_robotics %s" % tesseract_robotics.__version__)
-    except Exception as exc:
-        add("dep:nanobind", False, str(exc), "pip install tesseract-robotics-nanobind==0.35.0.8", "NEEDS_HUMAN")
-
-    model = None
-    try:
-        model = _load_model(args)
-        add("model:load", True, "组=%s 关节=%d 连杆=%d" %
-            (model.group, len(model.joint_names), len(model.link_names)))
-    except Exception as exc:
-        add("model:load", False, repr(exc), "检查 URDF/SRDF 与插件配置", "NEEDS_HUMAN")
-
-    if model is not None:
-        # 自研 FK vs Tesseract FK
-        rng = np.random.default_rng(0)
-        worst = 0.0
-        for _ in range(20):
-            q = np.array([rng.uniform(model.limit(j).get("lower", -3.0),
-                                       model.limit(j).get("upper", 3.0))
-                           for j in model.joint_names])
-            T = model.fk_self(q)
-            P = model.fk_tesseract(q)
-            d = float(np.linalg.norm(T[:3, 3] - np.asarray([P.x, P.y, P.z])))
-            worst = max(worst, d)
-        add("fk:self_vs_tesseract", worst < 1e-6,
-            "20 组随机位形最大位置偏差 %.3e m" % worst,
-            "检查 URDF 清洗结果（clean_urdf.py）")
-        # 零位自碰撞
-        hits = model.urdf.collisions(np.zeros(len(model.joint_names)))
-        add("collision:home", not hits, "零位自碰撞对: %s" % (hits or "无"),
-            "检查 ACM（scripts/gen_srdf.py）")
-        # 限值一致性
-        mismatch = []
-        for j in model.joint_names:
-            ul = model.urdf.joints[[x["name"] for x in model.urdf.rev].index(j)]
-            lim = model.limit(j)
-            if lim.get("upper") is not None and abs(ul["upper"] - lim["upper"]) > 1e-4:
-                mismatch.append("%s urdf=%.4f yaml=%.4f" % (j, ul["upper"], lim["upper"]))
-            if lim.get("lower") is not None and abs(ul["lower"] - lim["lower"]) > 1e-4:
-                mismatch.append("%s urdf=%.4f yaml=%.4f" % (j, ul["lower"], lim["lower"]))
-        add("limits:consistent", not mismatch, "URDF vs joint_limits.yaml: %s" % (mismatch or "一致"),
-            "以 joint_limits.yaml 为准，必要时重新清洗 URDF")
-        # 硬件
-        add("hardware:connected", False, "未检测到真机连接（原型阶段为模拟执行）",
-            "rmctl connect --left <ip> --right <ip>", "INFO")
-
-    # 基线齐备度（基线校验只依赖 yaml+numpy，与厂商库无关）
-    try:
-        report = bl.validate_all(ws)
-        missing = report["missing"]
-        present = len(bl.KINDS) - len(missing)
-        add("baselines:present", not missing,
-            "四类基线 %d/%d 齐备%s" % (present, len(bl.KINDS),
-                                       ("（缺: %s）" % ", ".join(missing)) if missing else ""),
-            "python3 -m rmctl baseline scaffold")
-        ml = report["kinds"].get("measured_limits", {})
-        ml_status = ml.get("status")
-        add("limits:measured", ml_status == "measured",
-            "measured_limits.status=%s（acc/jerk 实测值未回填）" % (ml_status or "缺失"),
-            "真机窗口执行 python3 -m rmctl.hwcollect ladder_acc_jerk "
-            "并回填 workcell/baselines/measured_limits.yaml（见 docs/code_doc/真机基线与实测限值归档说明.md）",
-            "INFO")
-    except Exception as exc:
-        add("baselines:present", False, repr(exc),
-            "python3 -m rmctl baseline scaffold")
-
-    # 硬件适配层（rm_hw_bridge）5 条：SDK 在位 / 22 符号 / 契约静态审计 / 限值来源 / 夹爪配置
-    for chk in _hw_checks(ws):
-        add(chk["name"], chk["ok"], chk["detail"], chk["action"], chk["level"])
-
+def _print_doctor_text(checks, matrix):
+    """doctor 的人读输出（**逐字沿用既有格式**，只多一行自检覆盖小结）。"""
     ok = sum(1 for c in checks if c["ok"])
     print("体检结果: %d/%d 通过\n" % (ok, len(checks)))
     for c in checks:
         print("  [%s] %-26s %s" % ("PASS" if c["ok"] else c["level"], c["name"], c["detail"]))
         if not c["ok"] and c["action"]:
             print("        → 下一步: %s" % c["action"])
+    covered = [m for m in matrix if m.get("covered")]
+    uncovered = [m for m in matrix if not m.get("covered")]
+    print("\n自检覆盖: %d/%d 类现场问题%s"
+          % (len(covered), len(matrix),
+             ("（未覆盖: %s）" % ", ".join(str(m.get("label")) for m in uncovered))
+             if uncovered else ""))
     bad = [c for c in checks if not c["ok"] and c["level"] != "INFO"]
-    print("\n%s" % ("全部通过，可以开始规划。" if not bad else "存在 %d 项需处理。" % len(bad)))
-    return 0 if not bad else 1
+    print("%s" % ("全部通过，可以开始规划。" if not bad else "存在 %d 项需处理。" % len(bad)))
+
+
+def cmd_doctor(args):
+    """一条命令体检（设计 §6.5 / §6.8）。
+
+    输出形态：默认**人读文本**；``--json`` 时 stdout 输出**机器可读 JSON**
+    （含 ``checks[]`` 与 ``coverage_matrix[]``）；``--report <path>`` 把**同一份
+    JSON** 落盘（与 stdout 的 JSON 等价）。
+
+    退出码（全项目统一 0/3/4，与 ``rm_executor.contract.EXIT_CODES`` 同口径）：
+
+    * ``0`` —— 全部检查项 PASS（INFO 级未通过**不算**失败）；
+    * ``3`` —— 存在需人工 / 外部条件的项（blocked）；
+    * ``4`` —— 存在硬红线项（error）。
+
+    检查项构造的唯一实现 = :mod:`rmctl.doctor`（本函数只是**薄封装**）。
+    """
+    ws = args.ws or paths.workspace_root()
+    checks = doctor.collect_checks(ws, group=getattr(args, "group", "rm75_arm"))
+    matrix = doctor.coverage_matrix(checks)
+    report = doctor.build_report(ws, checks, matrix)
+
+    as_json = bool(getattr(args, "json", False))
+    report_path = getattr(args, "report", None)
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        _print_doctor_text(checks, matrix)
+
+    if report_path:
+        path = os.path.abspath(report_path)
+        parent = os.path.dirname(path)
+        try:
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(report, fh, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            # 报告写不出去是**操作错误**（路径不可写 / 权限不足）→ 明确报错，
+            # 不静默丢失证据（JSON 已打印到 stdout 时仍可用）。
+            print("体检报告写入失败: %s (%s)" % (path, exc), file=sys.stderr)
+            print("→ 修复: 确认目录可写后重跑，例如 --report build/reports/doctor.json",
+                  file=sys.stderr)
+            return doctor.EXIT_ERROR
+        if not as_json:
+            print("\n体检报告已写入: %s" % path)
+    return report["exit_code"]
 
 
 # ---------------------------------------------------------------- 基线子命令
@@ -2714,6 +2683,10 @@ def build_parser():
     s.set_defaults(func=cmd_init)
 
     s = sub.add_parser("doctor", help="一条命令体检")
+    s.add_argument("--json", action="store_true",
+                   help="stdout 输出机器可读 JSON（含 checks[] 与 coverage_matrix[]）")
+    s.add_argument("--report", default=None, metavar="PATH",
+                   help="把体检 JSON 报告写到文件（与 --json 的 stdout 内容等价）")
     s.set_defaults(func=cmd_doctor)
 
     s = sub.add_parser("baseline", help="真机基线：check / list / show / scaffold")

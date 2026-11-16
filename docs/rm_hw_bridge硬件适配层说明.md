@@ -241,7 +241,7 @@ stdout 打印「限值 diff（当前值 → 目标值，含单位）」，结果
 
 ## 6. doctor 的 5 条硬件面检查项（`hw:*`）
 
-`python3 -m rmctl doctor` 现在共 **17 条**检查项，其中 5 条是硬件适配层：
+`python3 -m rmctl doctor` 现在共 **21 条**检查项，其中 5 条是硬件适配层：
 
 | 检查项 | 判定 | 分级 | 修复动作（可粘贴） |
 |---|---|---|---|
@@ -253,6 +253,30 @@ stdout 打印「限值 diff（当前值 → 目标值，含单位）」，结果
 
 `hw:contract` 之所以是**阻塞**项：黑名单调用会绕过 R003 的厂商解耦红线，
 属于代码缺陷而不是"环境没就位"。
+
+### 6.1 机器可读输出与退出码口径（S09/T6）
+
+```bash
+python3 -m rmctl doctor                                  # 人读文本
+python3 -m rmctl doctor --json                           # stdout = 机器可读 JSON
+python3 -m rmctl doctor --json --report build/reports/s09_doctor.json
+```
+
+JSON 顶层含 `status` / `verdict` / `exit_code` / `reason` / `next_action` /
+`summary` / `checks[]` / `coverage_matrix[]`；`--report` 落盘内容与 `--json`
+的 stdout **等价**。退出码与全项目一致：
+
+| 退出码 | 含义 |
+|---|---|
+| 0 | 全部检查项 PASS（INFO 级未通过**不算**失败） |
+| 3 | 存在需人工 / 外部条件的项（RECOVERABLE / NEEDS_HUMAN / BLOCKED） |
+| 4 | 存在硬红线项（FAIL：黑名单调用、SDK 核心符号缺失、夹爪配置非法） |
+
+`coverage_matrix[]` 是**自检覆盖矩阵**（设计 §6.2「自检覆盖 ≥ 8 类」）：
+网络 / 供电 / 夹爪 / 零位 / FK / 限值 / 控制器状态 / 依赖与模型 / 碰撞 /
+硬件适配层，共 10 类；每类映射到具体 check name，**映射不到**（例如厂商库
+不可导入导致 `model:load` 失败、FK/碰撞/限值一致性被级联跳过）的类别显式
+标 `covered=false` + 缺口说明 + 可粘贴的修复命令——**不会**被标成「通过」。
 
 ---
 

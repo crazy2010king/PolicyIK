@@ -42,7 +42,7 @@ def test_doctor_lists_five_hw_checks(capsys, repo_root):
     for name in cli.HW_CHECK_NAMES:
         assert name in out, (name, out)
     assert len(cli.HW_CHECK_NAMES) == 5
-    assert code in (0, 1)  # 与本机是否有厂商库 / 真机无关
+    assert code in (0, 3, 4)  # 与本机是否有厂商库 / 真机无关
 
 
 def test_hw_checks_expose_required_fields(repo_root):
@@ -116,7 +116,7 @@ def test_hw_contract_violation_is_blocking_fail(capsys, tmp_workspace):
     assert "bad_sample.py" in out, out
     assert "rm_movep_canfd" in out, out
     assert "python3 -m rm_hw_bridge.audit --repo" in out, out
-    assert code == 1, out
+    assert code == 4, out
 
 
 def test_hw_contract_check_reports_violation_detail(tmp_workspace):
