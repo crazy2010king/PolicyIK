@@ -49,8 +49,8 @@ ensure_libstdcxx()
 
 from rmctl.planner_service.config import load_pipeline_config, load_profiles_config
 from rmctl.planner_service.contract import InvalidRequest, PlanRequest, PlanResponse
-from rmctl.retime import required_scale
-from rmctl.verify import verify_with_retime
+from rmctl.retime import required_scale, scale_trajectory
+from rmctl.verify import resample_trajectory, verify_with_retime
 
 from tesseract_robotics.planning import JointTarget, MotionProgram, TaskComposer
 from tesseract_robotics.planning.profiles import (
@@ -193,6 +193,8 @@ def verify_and_heal(
     times: Sequence[float],
     do_continuous: bool = True,
     max_scale: Optional[float] = None,
+    resample_step_rad: Optional[float] = None,
+    output_resample_step_rad: Optional[float] = None,
 ) -> Dict[str, Any]:
     """四道校验 + 保路径降速自愈（阶梯第 1 级）——**不复制判定逻辑**。
 
@@ -207,45 +209,67 @@ def verify_and_heal(
       ``workcell/planner/profiles.yaml::max_time_scaling``），并在 notes 里
       写明「需要人工放宽 / 换路径」。
 
-    :return: ``{"report", "times", "points", "scale", "notes"}``
+    **校验分辨率与点数解耦**（``resample_step_rad``）：四道校验的速度/加速度/
+    jerk 是对采样点做数值微分，点数少 = 峰值被抹平 = 校验被静默削弱。开启
+    ``resample_step_rad``（rad，关节空间最大步长）后，**校验用稠密轨迹**，
+    而**下发轨迹**的点数由 ``output_resample_step_rad`` 独立决定（几何一致，
+    仅点数不同）。降速缩放系数作用在**原始**时间轴上，稠密轨迹按同一系数
+    缩放后再校验 → 「降速后仍过」。
+
+    :return: ``{"report", "times", "points", "scale", "notes",
+        "verified_points", "original_points"}``
     """
     points = [list(map(float, p)) for p in points]
     times = [float(t) for t in times]
     notes: List[str] = []
 
-    report, out_times, out_points, scale = verify_with_retime(
-        model, points, times, do_continuous=do_continuous, retime=False
-    )
-    if report.get("ok"):
-        return {
-            "report": report,
-            "times": out_times,
-            "points": out_points,
-            "scale": None,
-            "notes": notes,
-        }
+    # 校验用轨迹：按 resample_step_rad 稠密化（校验分辨率与点数解耦）。
+    verify_points, verify_times = points, times
+    if resample_step_rad is not None and float(resample_step_rad) > 0:
+        verify_points, verify_times = resample_trajectory(
+            points, times, float(resample_step_rad)
+        )
 
-    need = float(required_scale(model, out_times, out_points))
-    if need > 1.001:
-        if max_scale is not None and need > float(max_scale) + 1e-9:
-            notes.append(
-                "需要的时间缩放系数 %.3f 超过上限 %.3f：按上限不降速，"
-                "需要人工放宽 max_time_scaling 或换路径" % (need, float(max_scale))
-            )
-        else:
-            report, out_times, out_points, scale = verify_with_retime(
-                model, points, times, do_continuous=do_continuous, retime=True
-            )
-            if scale is None:
+    report, _, _, scale = verify_with_retime(
+        model, verify_points, verify_times, do_continuous=do_continuous,
+        retime=False,
+    )
+    if not report.get("ok"):
+        need = float(required_scale(model, verify_times, verify_points))
+        if need > 1.001:
+            if max_scale is not None and need > float(max_scale) + 1e-9:
                 notes.append(
-                    "保路径降速（系数 %.3f）后四道校验仍未通过" % need
+                    "需要的时间缩放系数 %.3f 超过上限 %.3f：按上限不降速，"
+                    "需要人工放宽 max_time_scaling 或换路径" % (need, float(max_scale))
                 )
+            else:
+                report, _, _, scale = verify_with_retime(
+                    model, verify_points, verify_times,
+                    do_continuous=do_continuous, retime=True,
+                )
+                if scale is None:
+                    notes.append(
+                        "保路径降速（系数 %.3f）后四道校验仍未通过" % need
+                    )
+
+    # 下发用轨迹：几何不变；降速缩放作用在**原始**时间轴上；
+    # 再按 output_resample_step_rad 稠密化（可选）。
+    out_points, out_times = points, times
+    if scale is not None:
+        out_times, out_points = scale_trajectory(times, points, scale)
+    if output_resample_step_rad is not None and float(output_resample_step_rad) > 0:
+        out_points, out_times = resample_trajectory(
+            out_points, out_times, float(output_resample_step_rad)
+        )
+
     return {
         "report": report,
         "times": out_times,
         "points": out_points,
         "scale": scale,
         "notes": notes,
+        "verified_points": len(verify_points),
+        "original_points": len(points),
     }
 
 
@@ -473,6 +497,9 @@ def _plan_inner(
     num_planners = int(pipeline_spec["num_planners"])
     planning_time_s = float(pipeline_spec["planning_time_s"])
     planner_range = float(pipeline_spec["planner_range"])
+    # 校验分辨率 / 下发密度：两个独立旋钮（校验点数与下发点数解耦）。
+    verify_resample_step_rad = float(pipeline_spec["verify_resample_step_rad"])
+    output_resample_step_rad = float(pipeline_spec["output_resample_step_rad"])
     deterministic = bool(request.deterministic)
     if deterministic:
         # 并行多规划器的胜者取决于线程调度 → 不确定；确定性模式强制单规划器。
@@ -602,7 +629,9 @@ def _plan_inner(
 
     _emit_stage(on_stage, "verify")
     healed = verify_and_heal(
-        model, points, times, do_continuous=do_continuous, max_scale=max_scale
+        model, points, times, do_continuous=do_continuous, max_scale=max_scale,
+        resample_step_rad=verify_resample_step_rad,
+        output_resample_step_rad=output_resample_step_rad,
     )
     report = healed["report"]
     verification = _verification_from_report(report)
@@ -629,6 +658,10 @@ def _plan_inner(
         ],
     }
     metrics["points"] = len(trajectory["points"])
+    # 点数三兄弟（可观测）：原始点数 / 校验点数 / 下发点数。
+    metrics["trajectory_points"] = int(healed["original_points"])
+    metrics["verified_points"] = int(healed["verified_points"])
+    metrics["output_points"] = len(trajectory["points"])
     if healed["notes"]:
         metrics["notes"] = list(healed["notes"])
     return PlanResponse(

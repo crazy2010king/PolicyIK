@@ -8,3 +8,12 @@ num_planners: 2                 # 单次规划并行的规划器个数
 planning_time_s: 5.0            # 单次规划时间上限（秒）
 planner_range: 0.01             # 采样范围（m）
 deterministic: true             # 确定性开关（同 seed → 同结果）
+# 校验分辨率 / 下发密度（**互不相关**的两个旋钮，单位：弧度 rad）
+#   verify_resample_step_rad —— 四道校验用的**稠密化**步长（关节空间最大步长）。
+#     0 = 关闭（直接用规划器原始点做数值微分）。四道校验的速度/加速度/jerk 是
+#     对采样点做数值微分，点数少 → 峰值被抹平 → **校验分辨率被静默削弱**
+#     （S08 研究实测：点数 329 → 19 会让越限场景从 FAILED 翻成 SUCCESS）。
+#     开启后：校验用稠密轨迹，下发点数仍由 output_resample_step_rad 决定。
+#   output_resample_step_rad —— 下发给执行器的轨迹稠密化步长。0 = 不重采样。
+verify_resample_step_rad: 0.01  # 校验稠密化步长（rad）
+output_resample_step_rad: 0.01  # 下发稠密化步长（rad）

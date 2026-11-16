@@ -324,7 +324,7 @@ per-node 指标**不覆盖**四道校验节点 —— 校验耗时看
 
 | 文件 | 键 | 消费方 |
 |---|---|---|
-| `workcell/planner/pipeline.yaml` | `pipeline`（管线名）、`num_planners`、`planning_time_s`、`planner_range`、`deterministic` | 服务端启动时读取，构造官方 Task Composer 管线 |
+| `workcell/planner/pipeline.yaml` | `pipeline`（管线名）、`num_planners`、`planning_time_s`、`planner_range`、`deterministic`、`verify_resample_step_rad`（校验稠密化步长，rad）、`output_resample_step_rad`（下发稠密化步长，rad） | 服务端启动时读取，构造官方 Task Composer 管线 |
 | `workcell/planner/profiles.yaml` | `timeout_ms`（默认硬超时）、`max_time_scaling`（时间缩放上限）、`collision_margin_m`、`verify.continuous`、`scene_version` | 服务端（硬超时 / 校验参数 / 场景版本）+ 客户端（请求缺省值） |
 
 * Python **只读不改**；改配置 = 改文件 + git diff（换机型 / 换工艺不改代码）。
@@ -333,6 +333,12 @@ per-node 指标**不覆盖**四道校验节点 —— 校验耗时看
   降速自愈的上限也取自同一处 —— 不存在第二份限值常量。
 * 配置不可得时**不猜数值**：契约层不检查上限（并由配置加载器另行给出
   blocked 证据），而不是硬编码一个默认上限。
+* **`verify_resample_step_rad` / `output_resample_step_rad`（S08/T01）**：
+  四道校验的速度/加速度/jerk 是对**采样点**做数值微分，点数少 → 峰值被抹平
+  → **校验分辨率被静默削弱**。`verify_resample_step_rad`（>0）把**校验**用的
+  轨迹先稠密化（Hermite 插值，几何不变），`output_resample_step_rad`（>0）
+  独立决定**下发**轨迹的点数 → **校验点数与下发点数解耦**。两者都是
+  `>= 0` 的有限数，**0 = 关闭**；缺字段 → blocked（不补默认值）。
 
 ---
 
@@ -457,6 +463,7 @@ PY
 | `verify` | 四道校验总判定 |
 | `retimed_scale` | 实际用到的降速缩放系数（`null` = 没降速） |
 | `notes` | 降速封顶等**人工提示** |
+| `trajectory_points` / `verified_points` / `output_points` | **点数三兄弟**：规划器原始点数 / 四道校验实际用的点数 / 下发给执行器的点数（稠密化前后可对比） |
 | `elapsed_total_s` / `planning_s` | 端到端耗时 / 纯规划耗时 |
 | `seed` / `num_planners` / `deterministic` | 复现所需参数 |
 | `interrupted_stage` / `worker_pid` / `killed` | 超时 / 取消时被中断的阶段与被杀 worker |
