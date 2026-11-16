@@ -12,6 +12,10 @@
   另含**夹爪自由度口径**：装夹爪时 ``plant.num_positions() == 18``
   （两夹爪各 2 个 prismatic），本层只产出 14 维臂关节，查询碰撞前必须
   按约定补齐夹爪 DOF（:func:`pad_gripper_positions`）。
+* :mod:`rm75_drake.coordinated.parameterization` —— **最小坐标参数化**：
+  把「双臂相对位姿固定」从 14 维里的零测集约束流形降成 **8 维参数**
+  （leader 7 关节 + follower ψ 1），并由 **leader FK + 常数相对变换 +
+  follower 解析 IK** 的映射**构造性**保证相对位姿约束成立（残差 ~1e-15 m）。
 * :mod:`rm75_drake.coordinated.trajectory` —— **共享时间轴**的双臂轨迹：
   **不新建 14 维轨迹类型**（S02 的 7 维 ``Trajectory`` 是冻结的交接面），
   而是把 14 维联合路径拆成两条 7 维 ``Trajectory`` 组成
@@ -21,9 +25,11 @@
 
 零 pydrake 依赖
 ---------------
-本包的两个模块只依赖 ``numpy`` + :mod:`rm75_drake.planning.trajectory`
-（后者同样是 numpy-only），**不 import pydrake**，也不通过
-``rm75_drake.models`` / ``rm75_drake.drake_compat`` 绕回 Drake。因此
+本包的 ``limits`` / ``trajectory`` 两个模块只依赖 ``numpy`` +
+:mod:`rm75_drake.planning.trajectory`（后者同样是 numpy-only），
+**不 import pydrake**，也不通过 ``rm75_drake.models`` /
+``rm75_drake.drake_compat`` 绕回 Drake；``parameterization`` 模块的
+Drake 侧依赖（碰撞查询 / 基座位姿）一律**函数内惰性导入**。因此
 ``import rm75_drake.coordinated`` **不会**把 pydrake 拉进 ``sys.modules``
 （PEP 562 惰性导入，仿 :mod:`rm75_drake.bimanual`）。
 """
@@ -36,16 +42,21 @@ from typing import Any
 __all__ = [
     "limits",
     "trajectory",
+    "parameterization",
     "CoordinatedLimitError",
     "DualLimits",
     "derive_dual_limits",
     "pad_gripper_positions",
     "DualTrajectory",
     "dual_trajectory_from_arrays",
+    "CoordinatedParameterization",
+    "CoordinatedParameterizationError",
+    "RelativePoseResidual",
+    "ParameterizationDiagnostics",
 ]
 
 #: 惰性子模块（PEP 562）：import 本包不拉起任何重依赖。
-_LAZY_MODULES = ("limits", "trajectory")
+_LAZY_MODULES = ("limits", "trajectory", "parameterization")
 
 #: 从 ``limits`` 子模块透出的符号。
 _LIMITS_EXPORTS = (
@@ -59,6 +70,14 @@ _LIMITS_EXPORTS = (
 _TRAJECTORY_EXPORTS = (
     "DualTrajectory",
     "dual_trajectory_from_arrays",
+)
+
+#: 从 ``parameterization`` 子模块透出的符号。
+_PARAMETERIZATION_EXPORTS = (
+    "CoordinatedParameterization",
+    "CoordinatedParameterizationError",
+    "RelativePoseResidual",
+    "ParameterizationDiagnostics",
 )
 
 
@@ -75,6 +94,11 @@ def __getattr__(name: str) -> Any:
         return value
     if name in _TRAJECTORY_EXPORTS:
         module = importlib.import_module(f"{__name__}.trajectory")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _PARAMETERIZATION_EXPORTS:
+        module = importlib.import_module(f"{__name__}.parameterization")
         value = getattr(module, name)
         globals()[name] = value
         return value
