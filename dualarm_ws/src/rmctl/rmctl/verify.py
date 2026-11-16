@@ -111,6 +111,42 @@ def check_continuous(model, points, max_step_rad=0.02, max_sub=64):
     return hits
 
 
+def verify_with_retime(model, points, times, do_continuous=True, retime=True):
+    """四道校验 + **保路径降速重定时**（自愈阶梯第 1 级）——**唯一实现**。
+
+    阶梯语义（与 ``rmctl.cli.cmd_plan`` 逐字一致）：
+
+    1. 先跑四道校验；全过 → 直接返回；
+    2. 不过 → ``retime.required_scale`` 算最小时间缩放系数 ``s``；
+    3. ``s > 1.001`` → ``retime.scale_trajectory`` 保路径降速（几何路径不变）
+       → **重新**跑四道校验；这次过了 → 返回新时间轴/点位。
+
+    :param retime: 是否允许保路径降速重定时（``False`` = 只跑四道校验，
+        等价于 ``rmctl.cli plan --no-retime``）。
+
+    返回 ``(report, times, points, scale)``：
+
+    * ``report`` —— 最终的四道校验报告（``ok`` 为 True 才算通过）；
+    * ``times`` / ``points`` —— **可能被降速重定时改写**的时间轴/点位；
+    * ``scale`` —— 实际用到的缩放系数（``None`` = 没降速）。
+
+    **本函数是阶梯的唯一实现**：CLI 与工艺客户端层都调它（不复制）。
+    """
+    report = verify(model, points, times, do_continuous=do_continuous)
+    if report.get("ok") or not retime:
+        return report, times, points, None
+    from .retime import required_scale, scale_trajectory
+
+    scale = required_scale(model, times, points)
+    if scale > 1.001:
+        new_times, new_points = scale_trajectory(times, points, scale)
+        report2 = verify(model, new_points, new_times,
+                         do_continuous=do_continuous)
+        if report2.get("ok"):
+            return report2, new_times, new_points, scale
+    return report, times, points, None
+
+
 def verify(model, points, times, do_continuous=True):
     report = {"points": len(points), "checks": {}, "ok": True, "issues": []}
     issues, margins = check_limits(model, points, times)

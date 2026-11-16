@@ -726,18 +726,16 @@ def cmd_plan(args):
         return 1
     report = None
     if not args.no_verify:
-        from .retime import required_scale, scale_trajectory
-        report = verify(model, out.points, out.times, do_continuous=not args.no_continuous)
-        # 自愈阶梯第 1 级：保路径降速重定时（几何路径不变 → 碰撞结论仍然有效）
-        if not report["ok"] and not args.no_retime:
-            s = required_scale(model, out.times, out.points)
-            if s > 1.001:
-                new_times, new_points = scale_trajectory(out.times, out.points, s)
-                rep2 = verify(model, new_points, new_times, do_continuous=not args.no_continuous)
-                if rep2["ok"]:
-                    print("\n自动降速重定时 ×%.3f（路径不变）→ 四道校验全部通过" % s)
-                    out.times, out.points = new_times, new_points
-                    report = rep2
+        # 自愈阶梯第 1 级（保路径降速重定时）的**唯一实现**：
+        # rmctl.verify.verify_with_retime —— 工艺客户端层（rmctl.process.clients）
+        # 也调它，两边**不复制**阶梯逻辑。
+        from .verify import verify_with_retime
+        report, new_times, new_points, scale = verify_with_retime(
+            model, out.points, out.times,
+            do_continuous=not args.no_continuous, retime=not args.no_retime)
+        if scale:
+            print("\n自动降速重定时 ×%.3f（路径不变）→ 四道校验全部通过" % scale)
+            out.times, out.points = new_times, new_points
         print("\n四道校验: %s" % ("全部通过" if report["ok"] else "未通过"))
         for name, res in report["checks"].items():
             print("  [%s] %s" % ("PASS" if res.get("ok") else "FAIL", name))
@@ -1432,16 +1430,11 @@ GRIPPER_FAULT_LABELS = {
 #: 严重度排序（取「最严重等级」用）
 GRIPPER_SEVERITY_ORDER = ("OK", "RECOVERABLE", "NEEDS_PARAM", "NEEDS_HUMAN")
 
-#: **代理阈值**（真机标定未回填时的离线判据；输出里必须标注「不代表真机结论」）
-GRIPPER_PROXY_THRESHOLDS = {
-    "force_threshold": 100.0,
-    "grasp_position_window": [10.0, 30.0],
-    "position_mm_per_unit": 0.05,
-    "force_scale": 0.01,
-}
-
-#: 离线代理的固定声明（**必须**出现在 cycle / judge 的输出里）
-GRIPPER_PROXY_NOTE = "代理模型，不代表真机结论"
+# 代理阈值的**唯一来源** = rmctl.gripper_proxy（见该模块 docstring）。
+# 这里只做**再导出**（保持 `rmctl.cli.GRIPPER_PROXY_THRESHOLDS` 这个名字可见，
+# 避免破坏既有引用），**不再持有第二份副本**。
+from .gripper_proxy import (GRIPPER_PROXY_NOTE,  # noqa: E402  (再导出)
+                            GRIPPER_PROXY_THRESHOLDS, effective_thresholds)
 
 
 def _gripper_hw(ws=None):
@@ -1485,21 +1478,16 @@ def _gripper_config_result(hw, ws):
 
 
 def _gripper_thresholds(cfg):
-    """判定阈值：优先用工位配置；缺失项用**代理阈值**补齐（并标注来源）。"""
-    raw = dict((cfg or {}).get("thresholds") or {})
-    effective = {}
-    proxy_used = []
-    for key, proxy_value in GRIPPER_PROXY_THRESHOLDS.items():
-        value = raw.get(key)
-        if value is None:
-            effective[key] = proxy_value
-            proxy_used.append(key)
-        else:
-            effective[key] = value
-    window = effective.get("grasp_position_window")
-    if isinstance(window, (list, tuple)):
-        effective["grasp_position_window"] = tuple(float(v) for v in window)
-    return effective, proxy_used
+    """判定阈值：优先用工位配置；缺失项用**代理阈值**补齐（并标注来源）。
+
+    **薄封装**：实现已收敛到 :mod:`rmctl.gripper_proxy`（代理阈值的唯一来源），
+    本函数只做转调 —— 键集合、补齐规则与历史实现**逐字一致**，返回的仍是
+    历史形态 ``(thresholds, proxy_used)``（2 元组，**签名不变**）。
+    需要 ``source``（``workcell_config`` / ``proxy_default``）时直接调
+    :func:`rmctl.gripper_proxy.effective_thresholds`。
+    """
+    thresholds, proxy_used, _source = effective_thresholds(cfg)
+    return thresholds, proxy_used
 
 
 def _gripper_emit(args, payload, lines=None):
