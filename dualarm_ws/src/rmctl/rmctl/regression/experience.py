@@ -517,16 +517,10 @@ def measure_e2(repo_root: str, ws: str, scenarios: Dict[str, Any],
                 evidence=["rmctl run pick_place --task-file <新任务> --count 1"
                           "（一条命令）"])
 
-        # -- 外部产物预检：缺模型 / 缺工艺规格 → blocked（不是回归）-------
-        missing = _ws_missing(ws)
-        if missing:
-            for mid in ("first_success_rate", "new_task_first_run_ok"):
-                _metric(mid, None, status="blocked",
-                        evidence=["工作区缺外部产物: %s" % "；".join(missing)],
-                        note="数据源缺失 → 该指标留 null（不产出 0 冒充真实值）")
-            return metrics
-
         # -- 首次成功率：离线 rmctl run pick_place 连跑 N 次 --------------
+        # 口径：**先跑再判**——测量值由 runner 的真实结果决定；只有当工作区
+        # 缺外部产物（build/model 等）导致一次都没跑通时，才记 blocked
+        # （null + reason），**不产出 0 冒充真实值**；跑通了就是实测值。
         runs = int(spec.get("first_success_runs") or 3)
         successes = 0
         run_evidence: List[str] = []
@@ -543,8 +537,24 @@ def measure_e2(repo_root: str, ws: str, scenarios: Dict[str, Any],
                                 % (index + 1, res.exit_code,
                                    "（%s）" % res.error if res.error else ""))
         rate = (float(successes) / float(runs)) if runs else None
-        _metric("first_success_rate", rate, status="measured",
-                evidence=run_evidence + ["成功 %d / 共 %d 次" % (successes, runs)])
+        missing = _ws_missing(ws)
+        if rate is None:
+            _metric("first_success_rate", None, status="blocked",
+                    evidence=run_evidence + ["连跑次数为 0 → 无样本"],
+                    note="无样本 → 该指标留 null（不产出 0 冒充真实值）")
+        elif successes > 0:
+            _metric("first_success_rate", rate, status="measured",
+                    evidence=run_evidence
+                    + ["成功 %d / 共 %d 次" % (successes, runs)])
+        elif missing:
+            _metric("first_success_rate", None, status="blocked",
+                    evidence=run_evidence
+                    + ["工作区缺外部产物: %s" % "；".join(missing)],
+                    note="数据源缺失 → 该指标留 null（不产出 0 冒充真实值）")
+        else:
+            _metric("first_success_rate", rate, status="measured",
+                    evidence=run_evidence
+                    + ["成功 0 / 共 %d 次（每次都真失败，非缺数据源）" % runs])
 
         # -- 新工艺首跑 ---------------------------------------------------
         new_res = runner(
@@ -553,11 +563,21 @@ def measure_e2(repo_root: str, ws: str, scenarios: Dict[str, Any],
              "--trace", os.path.join(tmp, "new_task.jsonl"),
              "--report", os.path.join(tmp, "new_task.json")],
             cwd=repo_root, env=child_env, timeout_s=600.0)
-        _metric("new_task_first_run_ok", bool(new_res.ok),
-                status="measured",
-                evidence=["新工艺首跑退出码 %s%s"
-                          % (new_res.exit_code,
-                             "（%s）" % new_res.error if new_res.error else "")])
+        if new_res.ok:
+            _metric("new_task_first_run_ok", True, status="measured",
+                    evidence=["新工艺首跑退出码 0"])
+        elif missing:
+            _metric("new_task_first_run_ok", None, status="blocked",
+                    evidence=["新工艺首跑退出码 %s%s"
+                              % (new_res.exit_code,
+                                 "（%s）" % new_res.error if new_res.error else ""),
+                              "工作区缺外部产物: %s" % "；".join(missing)],
+                    note="数据源缺失 → 该指标留 null（不产出 0 冒充真实值）")
+        else:
+            _metric("new_task_first_run_ok", False, status="measured",
+                    evidence=["新工艺首跑退出码 %s%s"
+                              % (new_res.exit_code,
+                                 "（%s）" % new_res.error if new_res.error else "")])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return metrics
@@ -806,40 +826,42 @@ def measure_e4(repo_root: str, ws: str, scenarios: Dict[str, Any],
 
     tmp = tempfile.mkdtemp(prefix="rm_s09_e4_", dir=tmp_root)
     try:
-        missing = _ws_missing(ws)
-        if missing:
-            _metric("command_count", 2, status="measured",
-                    evidence=["剧本: `rmctl run pick_place --count 1` + "
-                              "`rmctl run --replay <trace>`（两条命令）"])
-            _metric("operation_duration_s", None, status="blocked",
-                    evidence=["工作区缺外部产物: %s" % "；".join(missing)],
-                    note="数据源缺失 → 该指标留 null（不产出 0 冒充真实值）")
-            return metrics
+        # 口径：**先跑再判**——耗时由 runner 的真实墙钟决定；run 失败
+        # （缺外部产物 / 真回归）→ 记 blocked + null，**不产出 0 冒充**。
         trace_path = os.path.join(tmp, "daily_trace.jsonl")
         run_res = runner(
             [sys.executable, "-m", "rmctl", "--ws", ws, "run", "pick_place",
              "--count", "1", "--trace", trace_path],
             cwd=repo_root, env=child_env, timeout_s=600.0)
-        replay_res = runner(
-            [sys.executable, "-m", "rmctl", "--ws", ws, "run", "--replay",
-             trace_path],
-            cwd=repo_root, env=child_env, timeout_s=300.0)
+        if run_res.ok:
+            replay_res = runner(
+                [sys.executable, "-m", "rmctl", "--ws", ws, "run", "--replay",
+                 trace_path],
+                cwd=repo_root, env=child_env, timeout_s=300.0)
+            replay_note = ("复现一次: `rmctl run --replay %s`（退出码 %s）"
+                           % (os.path.basename(trace_path), replay_res.exit_code))
+        else:
+            replay_note = "run 失败 → 未执行复现命令（剧本仍为两条命令）"
         commands = 2
         _metric("command_count", commands, status="measured",
-                evidence=["改参数+跑一次: `rmctl run pick_place --count 1`"
+                evidence=["剧本: `rmctl run pick_place --count 1` + "
+                          "`rmctl run --replay <trace>`（两条命令）",
+                          "改参数+跑一次: `rmctl run pick_place --count 1`"
                           "（退出码 %s）" % run_res.exit_code,
-                          "复现一次: `rmctl run --replay %s`（退出码 %s）"
-                          % (os.path.basename(trace_path), replay_res.exit_code)])
+                          replay_note])
         if run_res.ok:
             _metric("operation_duration_s", round(run_res.duration_s, 3),
                     status="measured",
                     evidence=["run 命令墙钟 %.3f s" % run_res.duration_s])
         else:
+            missing = _ws_missing(ws)
             _metric("operation_duration_s", None, status="blocked",
                     evidence=["run 命令失败（退出码 %s%s）"
                               % (run_res.exit_code,
-                                 "，%s" % run_res.error if run_res.error else "")],
-                    note="数据源缺失 → 该指标留 null（不产出 0 冒充真实值）")
+                                 "，%s" % run_res.error if run_res.error else "")]
+                    + (["工作区缺外部产物: %s" % "；".join(missing)]
+                       if missing else []),
+                    note="数据源缺失 / 未跑通 → 该指标留 null（不产出 0 冒充真实值）")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return metrics

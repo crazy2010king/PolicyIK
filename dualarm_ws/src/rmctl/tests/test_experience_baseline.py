@@ -323,6 +323,57 @@ def test_measure_e4_counts_two_commands(repo_root, ws, scenarios, tmp_path):
     assert by_id["E4.operation_duration_s"]["value"] == pytest.approx(0.6)
 
 
+def test_measure_e2_missing_data_source_is_blocked_not_zero(repo_root, ws,
+                                                           scenarios, tmp_path,
+                                                           monkeypatch):
+    """负例：数据源缺失 + 一次都没跑通 → blocked + null（**不产出 0**）。"""
+    monkeypatch.setattr(exp, "_ws_missing", lambda _ws: ["模型 build/model"])
+
+    def failing_runner(cmd, cwd=None, env=None, timeout_s=None):
+        return _fake_result(exit_code=3, duration=0.1)
+
+    metrics = exp.measure_e2(repo_root, ws, scenarios, runner=failing_runner,
+                             tmp_root=str(tmp_path))
+    by_id = {m["id"]: m for m in metrics}
+    rate = by_id["E2.first_success_rate"]
+    assert rate["value"] is None
+    assert rate["status"] == "blocked"
+    assert rate["evidence"]
+    new_task = by_id["E2.new_task_first_run_ok"]
+    assert new_task["value"] is None
+    assert new_task["status"] == "blocked"
+
+
+def test_measure_e2_real_failure_is_measured_zero(repo_root, ws, scenarios,
+                                                   tmp_path, monkeypatch):
+    """负例：数据源齐备但每次都真失败 → 实测 0.0（不是 blocked 冒充缺失）。"""
+    monkeypatch.setattr(exp, "_ws_missing", lambda _ws: [])
+
+    def failing_runner(cmd, cwd=None, env=None, timeout_s=None):
+        return _fake_result(exit_code=4, duration=0.1)
+
+    metrics = exp.measure_e2(repo_root, ws, scenarios, runner=failing_runner,
+                             tmp_root=str(tmp_path))
+    by_id = {m["id"]: m for m in metrics}
+    assert by_id["E2.first_success_rate"]["value"] == 0.0
+    assert by_id["E2.first_success_rate"]["status"] == "measured"
+    assert by_id["E2.new_task_first_run_ok"]["value"] is False
+    assert by_id["E2.new_task_first_run_ok"]["status"] == "measured"
+
+
+def test_measure_e4_failed_run_is_blocked(repo_root, ws, scenarios, tmp_path):
+    """负例：run 失败 → 单次操作耗时留 null + blocked（**不产出 0**）。"""
+    def failing_runner(cmd, cwd=None, env=None, timeout_s=None):
+        return _fake_result(exit_code=3, duration=0.1)
+
+    metrics = exp.measure_e4(repo_root, ws, scenarios, runner=failing_runner,
+                             tmp_root=str(tmp_path))
+    by_id = {m["id"]: m for m in metrics}
+    assert by_id["E4.command_count"]["value"] == 2
+    assert by_id["E4.operation_duration_s"]["value"] is None
+    assert by_id["E4.operation_duration_s"]["status"] == "blocked"
+
+
 # ---------------------------------------------------------------------------
 # 6. E3：从 trace 派生（机器侧）+ 人工 pending
 # ---------------------------------------------------------------------------
