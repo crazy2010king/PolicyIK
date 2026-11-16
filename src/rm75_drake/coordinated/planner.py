@@ -105,6 +105,7 @@ __all__ = [
     "REASON_PATH_INFEASIBLE",
     "REASON_INVALID_INPUT",
     "REASON_CONSTRAINT_VIOLATION",
+    "IK_FAILURE_REASONS",
 ]
 
 
@@ -145,6 +146,21 @@ REASON_PATH_INFEASIBLE = "path_infeasible"
 REASON_INVALID_INPUT = "invalid_input"
 REASON_CONSTRAINT_VIOLATION = "constraint_violation"
 
+#: **解析 IK 的稳定失败词表**（沿用
+#: :mod:`rm75_drake.kinematics.analytic_ik`）。
+#: 参数化阶段只有落在该词表内的 ``reason`` 才会原样透出；其余（场景指派
+#: 非法 / 维度错 / 变换非法 …）统一归一到 :data:`REASON_INVALID_INPUT`
+#: ——**公开契约**：输入非法 ⇒ ``reason="invalid_input"``。
+IK_FAILURE_REASONS = frozenset(
+    {
+        "unreachable",
+        "branch_exhausted",
+        "limit_violation",
+        "wrist_singular",
+        "invalid_target",
+    }
+)
+
 #: 相对位姿残差阈值（**逐点**口径，m / rad）。
 RESIDUAL_TOLERANCE = 1e-6
 
@@ -168,6 +184,35 @@ class CoordinatedPlanError(RuntimeError):
 
 
 # ── 选项 ────────────────────────────────────────────────────────────────
+def _finite_float(value: Any, name: str) -> float:
+    """把选项字段规整成**有限浮点数**（非法 ⇒ :class:`CoordinatedPlanError`）。
+
+    NaN / Inf / 非数值一律**显式报错并点名**（不得静默改写默认值）。
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise CoordinatedPlanError(
+            f"[options] {name} 必须是数值，实际：{value!r}"
+        ) from exc
+    if not math.isfinite(number):
+        raise CoordinatedPlanError(
+            f"[options] {name} 必须是有限值，实际：{value!r}"
+        )
+    return number
+
+
+def _positive_int(value: Any, name: str) -> int:
+    """把选项字段规整成**正整数**（非整数 / NaN ⇒ 显式报错并点名）。"""
+    number = _finite_float(value, name)
+    rounded = int(round(number))
+    if abs(number - rounded) > 1e-9:
+        raise CoordinatedPlanError(
+            f"[options] {name} 必须是整数，实际：{value!r}"
+        )
+    return rounded
+
+
 @dataclass(frozen=True)
 class CoordinatedPlanOptions:
     """一次协调规划的可调旋钮（默认值即可跑常规紧协调任务）。
@@ -210,53 +255,52 @@ class CoordinatedPlanOptions:
     region_margin: float = 0.02
     region_validation_samples: int = 24
     region_rounds: int = 6
-    path_step: float = 0.004
+    path_step: float = 0.02
     dt: float = 0.005
     t0: float = 0.0
     adjacency_threshold: float = 1.0
-    collision_edge_step_size: float = 0.01
+    collision_edge_step_size: float = 0.02
     allow_degradation: bool = True
-    psi_grid: int = 33
+    psi_grid: int = 17
     psi_min_margin: float = 1.0
     random_seed: int = 20250516
 
     def __post_init__(self) -> None:
-        if int(self.num_regions) < 1:
+        if _positive_int(self.num_regions, "num_regions") < 1:
             raise CoordinatedPlanError(
                 f"[options] num_regions 必须是正整数，实际：{self.num_regions!r}"
             )
         for name in ("region_step", "path_step", "dt"):
-            value = float(getattr(self, name))
-            if not math.isfinite(value) or value <= 0.0:
+            value = _finite_float(getattr(self, name), name)
+            if value <= 0.0:
                 raise CoordinatedPlanError(
                     f"[options] {name} 必须是正有限值，实际：{getattr(self, name)!r}"
                 )
-        if int(self.region_max_expand) < 1:
+        if _positive_int(self.region_max_expand, "region_max_expand") < 1:
             raise CoordinatedPlanError(
                 "[options] region_max_expand 必须是正整数，"
                 f"实际：{self.region_max_expand!r}"
             )
-        if not math.isfinite(float(self.t0)):
+        for name in ("region_validation_samples", "region_rounds"):
+            if _positive_int(getattr(self, name), name) < 1:
+                raise CoordinatedPlanError(
+                    f"[options] {name} 必须是正整数，实际：{getattr(self, name)!r}"
+                )
+        if not math.isfinite(_finite_float(self.t0, "t0")):
             raise CoordinatedPlanError(
                 f"[options] t0 必须是有限值，实际：{self.t0!r}"
             )
-        if (
-            not math.isfinite(float(self.adjacency_threshold))
-            or float(self.adjacency_threshold) <= 0.0
-        ):
+        if _finite_float(self.adjacency_threshold, "adjacency_threshold") <= 0.0:
             raise CoordinatedPlanError(
                 "[options] adjacency_threshold 必须是正有限值，"
                 f"实际：{self.adjacency_threshold!r}"
             )
-        if (
-            not math.isfinite(float(self.collision_edge_step_size))
-            or float(self.collision_edge_step_size) <= 0.0
-        ):
+        if _finite_float(self.collision_edge_step_size, "collision_edge_step_size") <= 0.0:
             raise CoordinatedPlanError(
                 "[options] collision_edge_step_size 必须是正有限值，"
                 f"实际：{self.collision_edge_step_size!r}"
             )
-        if int(self.psi_grid) < 1:
+        if _positive_int(self.psi_grid, "psi_grid") < 1:
             raise CoordinatedPlanError(
                 f"[options] psi_grid 必须是正整数，实际：{self.psi_grid!r}"
             )
@@ -388,34 +432,36 @@ def plan_coordinated(
             opts=opts,
         )
     except CoordinatedParameterizationError as exc:
+        reason = _normalize_parameterize_reason(exc.reason)
         diagnostics["parameterize"] = {
             "duration_s": time.perf_counter() - param_started,
             "success": False,
-            "reason": exc.reason,
+            "reason": reason,
             "message": str(exc),
             "num_points": 0,
         }
         diagnostics["total_duration_s"] = time.perf_counter() - started
         return _failure(
             STAGE_PARAMETERIZE,
-            exc.reason,
-            f"参数化阶段失败（{exc.reason}）：{exc}",
+            reason,
+            f"参数化阶段失败（{reason}）：{exc}",
             diagnostics,
             started,
         )
     except CoordinatedPlanError as exc:
+        reason = _normalize_parameterize_reason(exc.reason)
         diagnostics["parameterize"] = {
             "duration_s": time.perf_counter() - param_started,
             "success": False,
-            "reason": exc.reason,
+            "reason": reason,
             "message": str(exc),
             "num_points": 0,
         }
         diagnostics["total_duration_s"] = time.perf_counter() - started
         return _failure(
             STAGE_PARAMETERIZE,
-            exc.reason,
-            f"参数化阶段失败（{exc.reason}）：{exc}",
+            reason,
+            f"参数化阶段失败（{reason}）：{exc}",
             diagnostics,
             started,
         )
@@ -471,6 +517,20 @@ def plan_coordinated(
         diagnostics["degraded"] = True
         diagnostics["degradation_reason"] = region_info["reason"]
         diagnostics["degradation_message"] = region_info["message"]
+        if not bool(opts.allow_degradation):
+            # **不允许降级** ⇒ 区域链不完整直接失败（点名 reason），
+            # 不得静默地继续或“假装成功”。
+            diagnostics["total_duration_s"] = time.perf_counter() - started
+            return _failure(
+                STAGE_REGIONS,
+                region_info["reason"] or REASON_EMPTY_REGION,
+                (
+                    f"区域阶段失败（{region_info['reason']}，"
+                    f"allow_degradation=False）：{region_info['message']}"
+                ),
+                diagnostics,
+                started,
+            )
     if not region_info["success"]:
         diagnostics["total_duration_s"] = time.perf_counter() - started
         return _failure(
@@ -745,6 +805,22 @@ def _failure(
     )
 
 
+def _normalize_parameterize_reason(reason: str) -> str:
+    """把参数化阶段的 ``reason`` 归一到**公开词表**。
+
+    * 解析 IK 的稳定词表（:data:`IK_FAILURE_REASONS`）⇒ **原样透出**；
+    * ``path_infeasible`` ⇒ 原样透出；
+    * 其余（场景指派非法 / 维度错 / 变换非法 …）⇒ 归一到
+      ``invalid_input``（**公开契约**：输入非法 ⇒ ``invalid_input``）。
+    """
+    text = str(reason)
+    if text in IK_FAILURE_REASONS or text == REASON_PATH_INFEASIBLE:
+        return text
+    if text == REASON_INVALID_INPUT:
+        return text
+    return REASON_INVALID_INPUT
+
+
 def _extract_tag(message: str, default: str) -> str:
     """从错误信息里抽出 ``[tag]`` 形式的稳定标签（取第一个）。"""
     start = message.find("[")
@@ -904,11 +980,14 @@ def _build_minimal_path(
         margins = _psi_margins(parameterization, leader_q, grid)
         chosen = _select_psi(margins, grid, psi_hint, min_margin=min_margin)
         if chosen is None:
+            reason, detail = _diagnose_psi_failure(
+                parameterization, leader_q, grid, ratio
+            )
             raise CoordinatedParameterizationError(
                 f"[path] leader 位姿 {list(np.round(leader_q, 4))}（路径进度 "
                 f"{ratio:.3f}）找不到可行的 ψ（ψ 网格 {len(grid)} 个候选全部不可行："
-                "follower 无解 / 限位越界 / 碰撞）",
-                reason=REASON_PATH_INFEASIBLE,
+                f"{detail}）",
+                reason=reason,
             )
         if index == segments and psi_goal is not None:
             # 终点允许调用方显式指定 ψ（但必须可行）。
@@ -929,6 +1008,50 @@ def _build_minimal_path(
             reason="invalid_input",
         )
     return np.asarray(points, dtype=float)
+
+
+def _diagnose_psi_failure(
+    parameterization: CoordinatedParameterization,
+    leader_q: np.ndarray,
+    grid: np.ndarray,
+    ratio: float,
+) -> Tuple[str, str]:
+    """诊断「某个 leader 位姿上**所有** ψ 都不可行」的**根因**。
+
+    逐个 ψ 重试 :meth:`CoordinatedParameterization.to_joint_config`，把失败
+    归类：
+
+    * **全部**候选都因**解析 IK** 失败（:data:`IK_FAILURE_REASONS`）⇒ 返回
+      该 IK 原因（**点名** ``unreachable`` / ``branch_exhausted`` /
+      ``limit_violation`` / ``wrist_singular``）；
+    * 其余情形（限位 / 碰撞 / 混合）⇒ ``path_infeasible``。
+
+    返回 ``(reason, detail)``。
+    """
+    reasons: List[str] = []
+    details: List[str] = []
+    for psi in grid:
+        x = np.concatenate([leader_q, np.array([float(psi)], dtype=float)])
+        try:
+            q14 = parameterization.to_joint_config(x)
+        except CoordinatedParameterizationError as exc:
+            reasons.append(str(exc.reason))
+            details.append(str(exc))
+            continue
+        if not parameterization.within_limits(q14):
+            reasons.append("limit_violation")
+            details.append(f"ψ={float(psi)!r} 超出 14 维软件限位")
+            continue
+        reasons.append("collision")
+        details.append(f"ψ={float(psi)!r} 在同一 plant 里碰撞")
+    if reasons and all(item in IK_FAILURE_REASONS for item in reasons):
+        counted = {item: reasons.count(item) for item in set(reasons)}
+        reason = max(sorted(counted), key=lambda item: counted[item])
+        return reason, f"解析 IK 失败（{reason}）：{details[0]}"
+    return (
+        REASON_PATH_INFEASIBLE,
+        "follower 无解 / 限位越界 / 碰撞（原因不唯一）",
+    )
 
 
 def _region_seeds(x_path: np.ndarray, count: int) -> List[np.ndarray]:
@@ -1019,13 +1142,15 @@ def _solve_region_graph(regions: Sequence[Any], opts: CoordinatedPlanOptions) ->
     from ..planning import gcs as _gcs
 
     if not regions:
+        # 区域链为空 ⇒ **降级**（由调用方走采样基线兜底）；不允许降级时
+        # 调用方（``allow_degradation=False``）已在区域阶段直接失败。
         return {
-            "success": False,
+            "success": True,
             "reason": REASON_EMPTY_REGION,
             "solver_mode": "",
             "num_edges": 0,
-            "degraded": False,
-            "message": "区域链为空，无法建图",
+            "degraded": True,
+            "message": "区域链为空，已降级到采样基线",
         }
     solver_mode = ""
     num_edges = 0
@@ -1154,10 +1279,41 @@ def _sample_baseline_path_for(
     oracle: Any,
     opts: CoordinatedPlanOptions,
 ) -> np.ndarray:
-    """采样基线（最小空间 PRM，**同一套 oracle**）——降级路径的公共入口。"""
-    return sample_baseline_path(
+    """采样基线（最小空间 PRM，**同一套 oracle**）——降级路径的公共入口。
+
+    PRM 路径往往只有两个端点；重定时阶段的样条在两个**约束满足点**之间
+    插值 ⇒ 相对位姿残差 ~ O(间距²)。因此基线取回后**在最小坐标空间稠密化**
+    （只保留 oracle 判为可行的中间点），把残差压回阈值以内。
+    """
+    baseline = sample_baseline_path(
         x_start,
         x_goal,
         oracle,
         random_seed=int(opts.random_seed),
     )
+    return _densify_minimal_path(baseline, oracle, float(opts.path_step))
+
+
+def _densify_minimal_path(
+    path: np.ndarray, oracle: Any, step: float
+) -> np.ndarray:
+    """在最小坐标空间稠密化一条路径（**同一套 oracle** 判定中间点可行）。"""
+    array = np.asarray(path, dtype=float)
+    if array.ndim != 2 or array.shape[0] < 2 or not math.isfinite(step) or step <= 0.0:
+        return array
+    rows: List[np.ndarray] = [np.asarray(array[0], dtype=float)]
+    for index in range(1, array.shape[0]):
+        start = np.asarray(array[index - 1], dtype=float)
+        end = np.asarray(array[index], dtype=float)
+        distance = float(np.max(np.abs(end - start)))
+        segments = max(1, int(math.ceil(distance / step)))
+        for k in range(1, segments):
+            candidate = start + (end - start) * (k / segments)
+            try:
+                flags = oracle(candidate.reshape(1, MINIMAL_DIM))
+            except MinimalRegionError:
+                continue
+            if bool(np.asarray(flags).reshape(-1)[0]):
+                rows.append(candidate)
+        rows.append(np.asarray(end, dtype=float))
+    return np.vstack(rows) if len(rows) > 1 else array
