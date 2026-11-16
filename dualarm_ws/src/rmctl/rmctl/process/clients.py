@@ -104,12 +104,13 @@ def _import_hw():
 
 
 def _import_executor():
-    """惰性导入执行层（``rm_executor.cli`` / ``rm_executor.contract``）。"""
+    """惰性导入执行层（``rm_executor.cli`` / ``rm_executor.contract`` / ``rm_executor.events``）。"""
     def _import():
         from rm_executor import cli as _exec_cli
         from rm_executor import contract as _contract
+        from rm_executor import events as _events
 
-        return {"cli": _exec_cli, "contract": _contract}
+        return {"cli": _exec_cli, "contract": _contract, "events": _events}
 
     try:
         return _import(), ""
@@ -129,6 +130,20 @@ def _executor_contract():
     """取 ``rm_executor.contract`` 模块（不可用 → ``None``）。"""
     mods, _err = _import_executor()
     return mods["contract"] if mods else None
+
+
+def hardware_modules():
+    """公开包装：取硬件层模块（``{"gripper", "state"}``，不可用 → ``(None, reason)``）。
+
+    供同包的 :mod:`rmctl.process.runner` 复用（**同一份惰性导入与兜底
+    PYTHONPATH 逻辑**，不在 runner 里另写一份）。
+    """
+    return _import_hw()
+
+
+def executor_modules():
+    """公开包装：取执行层模块（``{"cli", "contract", "events"}``）。"""
+    return _import_executor()
 
 
 def _py_path_hint(pkg: str) -> str:
