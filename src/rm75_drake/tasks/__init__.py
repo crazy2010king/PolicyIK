@@ -12,9 +12,10 @@
   与默认误差门槛）。
 * :mod:`rm75_drake.tasks.solver` —— **单一求解器入口**
   （:func:`~rm75_drake.tasks.solver.solve_task`：numpy 快路径）。
-* （后续切片）:mod:`rm75_drake.tasks.state_machine`
-  / :mod:`rm75_drake.tasks.bimanual` / :mod:`rm75_drake.tasks.metrics`
-  —— 状态机、双臂搬运/交接与原语级指标口径。
+* :mod:`rm75_drake.tasks.state_machine` —— **任务状态机**
+  （单一主状态源 + 原子 goal_id 推进；零 pydrake 依赖）。
+* （后续切片）:mod:`rm75_drake.tasks.bimanual` / :mod:`rm75_drake.tasks.metrics`
+  —— 双臂搬运/交接与原语级指标口径。
 
 目录语义（**同名易混，必须分清**）
 --------------------------------
@@ -74,10 +75,18 @@ __all__ = [
     "SolveState",
     "PrimitiveResult",
     "TaskResult",
+    "state_machine",
+    "TaskState",
+    "TERMINAL_STATES",
+    "TASK_STAGES",
+    "TASK_REASONS",
+    "TaskFailure",
+    "StateTransition",
+    "TaskStateMachine",
 ]
 
 #: 惰性子模块（PEP 562）：import 本包不拉起任何重依赖。
-_LAZY_MODULES = ("schema", "goals", "primitives", "solver")
+_LAZY_MODULES = ("schema", "goals", "primitives", "solver", "state_machine")
 
 #: 从 ``schema`` 子模块透出的符号。
 _SCHEMA_EXPORTS = (
@@ -124,6 +133,17 @@ _SOLVER_EXPORTS = (
     "TaskResult",
 )
 
+#: 从 ``state_machine`` 子模块透出的符号。
+_STATE_MACHINE_EXPORTS = (
+    "TaskState",
+    "TERMINAL_STATES",
+    "TASK_STAGES",
+    "TASK_REASONS",
+    "TaskFailure",
+    "StateTransition",
+    "TaskStateMachine",
+)
+
 #: 从 ``goals`` 子模块透出的符号。
 _GOALS_EXPORTS = (
     "GOAL_KINDS",
@@ -159,6 +179,11 @@ def __getattr__(name: str) -> Any:
         return value
     if name in _SOLVER_EXPORTS:
         module = importlib.import_module(f"{__name__}.solver")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _STATE_MACHINE_EXPORTS:
+        module = importlib.import_module(f"{__name__}.state_machine")
         value = getattr(module, name)
         globals()[name] = value
         return value
