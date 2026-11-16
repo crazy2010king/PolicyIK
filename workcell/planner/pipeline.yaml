@@ -8,6 +8,12 @@ num_planners: 2                 # 单次规划并行的规划器个数
 planning_time_s: 5.0            # 单次规划时间上限（秒）
 planner_range: 0.01             # 采样范围（m）
 deterministic: true             # 确定性开关（同 seed → 同结果）
+# 厂商 profile 档位（S08/T02 接线；最终取值由 T04 依实测固化）
+#   max_solutions —— 每个规划器保留的解个数上限（厂商默认 10）。越大越慢越占内存。
+#   optimize —— 厂商语义：true = 跑满 planning_time_s 继续优化；
+#     false = 拿到第一个有效解即返回（延迟/内存杠杆最大的一档）。
+max_solutions: 10               # 厂商默认档位（S07 基线语义）
+optimize: true                  # 厂商默认档位（S07 基线语义）
 # 校验分辨率 / 下发密度（**互不相关**的两个旋钮，单位：弧度 rad）
 #   verify_resample_step_rad —— 四道校验用的**稠密化**步长（关节空间最大步长）。
 #     0 = 关闭（直接用规划器原始点做数值微分）。四道校验的速度/加速度/jerk 是

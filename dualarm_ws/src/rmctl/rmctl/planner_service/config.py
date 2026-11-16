@@ -237,6 +237,8 @@ PIPELINE_FIELDS: Tuple[str, ...] = (
     "planning_time_s",
     "planner_range",
     "deterministic",
+    "max_solutions",
+    "optimize",
     "verify_resample_step_rad",
     "output_resample_step_rad",
 )
@@ -266,6 +268,7 @@ def load_pipeline_config(ws: str = None) -> Dict[str, Any]:
     :return: ``{"status", "reason", "next_action", "evidence", "spec"}``；
         成功时 ``spec`` 含 ``version / pipeline / num_planners /
         planning_time_s / planner_range / deterministic /
+        max_solutions / optimize /
         verify_resample_step_rad / output_resample_step_rad / source``。
 
     **绝不抛裸异常**，**绝不补默认值**。
@@ -309,6 +312,12 @@ def load_pipeline_config(ws: str = None) -> Dict[str, Any]:
     err = _check_bool(data, "deterministic", path)
     if err is not None:
         return err
+    err = _check_int(data, "max_solutions", 1, path)
+    if err is not None:
+        return err
+    err = _check_bool(data, "optimize", path)
+    if err is not None:
+        return err
     err = _check_float(data, "verify_resample_step_rad", 0.0, False, path)
     if err is not None:
         return err
@@ -323,6 +332,8 @@ def load_pipeline_config(ws: str = None) -> Dict[str, Any]:
         "planning_time_s": float(data["planning_time_s"]),
         "planner_range": float(data["planner_range"]),
         "deterministic": bool(data["deterministic"]),
+        "max_solutions": int(data["max_solutions"]),
+        "optimize": bool(data["optimize"]),
         "verify_resample_step_rad": float(data["verify_resample_step_rad"]),
         "output_resample_step_rad": float(data["output_resample_step_rad"]),
         "source": path,

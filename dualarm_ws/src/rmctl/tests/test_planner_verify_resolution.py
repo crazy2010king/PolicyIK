@@ -345,6 +345,8 @@ _VALID_PIPELINE = (
     "planning_time_s: 5.0\n"
     "planner_range: 0.01\n"
     "deterministic: true\n"
+    "max_solutions: 10\n"
+    "optimize: true\n"
     "verify_resample_step_rad: 0.01\n"
     "output_resample_step_rad: 0.01\n"
 )

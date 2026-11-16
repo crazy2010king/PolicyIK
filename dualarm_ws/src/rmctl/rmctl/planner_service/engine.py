@@ -354,12 +354,28 @@ def _make_profiles(
     num_planners: int,
     planning_time_s: float,
     planner_range: float,
+    optimize: bool = True,
+    max_solutions: int = 10,
 ):
-    """按管线名构造 profile（管线名来自 ``pipeline.yaml``，唯一来源）。"""
+    """按管线名构造 profile（管线名来自 ``pipeline.yaml``，唯一来源）。
+
+    ``optimize`` / ``max_solutions`` 是厂商 ``create_freespace_pipeline_profiles``
+    的性能档位旋钮（S08/T02 接线）：
+
+    * ``optimize=True`` → 跑满 ``planning_time`` 继续优化；
+      ``False`` → 拿到第一个有效解即返回；
+    * ``max_solutions`` → 每个规划器保留的解个数上限。
+
+    ``planner_range`` 的厂商语义保持原样：``0`` → 厂商不设 ``cfg.range``
+    （RRTConnect 自动 range）；``> 0`` → 才设。**不自己拼 ProfileDictionary**
+    （厂商 profile key 是枚举 int）。
+    """
     if "Freespace" in pipeline:
         return create_freespace_pipeline_profiles(
             num_planners=num_planners,
             planning_time=planning_time_s,
+            optimize=optimize,
+            max_solutions=max_solutions,
             planner_range=planner_range,
         )
     if "Cartesian" in pipeline:
@@ -497,6 +513,9 @@ def _plan_inner(
     num_planners = int(pipeline_spec["num_planners"])
     planning_time_s = float(pipeline_spec["planning_time_s"])
     planner_range = float(pipeline_spec["planner_range"])
+    # 厂商 profile 性能档位（S08/T02 接线；取值来自 pipeline.yaml 唯一来源）。
+    max_solutions = int(pipeline_spec["max_solutions"])
+    optimize = bool(pipeline_spec["optimize"])
     # 校验分辨率 / 下发密度：两个独立旋钮（校验点数与下发点数解耦）。
     verify_resample_step_rad = float(pipeline_spec["verify_resample_step_rad"])
     output_resample_step_rad = float(pipeline_spec["output_resample_step_rad"])
@@ -583,7 +602,8 @@ def _plan_inner(
         output_key = available[0]
 
     profiles = _make_profiles(
-        pipeline_name, num_planners, planning_time_s, planner_range
+        pipeline_name, num_planners, planning_time_s, planner_range,
+        optimize=optimize, max_solutions=max_solutions,
     )
     data = TaskComposerDataStorage()
     data.setData(input_key, AnyPoly_wrap_CompositeInstruction(composite))
@@ -604,6 +624,9 @@ def _plan_inner(
         "pipeline": pipeline_name,
         "seed": int(request.seed),
         "num_planners": int(num_planners),
+        "max_solutions": int(max_solutions),
+        "optimize": bool(optimize),
+        "planner_range": float(planner_range),
         "deterministic": bool(deterministic),
         "elapsed_total_s": float(time.time() - started),
         "planning_s": float(planning_s),
