@@ -144,14 +144,14 @@ python3 scripts/soak_test.py \
 ## 6. 故障注入与恢复（人工编排）
 
 ```bash
-# 离线流程演练（替身）：四类故障逐条「注入 → 安全态 → 恢复 → READY」
+# 离线流程演练（替身）：五类故障逐条「注入 → 安全态 → 恢复 → READY」
 python3 scripts/fault_inject.py --json
 
 # 真机：按脚本打印的步骤人工注入，脚本检测 → 安全态 → 恢复 → 校验 READY
 python3 scripts/fault_inject.py --hardware
 ```
 
-四类故障与期望安全态：
+五类故障与期望安全态：
 
 | 故障 | 物理操作 | 期望 reason | 期望安全态 |
 |---|---|---|---|
@@ -159,6 +159,7 @@ python3 scripts/fault_inject.py --hardware
 | 物体掉落 | 夹爪上的物体掉落 | `gripper_offline` | `HOLDING` |
 | 夹爪夹空 | 空夹 / 未夹到 | `gripper_not_at_target` | `HOLDING` |
 | 关节超限位 | 手动撞限位 / 关节报错 | `joint_error` | `FAULT` |
+| 供电跌落 | 断开供电 / 制造欠压（真机） | `power_supply_drop` | `FAULT` |
 
 恢复流程（**官方顺序**，每一步都走传输层）：
 
@@ -172,8 +173,32 @@ verify_link → check_gripper → clear_error → relax_limits → enable
 `rm_set_joint_max_pos` → `rm_set_joint_en_state` → `rm_movej_canfd`（唯一运动通道）
 → `rm_set_joint_min_pos` / `rm_set_joint_max_pos` → 重同步 `q` → 复位 `READY`。
 
+> `rm_clear_system_err` 清除的是**系统级**错误码（含供电跌落这类帧级系统错误），
+> 逐轴错误码由 `rm_set_joint_clear_err` 清除——**两者都要清**，恢复才不会停在 `resync_q`。
+
 任一步失败都会给出**可执行诊断**（失败符号 + 当前逐关节错误码 + 建议动作），
 后续步骤显式标记 `skipped`——绝不静默跳过。
+
+### 6.1 供电跌落（真机复验步骤）
+
+供电跌落是**帧级系统错误码**承载的故障：状态帧 `errCode` 非 0（非 `-3`）时，
+本项目判定为 `power_supply_drop`，进入 `FAULT` 安全态。
+
+1. 确认急停手柄可用、周围无人、机械臂处于可控姿态；确认现场安全规程已就位。
+2. 断开机械臂供电或制造欠压（**按现场安全规程操作**）。
+3. 观察脚本 / CLI 是否检测到 `power_supply_drop` 并进入 `FAULT` 安全态
+   （离线可先用 `python3 scripts/fault_inject.py --only power_supply_drop --json`
+   确认判定与恢复链在替身上闭环）。
+4. 恢复供电后按官方恢复顺序执行：
+   清错 `rm_set_joint_clear_err` → `rm_clear_system_err` → 放宽限位 → 上使能 →
+   回位 → 恢复限位 → 重同步 `q` → 复位 `READY`。
+5. 记录断电时长与恢复耗时。
+
+> **如实标注**：厂商帧级系统错误码（`errCode`）↔ 供电跌落的对应关系在硬件可达前
+> **未核实**。当前实现以「帧级系统错误码非 0」承载该故障，
+> `power_supply_drop` 是本项目自定的**稳定 reason 标签**，**不代表厂商错误码表**。
+> 真机复验后必须回写实际错误码与判定规则（并同步 `src/rm75_drake/device/recovery.py`
+> 与 `scripts/fault_inject.py` 中的判定）。真机物理验证在完成之前仍属「未验证指标」。
 
 ---
 
@@ -237,3 +262,4 @@ bash scripts/ci.sh fast
 | `gripper_offline` | 夹爪未上电 / 通信异常 | 检查夹爪供电与 `rm_plus_state` |
 | 恢复停在 `check_gripper` | 夹爪仍离线 / 未到位 | 按诊断里的建议动作处理后重跑 |
 | 恢复停在 `resync_q` | 帧不完整 / 错误码未清零 / 未全轴使能 | 按诊断里的建议动作处理后重跑 |
+| `power_supply_drop`（或状态帧 `errCode` 非 0） | 供电跌落 / 欠压 / 保险丝熔断 / 电源模块故障 | 确认供电与保险丝/电源模块；恢复供电后按 §6 的恢复顺序清错（`rm_clear_system_err`）并重同步 `q`；恢复停在 `resync_q` 时检查帧是否仍带系统错误码 |
