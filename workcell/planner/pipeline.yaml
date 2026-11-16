@@ -6,14 +6,31 @@ version: 1
 pipeline: FreespacePipeline     # 管线名（Tesseract Task Composer）
 num_planners: 2                 # 单次规划并行的规划器个数
 planning_time_s: 5.0            # 单次规划时间上限（秒）
-planner_range: 0.01             # 采样范围（m）
+# planner_range —— 厂商 RRTConnect 的采样范围（**本切片唯一有效的性能杠杆**）。
+#   实测依据（S08/T04，scripts/rm_planner_perf.py 全量 7 场景 × 2 档，
+#   报告见 build/reports/s08_planner_perf.json）：
+#     range=0.01 → cross_zero 原始点数 329、规划 1.09 s、worker 峰值 RSS 4730 MB
+#     range=0.30 → cross_zero 原始点数  14、规划 0.07 s、worker 峰值 RSS  324 MB
+#   因果链：厂商 TrajOpt 每个轨迹点克隆一份碰撞世界（trajopt#625）→
+#   **点数线性决定内存** → 降点数是唯一能把 RSS 从 GB 拉回 MB 的杠杆。
+#   代价：点数变少 → 稠密化后的校验暴露出真实的 jerk/加速度峰值 →
+#   需要 ~2.0–2.5× 保路径降速才能过四道校验
+#   （配套：profiles.yaml::max_time_scaling 1.5 → 3.0）。
+planner_range: 0.3              # S08/T04 固化档位（实测依据见上）
 deterministic: true             # 确定性开关（同 seed → 同结果）
-# 厂商 profile 档位（S08/T02 接线；最终取值由 T04 依实测固化）
-#   max_solutions —— 每个规划器保留的解个数上限（厂商默认 10）。越大越慢越占内存。
+# 厂商 profile 档位（S08/T02 接线；取值由 T04 依实测固化）
+#   max_solutions —— 每个规划器保留的解个数上限（厂商默认 10）。
+#     实测（range=0.3）：10 与 1 在点数 / 规划耗时 / worker 峰值 RSS 上
+#     **无可测差异**（内存由「每点克隆一份碰撞世界」决定，不由解个数决定）
+#     → 保持厂商默认 10，不为无收益的改动引入行为漂移。
 #   optimize —— 厂商语义：true = 跑满 planning_time_s 继续优化；
-#     false = 拿到第一个有效解即返回（延迟/内存杠杆最大的一档）。
-max_solutions: 10               # 厂商默认档位（S07 基线语义）
-optimize: true                  # 厂商默认档位（S07 基线语义）
+#     false = 拿到第一个有效解即返回。
+#     实测（range=0.3）：optimize=false 会让「障碍物堵死」场景**立刻**返回
+#     FAILED（规划器放弃），从而把「服务端 deadline SIGKILL = TIMEOUT」
+#     与「规划器自己放弃 = FAILED」两种结局混为一谈
+#     → 违反黄金场景集的设计意图 → 保持 true。
+max_solutions: 10               # 厂商默认档位（实测无可测收益 → 不动）
+optimize: true                  # 保持 true（false 会破坏 TIMEOUT/FAILED 区分）
 # 校验分辨率 / 下发密度（**互不相关**的两个旋钮，单位：弧度 rad）
 #   verify_resample_step_rad —— 四道校验用的**稠密化**步长（关节空间最大步长）。
 #     0 = 关闭（直接用规划器原始点做数值微分）。四道校验的速度/加速度/jerk 是

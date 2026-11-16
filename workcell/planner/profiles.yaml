@@ -5,7 +5,16 @@
 # 长度 = 米（m）；角度 = 弧度（rad）。
 version: 1
 timeout_ms: 20000               # 服务端硬超时（毫秒）：超时 → 服务端 SIGKILL worker
-max_time_scaling: 1.5           # 允许的最大时间缩放系数（constraints.time_scaling ≤ 本值）
+# max_time_scaling —— 保路径降速自愈的**上限**（同时是请求 constraints.time_scaling
+#   的上限）。S08/T04 实测：planner_range 从 0.01 降到 0.3 后点数 329 → 14，
+#   稠密化校验暴露出真实的 jerk/加速度峰值 → 实测需要的缩放系数
+#   1.79–2.42（joint_small_local 1.99 / joint_cross_zero 2.42 / cartesian 1.79）。
+#   上限 1.5 时这些场景会因「需要人工放宽」而 FAILED（与 S07 的 SUCCESS 结论冲突）。
+#   → 上限提到 3.0（> 实测最大值 2.42，留 ~24% 余量）。
+#   注意：这**不放宽四道校验的限值**，只放宽「允许多慢地走」——
+#   降速后轨迹仍必须通过同一套校验；且「越限」场景靠请求里的
+#   constraints.time_scaling=1.0 把上限压回 1.0 → 仍然 FAILED（红线不变）。
+max_time_scaling: 3.0           # 允许的最大时间缩放系数（S08/T04 实测固化）
 collision_margin_m: 0.005       # 碰撞裕度（米）
 verify:
   continuous: true              # 是否做连续碰撞复检（四道校验之一）

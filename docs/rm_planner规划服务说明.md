@@ -27,6 +27,7 @@
 | 跑三条验收（一条命令） | `python3 scripts/rm_planner_acceptance.py` |
 | 看三条验收报告 | `build/reports/s07_planner_acceptance.json` |
 | 看黄金场景集（S08 性能基线复用它） | `dualarm_ws/src/rmctl/tests/golden/planner_scenarios.json` |
+| 跑性能基准（优化前 vs 优化后对比表） | `python3 scripts/rm_planner_perf.py` → `build/reports/s08_planner_perf.json` |
 | 规划配置（唯一来源，只读） | `workcell/planner/pipeline.yaml` + `workcell/planner/profiles.yaml` |
 
 > **诚实分层（贯穿全文）**：本轮证据为**离线层** —— 真实规划内核
@@ -306,7 +307,8 @@ RNG_setSeed(seed)   ← 进程生存期内第一次设定，必须在任何规�
 * 语义：先跑四道校验 → 不过 → 算最小时间缩放系数 `s` → `s > 1.001` 时
   **几何路径不变、只放慢时间轴** → 重跑四道校验 → 过了才算成功。
 * **上限封顶**：实际缩放系数 ≤ `min(profiles.yaml::max_time_scaling,
-  request.constraints.time_scaling)`（当前 `max_time_scaling = 1.5`）。
+  request.constraints.time_scaling)`（当前 `max_time_scaling = 3.0`，
+  取值依据见 **§12「性能档位与口径定义」**）。
   封顶后仍不过 → `FAILED`，并在 `metrics.notes` 给出人工提示
   （"人工放宽约束 / 换路径"）。
 * 结果落在 `metrics.retimed_scale`（`null` = 没降速）。
@@ -324,7 +326,7 @@ per-node 指标**不覆盖**四道校验节点 —— 校验耗时看
 
 | 文件 | 键 | 消费方 |
 |---|---|---|
-| `workcell/planner/pipeline.yaml` | `pipeline`（管线名）、`num_planners`、`planning_time_s`、`planner_range`、`deterministic`、`verify_resample_step_rad`（校验稠密化步长，rad）、`output_resample_step_rad`（下发稠密化步长，rad） | 服务端启动时读取，构造官方 Task Composer 管线 |
+| `workcell/planner/pipeline.yaml` | `pipeline`（管线名）、`num_planners`、`planning_time_s`、`planner_range`（采样范围）、`deterministic`、`max_solutions`（每规划器保留的解个数上限）、`optimize`（厂商"是否继续优化"开关）、`verify_resample_step_rad`（校验稠密化步长，rad）、`output_resample_step_rad`（下发稠密化步长，rad） | 服务端启动时读取，构造官方 Task Composer 管线 |
 | `workcell/planner/profiles.yaml` | `timeout_ms`（默认硬超时）、`max_time_scaling`（时间缩放上限）、`collision_margin_m`、`verify.continuous`、`scene_version` | 服务端（硬超时 / 校验参数 / 场景版本）+ 客户端（请求缺省值） |
 
 * Python **只读不改**；改配置 = 改文件 + git diff（换机型 / 换工艺不改代码）。
@@ -512,17 +514,155 @@ python3 scripts/rm_planner_acceptance.py --only deterministic_same_seed
 4. **笛卡尔路径 / 相对约束**尚未实现（本层只冻结 `joint` 与 `pose` 两种
    goal 类型）。
 5. **部署层自动复活**不属本切片承诺（systemd / supervisor）。
+6. **性能优化的代价与未实证项**（降点数后轨迹更粗、降速幅度变大、
+   `max_time_scaling` 上限放宽对请求侧的影响、真机跟踪误差与节拍）
+   → 详见 **§12.8**。
 
 ---
 
-## 12. 关联索引
+## 12. 性能档位与口径定义（S08/T04）
 
-* 需求：R002（四道校验）、R010（上手体验与操作效率）、R013（零编译主线）。
+### 12.1 档位字段与各自语义
+
+| 字段 | 来源 | 语义 | 坑 |
+|---|---|---|---|
+| `planner_range` | `pipeline.yaml` | 厂商 RRTConnect 的**采样范围** → 直接决定轨迹点数 | **不是"越小越精细"**：实测 0.01 反而产生 329 个点、1.08 s、4.8 GB；0.3 产生 14 个点、0.07 s、324 MB。**越大 = 点数越少 = 越快越省内存** |
+| `max_solutions` | `pipeline.yaml` | 每个规划器保留的**解个数**上限（厂商默认 10） | 实测（range=0.3）：10 与 1 在点数 / 规划耗时 / 峰值 RSS 上**无可测差异** → 保持 10 |
+| `optimize` | `pipeline.yaml` | 厂商语义：**true = 跑满 `planning_time_s` 继续优化**；false = 拿到第一个有效解即返回 | 实测 false 会让「障碍物堵死」场景**立刻** FAILED（规划器放弃），把「服务端 SIGKILL = TIMEOUT」与「规划器放弃 = FAILED」混为一谈 → **保持 true** |
+| `planning_time_s` | `pipeline.yaml` | 单次规划时间上限（秒） | 太大 → 规划器自己放弃的 FAILED 场景要等满预算（实测 5.0 s） |
+| `max_time_scaling` | `profiles.yaml` | 保路径降速自愈的**上限**（也是请求 `constraints.time_scaling` 的上限） | 上限封顶后仍不过 → `FAILED` + 人工提示（见 §6.2） |
+| `verify_resample_step_rad` / `output_resample_step_rad` | `pipeline.yaml` | 校验 / 下发两条轨迹的稠密化步长（rad），0 = 关闭 | 两个旋钮**互不相关**（S08/T01）：降点数后必须靠校验侧稠密化守住四道校验的分辨率 |
+
+### 12.2 固化后的档位与实测依据
+
+`workcell/planner/pipeline.yaml`（唯一来源）：
+
+```
+planner_range: 0.3     max_solutions: 10     optimize: true     planning_time_s: 5.0
+```
+
+`workcell/planner/profiles.yaml`：`max_time_scaling: 3.0`（S07 时为 1.5）。
+
+**为什么 `max_time_scaling` 必须一起改**（实测，非推测）：降点数后，T01 的
+稠密化校验暴露出**真实的** jerk / 加速度峰值 → 实测需要的缩放系数
+`joint_small_local` 1.99 / `joint_cross_zero` 2.42 / `cartesian_reachable` 1.79。
+上限 1.5 时这些场景会因「需要人工放宽 max_time_scaling」而 FAILED
+（与 S07 的 SUCCESS 结论冲突）。上限提到 **3.0**（> 实测最大值 2.42，余量 ~24%）。
+**这不放宽四道校验的限值**，只放宽「允许多慢地走」：降速后轨迹仍必须通过
+同一套校验。且「越限」场景靠请求里的 `constraints.time_scaling=1.0` 把上限压回
+1.0 → **仍然 FAILED**（红线不变）。
+baseline 档位实测只需要 1.16–1.25× 降速 → 上限从 1.5 提到 3.0 **不改变
+baseline 的任何结论**。
+
+### 12.3 延迟口径（三组，互不替代）
+
+| 口径 | 含义 | 优化前 | 优化后 |
+|---|---|---|---|
+| **`success_only` p95**（**验收口径**） | 只统计 `status == SUCCESS` 场景的**客户端 e2e 墙钟** | **1.326 s** | **0.315 s**（≤ 1.0 s ✔） |
+| 全体 p95 | 全部 7 场景的 e2e 墙钟（含故意失败 / 超时场景） | 4.085 s | 4.074 s |
+| `metrics.planning_s` p95 | 纯规划耗时（剔除冷启动），只统计跑出 `planning_s` 的场景 | 4.220 s | 4.018 s |
+
+* **验收只认 `success_only`**：R009 要的是「正常请求的延迟」；
+  全体 p95 里的大头是 `obstacle_blocked_planner_gives_up`（规划器烧满
+  `planning_time_s=5.0` 才放弃）—— 那是**故意失败**的场景，不是性能问题。
+* **e2e 墙钟含 worker 冷启动**：python 启动 0.012 s + import engine 0.136 s
+  + 模型加载 0.19 s ⇒ 每请求固定 **~0.19–0.25 s**。所以优化后的
+  `success_only` p95（0.315 s）里，冷启动占了 ~0.25 s —— **再优化规划内核
+  也压不下去**。要看纯规划开销请读 `metrics.planning_s`。
+
+### 12.4 内存口径（测的是 worker，不是服务端）
+
+* 测量对象 = **worker 子进程的峰值 RSS**（`/proc/<pid>/status` 的 `VmRSS`，
+  **10 ms 轮询**；worker 存活期间采样；**不用 psutil** —— 仓库无此依赖）。
+* **服务端进程 RSS（十几 MB）不代表规划内存** —— 测它是平凡通过、无意义。
+  模型 + 厂商内核 + TrajOpt 全在 worker 子进程里。
+* 实测：优化前 **4729 MB** → 优化后 **325 MB**（< 500 MB ✔）。
+
+### 12.5 点数 ↔ 内存的因果链
+
+厂商 TrajOpt **每个轨迹点克隆一份完整碰撞世界**（trajopt#625）
+→ **点数线性决定内存**（329 点 ≈ 4.8 GB；14 点 ≈ 325 MB）
+→ **降点数是唯一有效的 Python 层杠杆**（本切片实测：把
+`planner_range` 从 0.01 调到 0.3，点数 329 → 14，RSS 4729 MB → 325 MB）。
+规划耗时同样与点数成正比（TrajOpt 吃掉 92%–97% 的规划时间，OMPL 节点只有
+7–28 ms）。
+
+### 12.6 不可用杠杆的诚实清单（实测，别再挖）
+
+| 杠杆 | 结论 |
+|---|---|
+| OMPL 目标函数 goal threshold（设计 §5.13.3 的「150× 杠杆」） | **未在 0.35 的 nanobind 绑定里暴露** → 不可用 |
+| `BasicTrustRegionSQPParameters.max_iter` | 实测对耗时**无影响** |
+| `contact_manager_config.default_margin` / `collision_check_config.type` | 实测对耗时与点数**均无影响**（1.09–1.10 s，329 点不变） |
+| `TrajOptDefaultCompositeProfile.collision_cost_config.enabled` | **有效**，但会削弱避障裕度 → 与四道校验的保守性冲突 → **本切片不用** |
+| `max_solutions` 10 → 1 | 实测**无可测差异**（内存由每点克隆决定，不由解个数决定） |
+| `optimize` true → false | 能降延迟，但**破坏 TIMEOUT / FAILED 的语义区分** → 不用 |
+
+### 12.7 前后对比表（可复现）
+
+* 生成命令：`python3 scripts/rm_planner_perf.py --out build/reports/s08_planner_perf.json`
+  （退出码 0 = 两档的每个场景 status 都与 `expect_status` 一致；4 = 有不匹配）。
+* 报告：`build/reports/s08_planner_perf.json`（运行时产物，gitignore）。
+* 「优化前」= 脚本里的**冻结常量** `BASELINE_PROFILE`（S07 交付时的档位：
+  `planner_range=0.01` / `max_solutions=10` / `optimize=true` /
+  `planning_time_s=5.0` / `num_planners=2`）—— **不读仓库 pipeline.yaml**，
+  否则后来人改配置会让前后对比悄悄漂移。
+* 「优化后」= 当前 `workcell/planner/pipeline.yaml` 的取值（**只读不改**）。
+* 场景集 = **S07 的黄金场景集**（`tests/golden/planner_scenarios.json`，
+  7 场景，版本化，git 跟踪）—— S08 不另造基准。
+* 报告同时记录 `machine`（uname / CPU 数 / 负载）与 `git_rev` → 数字可追溯到
+  具体机器与提交。
+
+**实测结果（`git_rev d8935d5`，28 核 Linux）**：
+
+| 指标 | 优化前（baseline） | 优化后（optimized） | 变化 |
+|---|---|---|---|
+| `success_only` p95 | 1.326 s | **0.315 s** | −1.011 s ✔（≤ 1.0 s） |
+| `success_only` p50 | 0.403 s | 0.298 s | −0.105 s |
+| 全体 p95 | 4.085 s | 4.074 s | −0.011 s |
+| `planning_s` p95 | 4.220 s | 4.018 s | −0.202 s |
+| **worker 峰值 RSS（max）** | **4729.46 MB** | **324.52 MB** | −4404.94 MB ✔（< 500 MB） |
+| 点数中位数（下发） | 40 | 36 | −4 |
+| `joint_cross_zero` 原始点数 | 329 | 14 | −315 |
+| **成功率**（status == expect_status） | **1.0** | **1.0** | 0 ✔（≥ 0.95） |
+
+**黄金场景集结论未变**（14 行 = 2 档 × 7 场景，status 全部与
+`expect_status` 一致）：`joint_small_local` / `joint_cross_zero` /
+`cartesian_reachable` 仍 SUCCESS；`limit_violation_jerk` 仍 **FAILED**
+（越限场景没被降点数"洗白"）；`obstacle_blocked_timeout` 仍 **TIMEOUT**；
+`obstacle_blocked_planner_gives_up` 仍 **FAILED（规划器自己放弃）**。
+
+### 12.8 已知代价与后续
+
+1. **点数变少 → 轨迹更粗**：优化后 `joint_cross_zero` 的规划器原始点数
+   只有 14（优化前 329）。下发侧靠 `output_resample_step_rad=0.01` 稠密化到
+   183 点（几何一致）→ 执行密度可接受，但**真机跟踪误差未实证**（需真机窗口）。
+2. **降速幅度变大**：优化后的轨迹需要 1.79–2.42× 保路径降速才过四道校验
+   （优化前 1.16–1.25×）→ **轨迹时长变长**，真机节拍影响未实证。
+3. **`max_time_scaling` 提到 3.0**：只放宽「允许多慢」，不放宽限值；
+   但它同时是请求侧 `constraints.time_scaling` 的上限 → 客户端可请求的
+   上限随之放宽（**这是行为变化，不是纯性能变化**）。
+4. **笛卡尔克隆**：本切片不交付笛卡尔路径规划功能 —— 厂商
+   `CartesianPipeline` 实测跑不通（`Failed to build graph`），根因是
+   Descartes 需要多组冗余 IK 种子，7 自由度单链在 KDL 下拿不到
+   （属自研 TRAC-IK 的远期项）。详见 **S08/T05** 的原型与范围判定。
+
+---
+
+## 13. 关联索引
+
+* 需求：R002（四道校验）、R009（性能口径）、R010（上手体验与操作效率）、
+  R013（零编译主线）。
 * 决策：D001（声明式配置）、D003（+ **D028** 修订）、D004（三进程模型）、
   D023 / D027（不新增层）。
 * 切片：M001-3kzz40 / **S07**（T1 契约与配置 → T2 引擎 → T3 服务端与 worker
-  → T4 薄客户端与 CLI 接线 → T5 黄金场景集与崩溃隔离离线证据 → T6 本文与一键验收）。
+  → T4 薄客户端与 CLI 接线 → T5 黄金场景集与崩溃隔离离线证据 → T6 本文与一键验收）；
+  **S08**（T1 校验分辨率 ↔ 点数解耦 → T2 性能档位接线 → T3 性能基准脚本 →
+  **T4 档位固化与口径文档（本文 §12）** → T5 内存治理与笛卡尔克隆原型 →
+  T6 性能门禁与红线回归）。
 * 黄金场景集：`dualarm_ws/src/rmctl/tests/golden/planner_scenarios.json`
   （7 场景，版本化、git 跟踪；**S08 性能 p95 直接复用**，不另造基准）。
 * 验收脚本：`scripts/rm_planner_acceptance.py`
   → `build/reports/s07_planner_acceptance.json`。
+* 性能基准脚本：`scripts/rm_planner_perf.py`
+  → `build/reports/s08_planner_perf.json`（前后对比表，口径见 §12.3–§12.7）。
