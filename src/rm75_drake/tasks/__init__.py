@@ -22,7 +22,9 @@
   复用 :mod:`rm75_drake.coordinated` 的**常数 ``X_LR``**（角色互换用
   ``inv(X_LR)``）⇒ **不新建第二套协调规划**；交接点的相对位姿残差
   ≤ 1e-6 m / ≤ 1e-6 rad。
-* （后续切片）:mod:`rm75_drake.tasks.metrics` —— 原语级指标口径。
+* :mod:`rm75_drake.tasks.metrics` —— **原语级指标口径**（S06-T07）：
+  逐原语成功率 / 误差分位数 / 零逃逸率 + **验收口径与端到端口径分行**
+  + 真机未验证物理指标清单（canonical 清单在**本模块**，CLI 只再导出）。
 
 目录语义（**同名易混，必须分清**）
 --------------------------------
@@ -99,6 +101,11 @@ __all__ = [
     "TaskFailure",
     "StateTransition",
     "TaskStateMachine",
+    "metrics",
+    "UNVERIFIED_TASK_METRICS",
+    "PrimitiveMetric",
+    "TaskMetricsReport",
+    "build_task_metrics_report",
 ]
 
 #: 惰性子模块（PEP 562）：import 本包不拉起任何重依赖。
@@ -110,6 +117,7 @@ _LAZY_MODULES = (
     "state_machine",
     "bimanual",
     "perception",
+    "metrics",
 )
 
 #: 从 ``schema`` 子模块透出的符号。
@@ -179,6 +187,14 @@ _PERCEPTION_EXPORTS = (
     "apply_perception_scene",
 )
 
+#: 从 ``metrics`` 子模块透出的符号。
+_METRICS_EXPORTS = (
+    "UNVERIFIED_TASK_METRICS",
+    "PrimitiveMetric",
+    "TaskMetricsReport",
+    "build_task_metrics_report",
+)
+
 #: 从 ``goals`` 子模块透出的符号。
 _GOALS_EXPORTS = (
     "GOAL_KINDS",
@@ -204,6 +220,11 @@ def __getattr__(name: str) -> Any:
         return value
     if name in _PERCEPTION_EXPORTS:
         module = importlib.import_module(f"{__name__}.perception")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _METRICS_EXPORTS:
+        module = importlib.import_module(f"{__name__}.metrics")
         value = getattr(module, name)
         globals()[name] = value
         return value

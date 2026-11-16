@@ -2,6 +2,12 @@
 #
 # 语义：approach → pre_grasp → close → verify → lift → transit → place → open → retreat
 # 单位：长度 m，角度 rad，时间 s。
+#
+# 目标位姿的取值口径（S06-T07 修正）：
+#   原语目标是**世界系 TCP 位姿**（TCP = 夹爪指尖，工具偏置 0.144 m）。
+#   下列位姿既落在 RM75-D 的**可达包络**内（腕心半径 ≤ d3+d5 = 0.466 m），
+#   又在 scenarios/single_arm.yaml 的**碰撞自由**区域内 —— 因此整条链
+#   可以用**离线快路径**（解析 IK → 关节插值 → 碰撞复检 → 重定时）跑通。
 schema_version: 1
 name: pick_place
 description: "单臂抓取方块 cube_a 并放置到 table_a 台面"
@@ -11,12 +17,12 @@ objects:
   - name: cube_a
     half_size: [0.02, 0.02, 0.02]
     pose:
-      xyz: [0.45, 0.0, 0.02]
+      xyz: [0.30, 0.0, 0.02]
       rpy: [0.0, 0.0, 0.0]
   - name: table_a
     half_size: [0.15, 0.15, 0.01]
     pose:
-      xyz: [0.55, 0.10, 0.01]
+      xyz: [0.35, 0.05, 0.01]
       rpy: [0.0, 0.0, 0.0]
 thresholds:
   position_m: 0.005
@@ -25,7 +31,7 @@ primitives:
   - name: approach
     kind: motion
     target:
-      xyz: [0.45, 0.0, 0.18]
+      xyz: [0.32, 0.0, 0.30]
       rpy: [0.0, 0.0, 0.0]
     tolerance:
       position_m: 0.01
@@ -33,7 +39,7 @@ primitives:
   - name: pre_grasp
     kind: motion
     target:
-      xyz: [0.45, 0.0, 0.10]
+      xyz: [0.30, 0.0, 0.25]
       rpy: [0.0, 0.0, 0.0]
     tolerance:
       position_m: 0.005
@@ -51,7 +57,7 @@ primitives:
   - name: lift
     kind: motion
     target:
-      xyz: [0.45, 0.0, 0.20]
+      xyz: [0.30, 0.0, 0.32]
       rpy: [0.0, 0.0, 0.0]
     tolerance:
       position_m: 0.005
@@ -59,7 +65,7 @@ primitives:
   - name: transit
     kind: motion
     target:
-      xyz: [0.55, 0.10, 0.25]
+      xyz: [0.35, 0.05, 0.32]
       rpy: [0.0, 0.0, 0.0]
     tolerance:
       position_m: 0.01
@@ -67,7 +73,7 @@ primitives:
   - name: place
     kind: motion
     target:
-      xyz: [0.55, 0.10, 0.05]
+      xyz: [0.35, 0.05, 0.25]
       rpy: [0.0, 0.0, 0.0]
     tolerance:
       position_m: 0.005
@@ -80,7 +86,7 @@ primitives:
   - name: retreat
     kind: motion
     target:
-      xyz: [0.55, 0.10, 0.22]
+      xyz: [0.35, 0.05, 0.30]
       rpy: [0.0, 0.0, 0.0]
     tolerance:
       position_m: 0.01

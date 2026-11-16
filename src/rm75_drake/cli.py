@@ -1,4 +1,5 @@
-"""CLI 族（S02-T08）：``single`` / ``pick`` / ``bimanual`` / ``replay``。
+"""CLI 族（S02-T08）：``single`` / ``pick`` / ``bimanual`` / ``replay`` /
+``exec`` / ``calibrate`` / ``task``。
 
 统一入口
 --------
@@ -8,8 +9,8 @@
 
 四个子命令的语义
 ----------------
-（``single`` / ``pick`` / ``bimanual`` / ``replay``；``exec`` 与 ``calibrate``
- 见下）
+（``single`` / ``pick`` / ``bimanual`` / ``replay``；``exec`` / ``calibrate``
+ / ``task`` 见下）
 ``single``
     单臂规划：走完整链路（IK → IRIS → 空间 GCS → Toppra 重定时 → 碰撞复检），
     打印诊断，可选把结果录制成 JSON（``--output``）。
@@ -36,6 +37,13 @@
     ``--dry-run`` 走**传输层替身**（零硬件）；真机不可达时输出
     ``SKIP(reason=hardware_unreachable)`` 并以 **0** 退出
     （既不伪装成失败，也不伪装成成功）。
+``task``
+    **任务原语链执行（S06 已实现）**：按任务文件（YAML）里的原语顺序跑
+    整条链（离线快路径：解析 IK → 关节插值 → 碰撞复检 → 重定时），
+    输出**逐原语结果**与**逐原语指标**（成功率 / 误差 P95 / 零逃逸率）。
+    退出码 0 = 成功且门槛达标、1 = 业务失败、2 = 用法错误。
+    真机 / 物理指标**无真机 ⇒ 硬件门控 SKIP**：逐条列入
+    ``unverified_metrics``，**退出码仍为 0**。
 ``calibrate``
     双臂标定作业入口（**离线**，零硬件）：解算关节零位偏差 / 工具 TCP 6D /
     双臂基座外参 ``X_LR``，输出残差摘要（RMS / 最大残差 / 逐点残差 /
@@ -67,6 +75,7 @@ import argparse
 import json
 import math
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -86,6 +95,7 @@ from .device.hardware_gate import (
 )
 from .gripper import open_action
 from .planning.gcs import DEFAULT_EDGE_STEP_SIZE
+from .tasks.metrics import UNVERIFIED_TASK_METRICS as _UNVERIFIED_TASK_METRICS
 
 __all__ = [
     "EXIT_OK",
@@ -103,6 +113,9 @@ __all__ = [
     "BIMANUAL_DEFAULT_X_RPY",
     "BIMANUAL_CANDIDATE_LEADER_POSTURES",
     "UNVERIFIED_COORDINATED_METRICS",
+    "UNVERIFIED_TASK_METRICS",
+    "TASK_HARDWARE_GATE_REASON",
+    "run_task_chain",
     "bimanual_x_lr_matrix",
     "select_bimanual_start",
     "build_parser",
@@ -119,6 +132,9 @@ EXIT_USAGE = 2
 
 #: 默认场景真相源。
 DEFAULT_SCENARIO = str(paths.scenarios_dir / "single_arm.yaml")
+
+#: 默认**任务（部署实例）文件**真相源（S06；仓库根 ``tasks/`` 下的 YAML）。
+DEFAULT_TASK_FILE = str(paths.task_files_dir / "pick_place.yaml")
 
 #: 默认**设备（部署）配置**真相源（S03；与场景真相源分开）。
 DEFAULT_DEVICE_CONFIG = str(paths.devices_dir / "single_arm.yaml")
@@ -184,6 +200,19 @@ UNVERIFIED_COORDINATED_METRICS: Tuple[str, ...] = (
     "真实（真机）双臂相对位姿保持（构造性满足仅在仿真中验证）（未验证）",
     "真实（真机）14 维零逃逸（离线仿真零逃逸 ≠ 真机零逃逸）（未验证）",
 )
+
+
+#: 真机 / 物理指标清单（**任务层**：真机抓放成功率 / 夹持误差 / 交接保持漂移 /
+#: 感知延迟 / 夹爪力控 / 长稳节拍）。
+#:
+#: **真相源 = :mod:`rm75_drake.tasks.metrics`**（canonical tuple）——
+#: CLI 与 :mod:`scripts.task_stats` 只允许**再导出**，
+#: **禁止在 CLI 里另立第二份清单**（与
+#: :data:`UNVERIFIED_COORDINATED_METRICS` 同款纪律）。
+UNVERIFIED_TASK_METRICS: Tuple[str, ...] = tuple(_UNVERIFIED_TASK_METRICS)
+
+#: ``task`` 子命令的**硬件门控原因标签**（真机物理指标一律 SKIP ⇒ 退出码仍为 0）。
+TASK_HARDWARE_GATE_REASON = "offline_only_no_hardware"
 
 
 # ── 参数解析 ────────────────────────────────────────────────────────────
@@ -270,7 +299,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python3 -m rm75_drake.cli",
         description=(
-            "RM75-D 规划 CLI 族：single / pick / bimanual / replay / exec / calibrate。"
+            "RM75-D 规划 CLI 族：single / pick / bimanual / replay / exec / "
+            "calibrate / task。"
             "退出码：0 成功（或无实测数据 / 真机不可达时的 SKIP），"
             "1 业务失败（规划失败 / 回放逃逸 / 安全态触发 / 残差超阈值），"
             "2 用法错误或命令未实现。"
@@ -575,6 +605,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     exec_parser.add_argument("--json", action="store_true", help="以 JSON 输出结果摘要")
 
+    task = subparsers.add_parser(
+        "task",
+        help="任务原语链执行（S06：approach → pre_grasp → close → verify → ...）",
+        description=(
+            "任务原语链执行（S06）：按任务文件（YAML）里的原语顺序跑完整条链\n"
+            "（解析 IK → 关节插值 → 碰撞复检 → 重定时，离线快路径），\n"
+            "输出**逐原语结果**与**逐原语指标**（成功率 / 误差 P95 / 零逃逸率）。\n"
+            "* 退出码 0 = 成功（且门槛达标）；\n"
+            "* 退出码 1 = 业务失败（原语失败 / 逃逸 / 超门槛）；\n"
+            "* 退出码 2 = 用法错误（任务文件不存在 / schema 非法 / 参数非法）。\n"
+            "真机 / 物理指标**硬件门控 SKIP**：逐条列入 unverified_metrics，\n"
+            "**退出码仍为 0**，绝不用合成数据冒充物理达标。"
+        ),
+    )
+    task.add_argument(
+        "--task",
+        default=DEFAULT_TASK_FILE,
+        help=f"任务文件路径（默认：{DEFAULT_TASK_FILE}）",
+    )
+    task.add_argument(
+        "--scenario",
+        default=None,
+        help=(
+            "场景真相源 YAML（默认：任务文件里的 scenario 字段，"
+            f"缺省用 {DEFAULT_SCENARIO}）"
+        ),
+    )
+    task.add_argument(
+        "--samples",
+        type=int,
+        default=1,
+        help="整条链重复次数（默认 1；指标按样本数聚合）",
+    )
+    task.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="随机种子（默认 0；初始位形抖动时用它保证可复现）",
+    )
+    task.add_argument(
+        "--jitter",
+        type=float,
+        default=0.0,
+        help="初始位形抖动幅度（rad，默认 0 = 不抖动；> 0 时按 seed 抖动）",
+    )
+    task.add_argument("--json", action="store_true", help="以**单行** JSON 输出结果")
+
     calibrate = subparsers.add_parser(
         "calibrate",
         help="双臂标定作业（离线解算 + 残差报告；无实测数据 ⇒ SKIP）",
@@ -664,6 +741,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return _cmd_exec(args)
         if command == "calibrate":
             return _cmd_calibrate(args)
+        if command == "task":
+            return _cmd_task(args)
     except _UsageError as exc:
         print(f"cli: 参数错误：{exc}", file=sys.stderr)
         return EXIT_USAGE
@@ -728,11 +807,298 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     plan["recording_path"] = _write_recording(args, trajectory, schedule)
     plan["notes"] = [
         "预抓位姿规划完成；开爪动作调度已给出（开口 u=1000，标准夹指 65 mm）",
-        "**未做视觉伺服、未做力控夹取**：感知属 S06；夹爪力曲线未标定"
-        "（force 档位不是牛顿值）",
+        "感知接入（S06）已交付：非阻塞离散事件 + 保守场景表示，"
+        "见 rm75_drake.tasks.perception；但**本命令仍是离线规划口径**——"
+        "完整任务链与逐原语指标请用 `python3 -m rm75_drake.cli task`",
+        "**未做视觉伺服、未做力控夹取**：夹爪力曲线未标定"
+        "（force 档位不是牛顿值）；真机物理指标（抓放成功率 / 夹持误差 / "
+        "感知延迟 / 长稳节拍等）**未验证**，逐条清单见 "
+        "rm75_drake.tasks.metrics.UNVERIFIED_TASK_METRICS",
     ]
     _emit_success(args, plan)
     return EXIT_OK
+
+
+# ── task（任务原语链，S06）──────────────────────────────────────────────
+def _resolve_task_scenario(task: Any) -> Path:
+    """解析任务文件引用的场景真相源（相对 ``scenarios/`` 目录解析）。"""
+    name = getattr(task, "scenario", None)
+    if not name:
+        return Path(DEFAULT_SCENARIO)
+    candidate = Path(str(name))
+    if candidate.is_absolute():
+        return candidate
+    if candidate.is_file():
+        return candidate
+    return paths.scenarios_dir / candidate.name
+
+
+def run_task_chain(
+    task_path: Path,
+    *,
+    scenario_path: Optional[Path] = None,
+    samples: int = 1,
+    seed: int = 0,
+    jitter_rad: float = 0.0,
+    max_seconds: Optional[float] = None,
+) -> Dict[str, Any]:
+    """跑 N 次整条原语链，并聚合出**逐原语指标**（S06-T07）。
+
+    这是 ``task`` 子命令与 :mod:`scripts.task_stats` **共用的唯一实现**
+    （口径不许出现第二份）。
+
+    参数
+    ----
+    task_path:
+        任务文件（YAML）路径。
+    scenario_path:
+        场景真相源；``None`` → 取任务文件里的 ``scenario`` 字段，
+        再缺省用 :data:`DEFAULT_SCENARIO`。
+    samples:
+        整条链重复次数（指标按样本数聚合）。
+    seed:
+        随机种子（初始位形抖动时用它保证**可复现**）。
+    jitter_rad:
+        初始位形抖动幅度（rad）；``0`` → 不抖动（完全确定性）。
+    max_seconds:
+        **时间预算**（s）；超出即停并标记 ``truncated=True``（部分样本）。
+        这是批量采样下的**过载保护**：避免一次超大批量把机器占满。
+
+    返回
+    ----
+    dict：``task`` / ``task_name`` / ``scenario`` / ``samples_requested`` /
+    ``samples_completed`` / ``primitive_results``（最后一条样本的逐原语结果）/
+    ``metrics``（指标报告字典）/ ``report_object``（指标报告对象）/
+    ``scene_assembly_s`` / ``wall_time_s``。
+
+    异常
+    ----
+    :class:`FileNotFoundError`
+        任务文件 / 场景文件不存在。
+    :class:`rm75_drake.tasks.goals.TaskError`
+        任务文件 schema 非法。
+    """
+    from .device.transport import ScriptedTransport
+    from .planning.scene import build_scene
+    from .scenario import load_scenario
+    from .tasks.metrics import build_task_metrics_report
+    from .tasks.schema import load_task_file
+    from .tasks.solver import SolverOptions, solve_task
+
+    task = load_task_file(task_path)
+    resolved_scenario = (
+        Path(scenario_path) if scenario_path is not None else _resolve_task_scenario(task)
+    )
+    scenario = load_scenario(resolved_scenario)
+
+    assembly_started = time.perf_counter()
+    scene = build_scene(scenario)
+    scene_assembly_s = time.perf_counter() - assembly_started
+
+    rng = random.Random(int(seed))
+    task_results = []
+    truncated = False
+    started = time.perf_counter()
+    for _index in range(max(1, int(samples))):
+        if max_seconds is not None and (time.perf_counter() - started) > float(max_seconds):
+            truncated = True
+            break
+        options = SolverOptions()
+        if float(jitter_rad) > 0.0:
+            options = SolverOptions(
+                initial_q=tuple(
+                    rng.uniform(-float(jitter_rad), float(jitter_rad)) for _ in range(7)
+                )
+            )
+        transport = ScriptedTransport()
+        transport.open()
+        task_results.append(
+            solve_task(task, scene=scene, transport=transport, options=options)
+        )
+    wall_time_s = time.perf_counter() - started
+
+    report = build_task_metrics_report(
+        task_results,
+        task_name=task.name,
+        end_to_end_extra={
+            "scene_assembly_s": scene_assembly_s,
+            "wall_time_s": wall_time_s,
+            "jitter_rad": float(jitter_rad),
+            "seed": int(seed),
+        },
+    )
+    last = task_results[-1] if task_results else None
+    return {
+        "task": str(task_path),
+        "task_name": task.name,
+        "scenario": str(resolved_scenario),
+        "samples_requested": int(samples),
+        "samples_completed": len(task_results),
+        "truncated": truncated,
+        "primitive_results": [item.as_dict() for item in (last.results if last else ())],
+        "task_results": task_results,
+        "metrics": report.as_dict(),
+        "report_object": report,
+        "scene_assembly_s": scene_assembly_s,
+        "wall_time_s": wall_time_s,
+    }
+
+
+def _cmd_task(args: argparse.Namespace) -> int:
+    """``task``：执行任务原语链 + 逐原语指标（S06）。
+
+    退出码
+    ------
+    * ``0``：成功（原语全部成功**且**逐原语门槛达标）——
+      真机物理指标**硬件门控 SKIP**，逐条列入 ``unverified_metrics``；
+    * ``1``：业务失败（原语失败 / 碰撞逃逸 / 超门槛）；
+    * ``2``：用法错误（任务文件不存在 / schema 非法 / 参数非法）。
+    """
+    task_path = Path(str(args.task))
+    if not task_path.is_file():
+        raise _UsageError(f"任务文件不存在：{task_path}")
+    try:
+        samples = int(args.samples)
+    except (TypeError, ValueError) as exc:
+        raise _UsageError(f"--samples 必须是正整数，收到 {args.samples!r}") from exc
+    if samples <= 0:
+        raise _UsageError(f"--samples 必须是正整数，收到 {samples}")
+    try:
+        jitter = float(args.jitter)
+    except (TypeError, ValueError) as exc:
+        raise _UsageError(f"--jitter 必须是非负有限数，收到 {args.jitter!r}") from exc
+    if not math.isfinite(jitter) or jitter < 0.0:
+        raise _UsageError(f"--jitter 必须是非负有限数，收到 {jitter!r}")
+    scenario_override = str(args.scenario) if args.scenario else None
+
+    from .tasks.goals import TaskError
+
+    try:
+        outcome = run_task_chain(
+            task_path,
+            scenario_path=Path(scenario_override) if scenario_override else None,
+            samples=samples,
+            seed=int(args.seed),
+            jitter_rad=jitter,
+        )
+    except FileNotFoundError as exc:
+        raise _UsageError(str(exc)) from exc
+    except TaskError as exc:
+        raise _UsageError(f"任务文件非法：{exc}") from exc
+
+    report = outcome["report_object"]
+    task_results = outcome["task_results"]
+    chain_ok = all(item.success for item in task_results)
+    success = bool(chain_ok and report.thresholds_met)
+
+    failure = None
+    for item in task_results:
+        if not item.success:
+            failure = item
+            break
+    if failure is not None:
+        stage, reason = failure.stage, failure.reason
+        message = failure.message or "原语执行失败"
+    elif not report.thresholds_met:
+        stage, reason = "metrics", "threshold_not_met"
+        message = "逐原语指标未达标：" + "；".join(report.threshold_failures)
+    else:
+        stage, reason = "done", "completed"
+        message = f"全部原语执行成功（{len(task_results)} 个样本），逐原语门槛达标"
+
+    payload = {
+        "command": "task",
+        "status": "ok" if success else "failed",
+        "success": success,
+        "stage": stage,
+        "reason": reason,
+        "message": message,
+        "task": outcome["task"],
+        "task_name": outcome["task_name"],
+        "scenario": outcome["scenario"],
+        "samples": outcome["samples_completed"],
+        "primitive_results": outcome["primitive_results"],
+        "metrics": outcome["metrics"],
+        "acceptance_metrics": dict(report.acceptance_metrics),
+        "end_to_end_metrics": dict(report.end_to_end_metrics),
+        "unverified_metrics": list(UNVERIFIED_TASK_METRICS),
+        "hardware_gate": {
+            "status": "SKIP",
+            "reason": TASK_HARDWARE_GATE_REASON,
+            "note": (
+                "本命令是**离线**执行（夹爪命令下发到离线替身）；"
+                "真机物理指标未验证，逐条列入 unverified_metrics。"
+            ),
+        },
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, default=str))
+    else:
+        _print_task_report(payload, report)
+    return EXIT_OK if success else EXIT_FAILURE
+
+
+def _print_task_report(payload: Dict[str, Any], report: Any) -> None:
+    """打印人类可读的任务执行报告（验收口径 / 端到端口径**分行**）。"""
+    print(
+        f"[task] 状态：{payload['status']}"
+        f"（stage={payload['stage']} / reason={payload['reason']}）"
+    )
+    print(f"[task] 任务文件：{payload['task']}")
+    print(f"[task] 场景：{payload['scenario']}")
+    print(f"[task] 样本数：{payload['samples']}")
+    print(f"[task] {payload['message']}")
+    print("[task] 逐原语结果：")
+    for item in payload["primitive_results"]:
+        print(
+            f"[task]   - {item['name']}："
+            + ("成功" if item["success"] else f"失败（{item['stage']}:{item['reason']}）")
+            + (
+                f"，位置误差 {item['position_error_m']:.3e} m"
+                f" / 姿态误差 {item['orientation_error_rad']:.3e} rad"
+                if item["position_error_m"] is not None
+                else ""
+            )
+        )
+    print("[task] [验收口径] 逐原语指标：")
+    for metric in report.primitives:
+        print(
+            f"[task]   - {metric.name}：成功率 {metric.success_rate * 100:.1f}%，"
+            f"位置误差 P95="
+            + ("n/a" if metric.position_error_p95_m is None else f"{metric.position_error_p95_m:.3e} m")
+            + "，姿态误差 P95="
+            + (
+                "n/a"
+                if metric.orientation_error_p95_rad is None
+                else f"{metric.orientation_error_p95_rad:.3e} rad"
+            )
+            + f"，零逃逸率 {metric.zero_escape_rate * 100:.1f}%"
+            + ("（达标）" if metric.thresholds_met else "（**未达标**）")
+        )
+    end_to_end = dict(report.end_to_end_metrics)
+    per_sample = end_to_end.get("per_sample_duration_s") or {}
+    print(
+        "[task] [端到端] 场景装配耗时 "
+        f"{_fmt_optional(end_to_end.get('scene_assembly_s'), 3, 's')}"
+        f"，单样本轨迹时长（仿真时间）P50="
+        f"{_fmt_optional(per_sample.get('p50'), 3, 's')}"
+        f" / P95={_fmt_optional(per_sample.get('p95'), 3, 's')}"
+        "（**单列**，不作为验收口径）"
+    )
+    print("[task] 以下物理指标**未验证**（硬件门控 SKIP，不得当作通过）：")
+    for item in payload["unverified_metrics"]:
+        print(f"[task]   - {item}")
+
+
+def _fmt_optional(value: Any, digits: int = 3, unit: str = "") -> str:
+    """格式化一个可能缺失的数值（``None`` → ``n/a``）。"""
+    if value is None:
+        return "n/a"
+    try:
+        return f"{float(value):.{digits}f}{unit}"
+    except (TypeError, ValueError):
+        return "n/a"
 
 
 # ── bimanual（双臂紧协调，S05）──────────────────────────────────────────
