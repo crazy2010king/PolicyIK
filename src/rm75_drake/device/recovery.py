@@ -1,4 +1,4 @@
-"""故障恢复流程与四类故障注入回归（S03-T05）。
+"""故障恢复流程与五类故障注入回归（S03-T05）。
 
 为什么是「流程 + 替身」
 ----------------------
@@ -13,7 +13,17 @@
 物体掉落                  ``set_gripper_offline(True)``（夹爪反馈丢失）
 夹爪夹空                  夹爪位置回读值 ≠ 目标位置
 关节超限位                逐关节错误码非 0 / 位置越软限位
+供电跌落                  ``set_system_error(code)`` + ``push_frame()``
 ======================  ====================================================
+
+供电跌落的语义载体
+------------------
+状态帧只有一个帧级系统错误码字段 ``err_code``（``-3`` = 推送数据不完整，
+其余非 0 = 系统错误码）⇒ 「供电跌落」由**帧级系统错误码**承载。
+**如实标注**：厂商错误码 ↔ 供电跌落的对应关系在硬件可达前**未核实**；
+``power_supply_drop`` 是本项目自定的**稳定 reason 标签**，不代表厂商错误码表。
+帧级系统错误码的判定统一走
+:func:`rm75_drake.device.state_machine.system_error_code`（与状态机同源）。
 
 恢复流程的**官方顺序**（研究 F6 的符号清单，全部在白名单内）::
 
@@ -51,6 +61,7 @@ from .state_machine import (
     DeviceState,
     DeviceStateMachine,
     StateMachineError,
+    system_error_code,
 )
 from .transport import REASON_GRIPPER_OFFLINE as _REASON_GRIPPER_OFFLINE
 from .transport import REASON_LINK_DOWN as _REASON_LINK_DOWN
@@ -63,6 +74,7 @@ __all__ = [
     "REASON_GRIPPER_NOT_AT_TARGET",
     "REASON_JOINT_ERROR",
     "REASON_ESTOP_STATUS",
+    "REASON_POWER_SUPPLY_DROP",
     "REASON_RECOVERY_FAILED",
     "REASON_RECOVERY_OK",
     "FAULT_REASONS",
@@ -97,17 +109,23 @@ REASON_GRIPPER_NOT_AT_TARGET = "gripper_not_at_target"
 REASON_JOINT_ERROR = _REASON_JOINT_ERROR
 #: 急停状态（``arm_current_status == 9``）。
 REASON_ESTOP_STATUS = _REASON_ESTOP_STATUS
+#: 供电跌落 / 欠压（由**帧级系统错误码**承载）。
+#:
+#: 说明：厂商帧级系统错误码 ↔ 供电跌落的对应关系在硬件可达前**未核实**；
+#: 本标签是本项目自定的**稳定 reason**，不代表厂商错误码表。
+REASON_POWER_SUPPLY_DROP = "power_supply_drop"
 #: 恢复流程失败。
 REASON_RECOVERY_FAILED = "recovery_failed"
 #: 恢复流程成功。
 REASON_RECOVERY_OK = "recovery_ok"
 
-#: 四类故障 + 急停的稳定 reason 标签（顺序即研究 F1 的故障清单）。
+#: 五类故障 + 急停的稳定 reason 标签（顺序即研究 F1 的故障清单）。
 FAULT_REASONS: Tuple[str, ...] = (
     REASON_LINK_DOWN,
     REASON_GRIPPER_OFFLINE,
     REASON_GRIPPER_NOT_AT_TARGET,
     REASON_JOINT_ERROR,
+    REASON_POWER_SUPPLY_DROP,
     REASON_ESTOP_STATUS,
 )
 
@@ -115,6 +133,7 @@ FAULT_REASONS: Tuple[str, ...] = (
 SAFE_STATE_BY_REASON: Dict[str, DeviceState] = {
     REASON_LINK_DOWN: DeviceState.FAULT,
     REASON_JOINT_ERROR: DeviceState.FAULT,
+    REASON_POWER_SUPPLY_DROP: DeviceState.FAULT,
     REASON_ESTOP_STATUS: DeviceState.ESTOP,
     REASON_GRIPPER_OFFLINE: DeviceState.HOLDING,
     REASON_GRIPPER_NOT_AT_TARGET: DeviceState.HOLDING,
@@ -323,9 +342,17 @@ def classify_fault(
 
     1. 读不到状态帧 ⇒ ``link_down``（拔网线）；
     2. ``arm_current_status == 9`` ⇒ ``estop_status``（急停）；
-    3. 逐关节错误码非 0 ⇒ ``joint_error``（关节超限位 / 报错）；
-    4. 夹爪离线 ⇒ ``gripper_offline``（物体掉落 / 反馈丢失）；
-    5. 夹爪位置回读 ≠ 目标 ⇒ ``gripper_not_at_target``（夹爪夹空）。
+    3. 帧级系统错误码非 0（非 ``-3``）⇒ ``power_supply_drop``（供电跌落）；
+    4. 逐关节错误码非 0 ⇒ ``joint_error``（关节超限位 / 报错）；
+    5. 夹爪离线 ⇒ ``gripper_offline``（物体掉落 / 反馈丢失）；
+    6. 夹爪位置回读 ≠ 目标 ⇒ ``gripper_not_at_target``（夹爪夹空）。
+
+    判定**同源**
+    ------------
+    帧级系统错误码的判定走
+    :func:`rm75_drake.device.state_machine.system_error_code`（与状态机的
+    :func:`~rm75_drake.device.state_machine.detect_fault` **同一个函数**）
+    ⇒ 两条链路对同一条信号绝不会给出不同结论。
 
     返回
     ----
@@ -348,6 +375,20 @@ def classify_fault(
             reason=REASON_ESTOP_STATUS,
             safe_state=SAFE_STATE_BY_REASON[REASON_ESTOP_STATUS],
             detail="机械臂处于急停状态（arm_current_status == 9）",
+            joint_err_codes=codes,
+            action="stop",
+        )
+    system_code = system_error_code(frame)
+    if system_code is not None:
+        return FaultDiagnosis(
+            reason=REASON_POWER_SUPPLY_DROP,
+            safe_state=SAFE_STATE_BY_REASON[REASON_POWER_SUPPLY_DROP],
+            detail=(
+                f"帧级系统错误码非 0（errCode={system_code}），"
+                "判定为供电跌落 / 欠压；"
+                "注意：厂商帧级系统错误码与供电跌落的对应关系在硬件可达前未核实"
+                "（本 reason 为本项目自定的稳定标签，不代表厂商错误码表）"
+            ),
             joint_err_codes=codes,
             action="stop",
         )
@@ -807,6 +848,22 @@ class RecoveryProcedure:
                 cause=f"错误码未清零：{list(codes)}",
                 error_codes=codes,
                 suggestion="先清错（rm_set_joint_clear_err → rm_clear_system_err）再重同步",
+            )
+        system_code = system_error_code(frame)
+        if system_code is not None:
+            raise RecoveryError(
+                "状态重同步失败",
+                step="resync_q",
+                symbols=("rm_set_joint_clear_err", "rm_clear_system_err"),
+                cause=(
+                    f"帧级系统错误码未清零：errCode={system_code}"
+                    "（供电跌落 / 欠压等系统级故障尚未清除）"
+                ),
+                error_codes=codes,
+                suggestion=(
+                    "先确认供电已恢复（欠压 / 掉电需先恢复供电），"
+                    "再清错（rm_set_joint_clear_err → rm_clear_system_err）后重同步"
+                ),
             )
         if not frame.all_enabled:
             raise RecoveryError(

@@ -41,7 +41,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ..planning.trajectory import JOINT_COUNT
-from .transport import StateFrame
+from .transport import FRAME_INCOMPLETE_ERR_CODE, StateFrame
 
 __all__ = [
     # 状态
@@ -79,6 +79,7 @@ __all__ = [
     # 状态机
     "DeviceStateMachine",
     "detect_fault",
+    "system_error_code",
     "transition_table",
 ]
 
@@ -364,6 +365,38 @@ def transition_table() -> Dict[Tuple[DeviceState, DeviceEvent], _Spec]:
     return dict(_TRANSITIONS)
 
 
+def system_error_code(frame: StateFrame) -> Optional[int]:
+    """判定一帧是否携带**帧级系统错误码**（**唯一纯函数判定**）。
+
+    返回
+    ----
+    ``None``
+        无系统错误（``err_code == 0``）**或**该帧不完整（``err_code == -3``，
+        ``-3`` 是「推送数据不完整 → 必须丢弃」标记，**不是**故障原因）；
+    否则返回系统错误码数值（``int``，非 0 且非 ``-3``）。
+
+    为什么是「唯一」
+    --------------
+    状态机的 :func:`detect_fault` 与恢复流程的
+    :func:`rm75_drake.device.recovery.classify_fault` 必须对**同一条信号**
+    给出**同一个判定** ⇒ 两者共用本函数，避免出现第二次口径分裂
+    （历史上 ``classify_fault`` 根本不检查 ``err_code``）。
+
+    注意
+    ----
+    本函数只做**判定**，不做动作（进入安全态 / 清错由恢复流程负责）。
+    """
+    if not isinstance(frame, StateFrame):
+        raise StateMachineError(
+            f"frame 必须是 StateFrame，收到 {type(frame).__name__}",
+            reason=REASON_GUARD_REJECTED,
+        )
+    code = int(frame.err_code)
+    if code == 0 or code == FRAME_INCOMPLETE_ERR_CODE:
+        return None
+    return code
+
+
 def detect_fault(frame: StateFrame) -> Optional[str]:
     """判定一帧是否携带**故障**信号。
 
@@ -382,7 +415,8 @@ def detect_fault(frame: StateFrame) -> Optional[str]:
     ----
     :class:`~rm75_drake.device.transport.StateFrame` 只有**一个**错误码字段
     ``err_code``：``-3`` = 推送数据不完整（由状态源丢弃，不会到这里），
-    其余非 0 值一律视为**系统错误码**。
+    其余非 0 值一律视为**系统错误码**（判定统一走
+    :func:`system_error_code`）。
     """
     if not isinstance(frame, StateFrame):
         raise StateMachineError(
@@ -391,7 +425,7 @@ def detect_fault(frame: StateFrame) -> Optional[str]:
         )
     if int(frame.arm_current_status) == ESTOP_STATUS:
         return REASON_ESTOP_STATUS
-    if int(frame.err_code) != 0 and int(frame.err_code) != -3:
+    if system_error_code(frame) is not None:
         return REASON_SYSTEM_ERROR
     if any(int(code) != 0 for code in frame.joint_err_codes):
         return REASON_JOINT_ERROR

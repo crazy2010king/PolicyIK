@@ -105,6 +105,7 @@ from .recovery import (
     FAULT_REASONS,
     RECOVERY_STEPS,
     RELAX_MARGIN_RAD,
+    REASON_POWER_SUPPLY_DROP,
     SAFE_STATE_BY_REASON,
     STEP_FAILED,
     STEP_OK,
@@ -192,9 +193,11 @@ from .state_machine import (
     StateMachineError,
     Transition,
     detect_fault,
+    system_error_code,
     transition_table,
 )
 from .transport import (
+    FRAME_INCOMPLETE_ERR_CODE,
     REASON_CLOSED,
     REASON_GRIPPER_OFFLINE,
     REASON_INVALID_INPUT,
@@ -252,6 +255,7 @@ __all__ = [
     "REASON_LINK_DOWN",
     "REASON_INVALID_INPUT",
     "REASON_GRIPPER_OFFLINE",
+    "FRAME_INCOMPLETE_ERR_CODE",
     # state_source
     "StateSource",
     "StateSourceError",
@@ -291,6 +295,7 @@ __all__ = [
     "IllegalTransitionError",
     "GuardRejectedError",
     "detect_fault",
+    "system_error_code",
     "transition_table",
     "REASON_ILLEGAL_TRANSITION",
     "REASON_GUARD_REJECTED",
@@ -357,6 +362,7 @@ __all__ = [
     "RELAX_MARGIN_RAD",
     "FAULT_REASONS",
     "SAFE_STATE_BY_REASON",
+    "REASON_POWER_SUPPLY_DROP",
     "STEP_OK",
     "STEP_FAILED",
     "STEP_SKIPPED",

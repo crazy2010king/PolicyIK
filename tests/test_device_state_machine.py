@@ -39,6 +39,7 @@ from rm75_drake.device.state_machine import (  # noqa: E402
     StateMachineError,
     Transition,
     detect_fault,
+    system_error_code,
     transition_table,
 )
 from rm75_drake.device.transport import StateFrame  # noqa: E402
@@ -299,3 +300,48 @@ def test_can_reports_table_membership():
     machine.connect()
     assert machine.can(DeviceEvent.START_STREAM) is False
     assert machine.can(DeviceEvent.ENABLE) is True
+
+
+# ── 帧级系统错误码：唯一判定函数 + 与恢复链同源 ─────────────────────────
+def test_system_error_code_returns_code_for_real_system_error():
+    assert system_error_code(_frame(err_code=1)) == 1
+    assert system_error_code(_frame(err_code=-5)) == -5
+
+
+def test_system_error_code_ignores_zero_and_incomplete_marker():
+    """负例：``0`` 与 ``-3`` 都不是系统错误码。"""
+    assert system_error_code(_frame(err_code=0)) is None
+    assert system_error_code(_frame(err_code=-3)) is None
+
+
+def test_system_error_code_rejects_non_frame():
+    with pytest.raises(StateMachineError):
+        system_error_code({"err_code": 1})  # type: ignore[arg-type]
+
+
+def test_detect_fault_uses_the_same_system_error_code_helper():
+    """状态机与恢复链必须共用同一个判定（不出现第二次口径分裂）。"""
+    frame = _frame(err_code=1)
+    assert system_error_code(frame) is not None
+    assert detect_fault(frame) == REASON_SYSTEM_ERROR
+
+
+def test_state_machine_and_recovery_agree_on_power_supply_drop():
+    """同一帧（err_code=1）：状态机判故障、恢复链判 ``power_supply_drop``。
+
+    这保证恢复流程的 ``no_fault`` 守卫与故障判定**不会互相打架**
+    （状态机说「有故障」、恢复链说「没故障」会让恢复永远走不到 READY）。
+    """
+    from rm75_drake.device.recovery import classify_fault
+    from rm75_drake.device.transport import ScriptedTransport
+
+    transport = ScriptedTransport()
+    transport.open()
+    frame = _frame(err_code=1)
+    transport.push_frame(frame)
+
+    assert detect_fault(frame) is not None
+    diagnosis = classify_fault(transport)
+    assert diagnosis is not None
+    assert diagnosis.reason == "power_supply_drop"
+    assert diagnosis.safe_state == DeviceState.FAULT

@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from ..planning.trajectory import JOINT_COUNT
+from .transport import FRAME_INCOMPLETE_ERR_CODE as _FRAME_INCOMPLETE_ERR_CODE
 from .transport import StateFrame
 
 __all__ = [
@@ -56,7 +57,8 @@ __all__ = [
 DEFAULT_CAPACITY = 64
 
 #: 帧完整性错误码：``errCode == -3`` 表示「推送数据不完整」→ 帧必须丢弃。
-FRAME_INCOMPLETE_ERR_CODE = -3
+#: （真相源在 :mod:`rm75_drake.device.transport`，此处**重导出**保持旧导入路径可用。）
+FRAME_INCOMPLETE_ERR_CODE = _FRAME_INCOMPLETE_ERR_CODE
 
 #: 稳定 reason 标签。
 REASON_FRAME_INCOMPLETE = "frame_incomplete"

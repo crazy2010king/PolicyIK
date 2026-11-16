@@ -1,11 +1,11 @@
-"""故障恢复流程与四类故障注入回归（S03-T05）。
+"""故障恢复流程与五类故障注入回归（S03-T05）。
 
 零硬件：全部用 :class:`~rm75_drake.device.transport.ScriptedTransport` 替身 +
 :class:`~rm75_drake.device.state_machine.DeviceStateMachine` 纯状态机。
 
 覆盖
 ----
-* 四类故障（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位）各一条
+* 五类故障（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位 / 供电跌落）各一条
   「注入 → 安全态 → 恢复成功 → 回到 READY 且 q 已重同步」；
 * 恢复流程的**官方顺序**（清错 → 放宽限位 → 上使能 → 回位 → 恢复限位 →
   重同步 q → 复位 READY）；
@@ -14,6 +14,8 @@
 """
 
 from __future__ import annotations
+
+from dataclasses import replace as _replace
 
 import pytest
 
@@ -174,7 +176,7 @@ def test_relaxed_limits_are_wider_than_soft_limits():
     assert limit_calls[1][1][0] == pytest.approx(SOFT_UPPER[0])
 
 
-# ── 四类故障注入 → 安全态 → 恢复成功 ───────────────────────────────────
+# ── 故障注入 → 安全态 → 恢复成功 ───────────────────────────────────────
 def test_fault_link_down_enters_fault_and_recovers():
     """拔网线：注入 → FAULT → 恢复 → READY 且 q 已重同步。"""
     transport = ScriptedTransport()
@@ -422,14 +424,16 @@ def test_classify_fault_returns_none_when_healthy():
     assert classify_fault(transport) is None
 
 
-def test_fault_reasons_cover_four_injected_faults():
-    """四类故障的 reason 标签必须稳定且齐备。"""
+def test_fault_reasons_cover_five_injected_faults():
+    """五类故障的 reason 标签必须稳定且齐备。"""
     assert "link_down" in FAULT_REASONS
     assert "gripper_offline" in FAULT_REASONS
     assert "gripper_not_at_target" in FAULT_REASONS
     assert "joint_error" in FAULT_REASONS
+    assert "power_supply_drop" in FAULT_REASONS
     assert SAFE_STATE_BY_REASON["link_down"] == DeviceState.FAULT
     assert SAFE_STATE_BY_REASON["joint_error"] == DeviceState.FAULT
+    assert SAFE_STATE_BY_REASON["power_supply_drop"] == DeviceState.FAULT
     assert SAFE_STATE_BY_REASON["gripper_offline"] == DeviceState.HOLDING
     assert SAFE_STATE_BY_REASON["gripper_not_at_target"] == DeviceState.HOLDING
 
@@ -494,3 +498,120 @@ def test_recovery_result_is_json_serialisable():
     result = _procedure(transport, machine).run()
     payload = json.dumps(result.to_dict(), ensure_ascii=False)
     assert '"ok": true' in payload
+
+
+# ── 第五类故障：供电跌落（帧级系统错误码）──────────────────────────────
+def test_fault_power_supply_drop_enters_fault_and_recovers():
+    """供电跌落：注入帧级系统错误码 → FAULT → 恢复 → READY 且 q 已重同步。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.push_frame(_frame())
+    machine = _streaming_machine(_frame())
+
+    # 注入「供电跌落」：帧级系统错误码非 0（非 -3）
+    transport.set_system_error(1)
+    transport.push_frame(_frame(err_code=1))
+    assert transport.read_state().err_code == 1
+
+    diagnosis = classify_fault(transport)
+    assert diagnosis is not None
+    assert diagnosis.reason == "power_supply_drop"
+    assert diagnosis.safe_state == DeviceState.FAULT
+    assert diagnosis.action == "stop"
+    # 诊断必须写明错误码数值，并如实标注厂商错误码 ↔ 供电跌落未核实
+    assert "errCode=1" in diagnosis.detail
+    assert "未核实" in diagnosis.detail
+
+    assert enter_safe_state(transport, machine, diagnosis) == DeviceState.FAULT
+
+    # 操作员恢复供电 → 控制器回一帧正常帧（errCode == 0）
+    transport.set_system_error(0)
+    transport.push_frame(_frame(positions=[0.7] * DOF))
+
+    result = _procedure(transport, machine).run()
+
+    assert result.ok, result.diagnosis
+    assert result.failed_step is None
+    assert machine.state == DeviceState.READY
+    assert result.final_state == "ready"
+    assert result.resynced_q_rad == pytest.approx((0.7,) * DOF)
+
+
+class _StickySystemErrorTransport(ScriptedTransport):
+    """**只清逐轴错误码、不清系统错误码**的替身（回归老行为的负例）。"""
+
+    def clear_error(self) -> None:
+        self._require_open()
+        self.calls.append(("clear_error", ()))
+        self._template = _replace(self._template, joint_err_codes=(0,) * DOF)
+
+
+def test_power_supply_drop_recovery_fails_when_system_error_not_cleared():
+    """负例：清错不清系统错误码 ⇒ 恢复**必须失败**（停在 resync_q），不得静默通过。"""
+    transport = _StickySystemErrorTransport()
+    transport.open()
+    transport.push_frame(_frame())
+    machine = _streaming_machine(_frame())
+
+    transport.set_system_error(1)
+    transport.push_frame(_frame(err_code=1))
+
+    diagnosis = classify_fault(transport)
+    assert diagnosis is not None
+    assert diagnosis.reason == "power_supply_drop"
+    assert enter_safe_state(transport, machine, diagnosis) == DeviceState.FAULT
+
+    # 供电尚未恢复：最后一帧仍带系统错误码（清错也没清掉）
+    result = _procedure(transport, machine).run()
+
+    assert result.ok is False
+    assert result.failed_step == "resync_q"
+    assert "rm_clear_system_err" in result.diagnosis
+    assert "errCode=1" in result.diagnosis
+    assert machine.state == DeviceState.FAULT
+
+
+def test_incomplete_frame_marker_is_not_a_fault():
+    """负例：``err_code == -3``（帧不完整）**不是**故障原因。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.push_frame(_frame(err_code=-3))
+    assert classify_fault(transport) is None
+
+
+def test_zero_system_error_code_is_not_a_fault():
+    """负例：``err_code == 0`` 不是故障。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.push_frame(_frame(err_code=0))
+    assert classify_fault(transport) is None
+
+
+def test_joint_error_still_detected_when_no_system_error():
+    """负例：逐轴错误码非 0 仍判 ``joint_error``（优先级不倒置）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.push_frame(_frame(err_codes=[7, 0, 0, 0, 0, 0, 0]))
+    diagnosis = classify_fault(transport)
+    assert diagnosis is not None
+    assert diagnosis.reason == "joint_error"
+
+
+def test_power_supply_drop_wins_over_joint_error():
+    """优先级：供电跌落（系统错误码）> 逐关节错误码。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.push_frame(_frame(err_code=1, err_codes=[7, 0, 0, 0, 0, 0, 0]))
+    diagnosis = classify_fault(transport)
+    assert diagnosis is not None
+    assert diagnosis.reason == "power_supply_drop"
+
+
+def test_estop_wins_over_power_supply_drop():
+    """优先级：急停 > 供电跌落（急停是最强信号）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.push_frame(_frame(err_code=1, arm_status=9))
+    diagnosis = classify_fault(transport)
+    assert diagnosis is not None
+    assert diagnosis.reason == "estop_status"

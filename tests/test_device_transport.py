@@ -482,3 +482,92 @@ def test_both_transports_expose_the_same_gripper_command_surface():
         assert list(sig.parameters) == ["self", "position", "speed"]
         assert sig.parameters["speed"].kind is inspect.Parameter.KEYWORD_ONLY
         assert sig.parameters["speed"].default == 100
+
+
+# ── 帧级系统错误码（供电跌落的语义载体）────────────────────────────────
+def test_scripted_transport_can_inject_system_error_code():
+    """注入帧级系统错误码 ⇒ 推入的帧携带该 err_code（供电跌落的载体）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.set_system_error(1)
+    frame = transport.push_frame()
+    assert frame.err_code == 1
+    assert transport.read_state().err_code == 1
+
+
+def test_scripted_transport_set_system_error_requires_push_frame():
+    """只改模板不推帧 ⇒ read_state 仍返回上一帧（注入必须真的推帧）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.push_frame()
+    transport.set_system_error(1)
+    assert transport.read_state().err_code == 0
+
+
+def test_scripted_transport_clear_error_clears_system_error_of_last_frame():
+    """清错必须同时清「模板 + 最后一帧」的**系统错误码**（对齐 rm_clear_system_err）。
+
+    不清最后一帧 ⇒ 恢复流程的 resync_q / reset_ready 读到的仍是带错误码的帧
+    ⇒ 恢复必然失败。
+    """
+    transport = ScriptedTransport()
+    transport.open()
+    transport.set_joint_error_codes([3] * 7)
+    transport.set_system_error(1)
+    transport.push_frame()
+    assert transport.read_state().err_code == 1
+
+    transport.clear_error()
+
+    # 最后一帧的系统错误码已清（否则恢复守卫会拒绝它）
+    frame = transport.read_state()
+    assert frame.err_code == 0
+    # 模板的逐轴错误码已清零（下一帧无错）
+    fresh = transport.push_frame()
+    assert fresh.joint_err_codes == (0,) * 7
+    assert fresh.err_code == 0
+
+
+def test_scripted_transport_clear_error_keeps_incomplete_marker():
+    """清错**不得**把帧不完整标记（-3）抹掉（坏帧不能被清成好帧）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.set_frame_incomplete(True)
+    transport.push_frame()
+
+    transport.clear_error()
+
+    assert transport.read_state().err_code == -3
+    assert transport.read_state().is_complete is False
+
+
+def test_scripted_transport_frame_incomplete_marker_stays_minus_three():
+    """``set_frame_incomplete(True)`` 仍是 -3（帧不完整 ≠ 故障原因）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.set_frame_incomplete(True)
+    frame = transport.push_frame()
+    assert frame.err_code == -3
+    assert frame.is_complete is False
+
+
+def test_scripted_transport_set_frame_incomplete_false_clears_system_error():
+    """``set_frame_incomplete(False)`` 会把 errCode 归零（交互必须被钉死）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.set_system_error(9)
+    transport.set_frame_incomplete(False)
+    frame = transport.push_frame()
+    assert frame.err_code == 0
+    assert frame.is_complete is True
+
+
+def test_scripted_transport_set_system_error_rejects_non_integer():
+    """负例：系统错误码必须是整数（bool 也不算）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    with pytest.raises(TransportError) as excinfo:
+        transport.set_system_error("1")  # type: ignore[arg-type]
+    assert excinfo.value.reason == REASON_INVALID_INPUT
+    with pytest.raises(TransportError):
+        transport.set_system_error(True)  # type: ignore[arg-type]

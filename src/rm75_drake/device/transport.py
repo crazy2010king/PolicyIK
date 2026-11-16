@@ -11,7 +11,8 @@
 * :class:`ScriptedTransport` —— 离线替身（可脚本化逐帧回放故障）。
 
 所有下游逻辑（安全闸 / 状态机 / 执行环 / 恢复流程）只依赖 :class:`ArmTransport`，
-因此「拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位」四类故障可以成为**真正的单元测试**。
+因此「拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位 / 供电跌落」五类故障可以成为
+**真正的单元测试**。
 
 单位纪律
 --------
@@ -43,6 +44,7 @@ __all__ = [
     "REASON_UNSUPPORTED",
     "GRIPPER_POSITION_MIN",
     "GRIPPER_POSITION_MAX",
+    "FRAME_INCOMPLETE_ERR_CODE",
     "StateFrame",
     "GripperState",
     "ArmTransport",
@@ -63,6 +65,23 @@ REASON_UNSUPPORTED = "unsupported"
 #: 夹爪位置是**无量纲**的 0–1000 整数（不是角度，不做任何 rad/deg 换算）。
 GRIPPER_POSITION_MIN = 0
 GRIPPER_POSITION_MAX = 1000
+
+#: 帧级系统错误码里的**特殊值**：``errCode == -3`` 表示「推送数据不完整」
+#: ⇒ 该帧必须丢弃（**不是**故障原因）。其余非 0 值一律视为系统错误码。
+#: 本常量是这条语义的**唯一**真相源（状态源 / 状态机 / 恢复流程共用）。
+FRAME_INCOMPLETE_ERR_CODE = -3
+
+
+def _cleared_err_code(code: int) -> int:
+    """清错后的帧级错误码：系统错误码清零，但**保留**帧不完整标记（``-3``）。
+
+    ``-3`` 不是错误码，而是「这一帧必须丢弃」的标记 ⇒ 清错不能把坏帧
+    变成好帧。
+    """
+    value = int(code)
+    if value == FRAME_INCOMPLETE_ERR_CODE:
+        return value
+    return 0
 
 
 class TransportError(RuntimeError):
@@ -119,7 +138,7 @@ class StateFrame:
     @property
     def is_complete(self) -> bool:
         """帧是否完整（``errCode == -3`` 视为推送数据不完整 → 必须丢弃）。"""
-        return int(self.err_code) != -3
+        return int(self.err_code) != FRAME_INCOMPLETE_ERR_CODE
 
     @property
     def all_enabled(self) -> bool:
@@ -524,7 +543,8 @@ class ScriptedTransport(ArmTransport):
     * :meth:`push_frame` —— 推入一帧（可指定 ``received_at`` 制造**陈旧帧**）；
     * :attr:`link_down` —— 模拟**拔网线**（不再有状态帧、指令下发失败）；
     * :meth:`set_gripper_offline` —— 模拟**物体掉落 / 夹爪离线**；
-    * :meth:`set_frame_incomplete` —— 模拟帧不完整（``errCode=-3``）。
+    * :meth:`set_frame_incomplete` —— 模拟帧不完整（``errCode=-3``）；
+    * :meth:`set_system_error` —— 模拟**帧级系统错误码**（如供电跌落）。
     """
 
     name = "scripted_transport"
@@ -587,8 +607,45 @@ class ScriptedTransport(ArmTransport):
         self._template = _replace(self._template, arm_current_status=int(status))
 
     def set_frame_incomplete(self, incomplete: bool = True) -> None:
-        """设置下一帧是否**不完整**（``errCode=-3``）。"""
-        self._template = _replace(self._template, err_code=-3 if incomplete else 0)
+        """设置下一帧是否**不完整**（``errCode=-3``）。
+
+        交互提示
+        --------
+        * ``incomplete=True`` ⇒ ``errCode=-3``（帧不完整 → **必须丢弃**，
+          绝不作为故障原因）；
+        * ``incomplete=False`` ⇒ ``errCode`` **归零**，即**同时清掉**此前
+          用 :meth:`set_system_error` 设置的帧级系统错误码（两者共用
+          ``errCode`` 这一个字段）⇒ 恢复供电后用它复位是安全的，但会
+          **抹掉**系统错误码，调用方须自己记录原始错误码。
+        """
+        self._template = _replace(
+            self._template,
+            err_code=FRAME_INCOMPLETE_ERR_CODE if incomplete else 0,
+        )
+
+    def set_system_error(self, code: int) -> None:
+        """设置下一帧的**帧级系统错误码**（``errCode``）。
+
+        语义
+        ----
+        * 非 0 且非 ``-3`` ⇒ **系统错误码**（本项目用它承载「供电跌落」
+          这类物理故障；厂商错误码 ↔ 具体物理故障的对应关系在硬件可达前
+          **未核实**，因此 ``power_supply_drop`` 是本项目自定的稳定 reason
+          标签，不代表厂商错误码表）；
+        * ``0`` ⇒ 无系统错误；
+        * ``-3`` ⇒ 帧不完整标记（等价于 :meth:`set_frame_incomplete(True)`）。
+
+        注意
+        ----
+        本方法只改「下一帧模板」；替身的 :meth:`read_state` 返回的是
+        **最后一帧** ⇒ 必须真的 :meth:`push_frame` 才能让故障被下游看到。
+        """
+        if isinstance(code, bool) or not isinstance(code, int):
+            raise TransportError(
+                f"系统错误码必须是整数，收到 {code!r}",
+                reason=REASON_INVALID_INPUT,
+            )
+        self._template = _replace(self._template, err_code=int(code))
 
     def set_gripper_offline(self, offline: bool = True) -> None:
         """模拟夹爪离线（物体掉落 / 夹爪反馈丢失）。"""
@@ -637,10 +694,36 @@ class ScriptedTransport(ArmTransport):
         self._template = _replace(self._template, joint_en_flags=flags)
 
     def clear_error(self) -> None:
-        """记录一次清错，并把逐轴错误码清零。"""
+        """记录一次清错，并把逐轴错误码与帧级系统错误码**一起**清零。
+
+        清什么 / 不清什么（语义边界）
+        ----------------------------
+        * **模板**：逐轴错误码与系统错误码都清零（对齐真机
+          ``rm_set_joint_clear_err`` → ``rm_clear_system_err``）；
+        * **最后一帧**：只清**系统错误码**（``errCode``）——因为真机
+          ``rm_clear_system_err`` 作用于控制器，替身必须让 ``read_state()``
+          看到「系统错误已被清除」，否则恢复流程的 ``resync_q`` /
+          ``reset_ready`` 守卫读到的仍是带错误码的帧 ⇒ 恢复必然失败；
+        * **最后一帧的逐轴错误码保持不变**（控制器是否真的清掉了逐轴错误，
+          要由 ``resync_q`` 的「错误码未清零」守卫去判定 ⇒ 不得在替身里
+          偷偷抹掉它，否则该守卫永远无法生效）；
+        * **帧不完整标记（``-3``）永远不被清掉**：它不是错误码，而是
+          「这一帧必须丢弃」的标记（清错不能把坏帧变成好帧）。
+
+        因此这里**既清模板、也清最后一帧的系统错误码**。
+        """
         self._require_open()
         self.calls.append(("clear_error", ()))
-        self._template = _replace(self._template, joint_err_codes=(0,) * JOINT_COUNT)
+        self._template = _replace(
+            self._template,
+            joint_err_codes=(0,) * JOINT_COUNT,
+            err_code=_cleared_err_code(self._template.err_code),
+        )
+        if self._frames:
+            self._frames[-1] = _replace(
+                self._frames[-1],
+                err_code=_cleared_err_code(self._frames[-1].err_code),
+            )
 
     def emergency_stop(self) -> None:
         """记录一次急停，并把机械臂状态置为急停（9）。"""
