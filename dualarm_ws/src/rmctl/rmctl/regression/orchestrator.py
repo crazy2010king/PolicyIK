@@ -774,3 +774,28 @@ register_runner(
     mode="offline",
     report_name="s09_segment_doctor.json",
 )
+
+
+def _run_baselines(ctx: SegmentContext) -> Dict[str, Any]:
+    """``baselines`` 段的 runner（真机基线汇总表 = ``workcell/baselines`` 只读投影）。
+
+    段级判定在 :mod:`rmctl.regression.baselines` 内部完成（口径唯一）：
+    判定来源 = ``rmctl.baseline.validate_all``；schema 违规 → ``fail``；
+    四类基线全部 measured → ``pass``；其余（blocked / pending / 缺文件 /
+    YAML 不可解析）→ ``blocked``，逐类列出明细。
+    """
+    from rmctl.regression import baselines as _bl
+
+    return _bl.run_baselines(
+        repo_root=ctx.repo_root,
+        ws=ctx.ws,
+        reports_dir=ctx.reports_dir,
+    )
+
+
+register_runner(
+    seg_id="baselines",
+    runner=_run_baselines,
+    mode="offline",
+    report_name="s09_segment_baselines.json",
+)
