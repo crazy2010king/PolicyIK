@@ -22,6 +22,15 @@
     --forbidden     确认 versions.lock:forbidden_apis 名单存在、覆盖核心禁用接口、
                     与 allowed_apis 不冲突，且（若扫描脚本已存在）扫描脚本确实以锁为名单来源。
     --package-map   PackageMap 解析冒烟：复用 rm75_drake.package_map.build_package_map()。
+    --upstream      上游资产三方交叉校验（S07-T04）：third_party/MANIFEST.yaml
+                    ↔ versions.lock:upstream ↔ licenses/registry.yaml，
+                    逐项比对 name / commit / sha256 / file_count / total_bytes，
+                    且 registry 的 license / redistributable 必须与 MANIFEST 一致。
+                    **不需要归档实体**（归档不在 git）：归档缺失只如实报告，不判为不一致。
+    --licenses      许可门禁（S07-T04）：registry 的包集必须**包含** versions.lock:packages
+                    的全部包；每条 entry 必填字段齐全；上游资产类条目必须显式声明 commit
+                    （commit: null + locked: false 是允许的已知例外，须计数列出）；
+                    redistributable: false 的条目不得被当作可再分发组件。
     --model         模型自检（S01-T06）：复用 rm75_drake.models 加载改造版 RM75-B，
                     输出 DoF / 总质量 / 零位末端高度 / 7 条限位摘要，
                     并校验 models/rm75_drake/joint_limits.yaml 与 URDF 一致。
@@ -51,6 +60,8 @@ DEFAULT_LOCK = REPO_ROOT / "versions.lock"
 DEFAULT_CONSTRAINTS_DIR = REPO_ROOT / "constraints"
 DEFAULT_WHEELS_DIR = REPO_ROOT / "vendor" / "wheels"
 DEFAULT_REGISTRY = REPO_ROOT / "licenses" / "registry.yaml"
+DEFAULT_MANIFEST = REPO_ROOT / "third_party" / "MANIFEST.yaml"
+DEFAULT_ARCHIVE_DIR = REPO_ROOT / "third_party" / "archives"
 SCANNER = REPO_ROOT / "scripts" / "scan_forbidden_apis.py"
 
 if str(TOOLS_DIR) not in sys.path:
@@ -277,6 +288,326 @@ def check_forbidden(
                 f"{scanner_path.name} 疑似硬编码禁用名单: " + ", ".join(hardcoded)
             )
     return problems
+
+
+# --------------------------------------------------------------------------- #
+# 上游资产三方交叉校验（--upstream）
+# --------------------------------------------------------------------------- #
+#: MANIFEST / lock / registry 三方比对时逐项相等的字段（归档实体不在其中）。
+UPSTREAM_CROSS_FIELDS = ("name", "commit", "sha256", "file_count", "total_bytes")
+
+
+def normalize_component_name(name: Any) -> str:
+    """组件名归一化：小写 + 连字符/下划线等价。
+
+    ⇒ ``Two-Finger-Gripper``、``two_finger_gripper``、``Two_Finger_Gripper`` 同键；
+    ``python-dateutil`` 与 ``python_dateutil`` 同键。
+    """
+    raw = str(name or "").strip().lower()
+    return re.sub(r"[-_]+", "_", raw)
+
+
+def _manifest_facts(asset: Dict[str, Any]) -> Dict[str, Any]:
+    """把 MANIFEST 条目摊平成可比字段（archive.sha256 等统一取 sha256）。"""
+    return {
+        "name": str(asset.get("name") or ""),
+        "commit": str(asset.get("commit") or ""),
+        "sha256": str(asset.get("sha256") or ""),
+        "file_count": asset.get("file_count"),
+        "total_bytes": asset.get("total_bytes"),
+    }
+
+
+def _lock_facts(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """把 versions.lock:upstream 条目摊平成可比字段。"""
+    archive = spec.get("archive") or {}
+    return {
+        "name": "",  # 由调用方填入（lock 的 key）
+        "commit": str(spec.get("commit") or ""),
+        "sha256": str(archive.get("sha256") or ""),
+        "file_count": archive.get("file_count"),
+        "total_bytes": archive.get("total_bytes"),
+    }
+
+
+def check_upstream(
+    lock: Dict[str, Any],
+    manifest_path: Path = DEFAULT_MANIFEST,
+    registry_path: Path = DEFAULT_REGISTRY,
+    archive_dir: Optional[Path] = DEFAULT_ARCHIVE_DIR,
+) -> Tuple[str, List[str], Dict[str, Any]]:
+    """上游资产三方交叉校验（MANIFEST ↔ versions.lock ↔ registry）。
+
+    返回 ``(status, problems, summary)``，status ∈ {"PASS", "FAIL"}。
+
+    * **不需要归档实体**：归档不在 git，本机可能没物化；缺失只如实报告（notes），
+      不判为不一致。
+    * MANIFEST 与 versions.lock:upstream 的 name / commit / sha256 / file_count /
+      total_bytes 必须逐项相等。
+    * registry 里的对应条目（名称归一化后匹配）必须存在，且 license / redistributable
+      与 MANIFEST 一致；commit 与 lock 一致。
+    """
+    problems: List[str] = []
+    notes: List[str] = []
+    summary: Dict[str, Any] = {"assets": [], "notes": notes}
+
+    upstream = lock.get("upstream")
+    if not isinstance(upstream, dict) or not upstream:
+        return ("FAIL", ["versions.lock:upstream 缺失或为空"], summary)
+
+    if not Path(manifest_path).is_file():
+        return (
+            "FAIL",
+            [f"上游资产清单缺失：{manifest_path}（应由 tools/fetch_upstream.py 生成）"],
+            summary,
+        )
+
+    try:
+        manifest = yaml_load(Path(manifest_path)) or {}
+    except Exception as exc:
+        return ("FAIL", [f"上游资产清单解析失败：{manifest_path}（{exc}）"], summary)
+    manifest_assets = {
+        normalize_component_name(a.get("name")): a
+        for a in (manifest.get("assets") or [])
+        if isinstance(a, dict)
+    }
+
+    registry: Dict[str, Any] = {}
+    if Path(registry_path).is_file():
+        try:
+            registry = yaml_load(Path(registry_path)) or {}
+        except Exception as exc:
+            return ("FAIL", [f"许可登记表解析失败：{registry_path}（{exc}）"], summary)
+    registry_entries = {
+        normalize_component_name(e.get("name")): e
+        for e in (registry.get("entries") or [])
+        if isinstance(e, dict) and e.get("name")
+    }
+
+    for key, spec in sorted(upstream.items()):
+        if not isinstance(spec, dict):
+            problems.append(f"versions.lock:upstream.{key} 不是映射")
+            continue
+        norm = normalize_component_name(key)
+        lock_facts = _lock_facts(spec)
+        lock_facts["name"] = str(key)
+        row: Dict[str, Any] = {"name": key, "status": "OK"}
+
+        manifest_asset = manifest_assets.get(norm)
+        if manifest_asset is None:
+            problems.append(
+                f"{key}: MANIFEST 中缺少该资产（清单与 versions.lock:upstream 不一致）"
+            )
+            row["status"] = "FAIL"
+            summary["assets"].append(row)
+            continue
+
+        manifest_facts = _manifest_facts(manifest_asset)
+        for field in UPSTREAM_CROSS_FIELDS:
+            expected = lock_facts[field]
+            actual = manifest_facts[field]
+            if field == "name":
+                # 名称允许归一化后相等（lock key 与 MANIFEST name 可能大小写/分隔符不同）
+                if normalize_component_name(expected) != normalize_component_name(actual):
+                    problems.append(f"{key}: MANIFEST name({actual}) 与 lock name({expected}) 不一致")
+                    row["status"] = "FAIL"
+                continue
+            if expected != actual:
+                problems.append(
+                    f"{key}: {field} 不一致 — MANIFEST={actual!r}，versions.lock={expected!r}"
+                )
+                row["status"] = "FAIL"
+
+        # ── registry 侧：license / redistributable / commit 必须与上游一致 ────
+        reg_entry = registry_entries.get(norm)
+        if reg_entry is None:
+            problems.append(f"{key}: licenses/registry.yaml 缺少该上游资产的条目")
+            row["status"] = "FAIL"
+        else:
+            for field in ("license", "redistributable"):
+                if reg_entry.get(field) != manifest_asset.get(field):
+                    problems.append(
+                        f"{key}: registry.{field}={reg_entry.get(field)!r} 与"
+                        f" MANIFEST.{field}={manifest_asset.get(field)!r} 不一致"
+                    )
+                    row["status"] = "FAIL"
+            reg_commit = reg_entry.get("commit")
+            if reg_commit is not None and str(reg_commit) != lock_facts["commit"]:
+                problems.append(
+                    f"{key}: registry.commit={reg_commit!r} 与 versions.lock commit"
+                    f"={lock_facts['commit']!r} 不一致"
+                )
+                row["status"] = "FAIL"
+
+        # ── 归档实体：缺失只如实报告，不判为不一致 ─────────────────────────
+        archive_name = str((spec.get("archive") or {}).get("filename") or "")
+        if archive_name and archive_dir is not None:
+            archive_path = Path(archive_dir) / archive_name
+            if not archive_path.is_file():
+                note = f"{key}: 本机无归档 {archive_path}（归档不入 git，未物化不判为不一致）"
+                notes.append(note)
+                row["archive"] = "MISSING"
+            else:
+                row["archive"] = "PRESENT"
+        summary["assets"].append(row)
+
+    # MANIFEST 里多出的资产（lock 已删、清单没删）也要点名
+    for norm, asset in sorted(manifest_assets.items()):
+        if norm not in {normalize_component_name(k) for k in upstream}:
+            problems.append(
+                f"MANIFEST 中的资产 {asset.get('name')} 不在 versions.lock:upstream 中（清单有残留）"
+            )
+
+    return ("FAIL" if problems else "PASS", problems, summary)
+
+
+# --------------------------------------------------------------------------- #
+# 许可门禁（--licenses）
+# --------------------------------------------------------------------------- #
+#: registry 每条 entry 的必填字段。
+REQUIRED_REGISTRY_FIELDS = (
+    "name",
+    "version",
+    "license",
+    "source",
+    "redistributable",
+    "usage_note",
+)
+
+
+def check_licenses(
+    lock: Dict[str, Any],
+    registry_path: Path = DEFAULT_REGISTRY,
+) -> Tuple[str, List[str], Dict[str, Any]]:
+    """许可门禁：registry 包集 ⊇ versions.lock:packages + 条目字段/上游 commit 校验。
+
+    返回 ``(status, problems, summary)``，status ∈ {"PASS", "FAIL"}。
+
+    * lock 的**每一个**包都必须在 registry 中出现（归一化名匹配）；缺一条即失败并点名。
+    * 每条 entry 的必填字段必须齐全，且 ``redistributable`` 必须是布尔。
+    * 上游资产类条目（声明了 commit/locked 字段的条目）必须显式声明 commit：
+      ``commit: null`` 只允许配 ``locked: false``（已知例外，计数并列出）；
+      ``commit`` 非空时必须是 40 位 hex。
+    * ``license`` 未明示的条目必须按最保守口径 ``redistributable: false``。
+    """
+    problems: List[str] = []
+    summary: Dict[str, Any] = {}
+
+    if not Path(registry_path).is_file():
+        return ("FAIL", [f"许可登记表缺失：{registry_path}"], summary)
+
+    try:
+        registry = yaml_load(Path(registry_path)) or {}
+    except Exception as exc:
+        return ("FAIL", [f"许可登记表解析失败：{registry_path}（{exc}）"], summary)
+
+    entries = [e for e in (registry.get("entries") or []) if isinstance(e, dict)]
+    index: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        norm = normalize_component_name(entry.get("name"))
+        if not norm:
+            continue
+        if norm in index:
+            problems.append(
+                f"licenses/registry.yaml: 归一化后重名的条目: {entry.get('name')!r}"
+            )
+        index[norm] = entry
+
+    packages = lock.get("packages")
+    if not isinstance(packages, dict) or not packages:
+        problems.append("versions.lock:packages 缺失或为空")
+        packages = {}
+
+    missing: List[str] = []
+    for pkg_name in sorted(packages):
+        if normalize_component_name(pkg_name) not in index:
+            missing.append(pkg_name)
+    for pkg_name in missing:
+        problems.append(
+            f"licenses/registry.yaml 缺少 versions.lock:packages 中的包: {pkg_name}"
+        )
+
+    # lock:upstream 里的资产，其 registry 条目**必须**显式声明 commit
+    upstream = lock.get("upstream") if isinstance(lock, dict) else None
+    upstream_names = [
+        normalize_component_name(name)
+        for name, spec in (upstream or {}).items()
+        if isinstance(spec, dict)
+    ]
+    for upstream_name in sorted(upstream_names):
+        entry = index.get(upstream_name)
+        if entry is None:
+            problems.append(
+                f"licenses/registry.yaml 缺少上游资产 {upstream_name} 的条目"
+            )
+        elif "commit" not in entry:
+            problems.append(
+                f"registry 条目 {entry.get('name')} 是上游资产类条目，必须显式声明 commit"
+                "（未锁定时写 commit: null 并配 locked: false）"
+            )
+
+    unlocked_exceptions: List[str] = []
+    restricted: List[str] = []
+    allowed: List[str] = []
+    for entry in entries:
+        name = str(entry.get("name") or "<无名条目>")
+        for field in REQUIRED_REGISTRY_FIELDS:
+            if field not in entry:
+                problems.append(f"registry 条目 {name} 缺少必填字段 {field}")
+        redistributable = entry.get("redistributable")
+        if not isinstance(redistributable, bool):
+            problems.append(f"registry 条目 {name} 的 redistributable 必须是布尔值")
+            redistributable = False
+        license_text = str(entry.get("license") or "")
+        if license_text.startswith("未明示") and redistributable:
+            problems.append(
+                f"registry 条目 {name} 的许可未明示，必须按最保守口径设为 redistributable: false"
+            )
+        if redistributable:
+            allowed.append(name)
+        else:
+            restricted.append(name)
+
+        # ── 上游资产类条目：commit 必须显式声明 ─────────────────────────
+        declares_commit = "commit" in entry or "locked" in entry
+        if declares_commit:
+            if "commit" not in entry:
+                problems.append(f"registry 条目 {name} 声明了 locked 但缺少显式 commit 字段")
+                continue
+            commit = entry.get("commit")
+            locked = entry.get("locked")
+            if not isinstance(locked, bool):
+                problems.append(f"registry 条目 {name} 的 locked 必须是布尔值")
+                locked = False
+            if commit is None:
+                if locked:
+                    problems.append(
+                        f"registry 条目 {name} 的 commit 为 null 但 locked 为 true"
+                        "（commit: null 只允许配 locked: false）"
+                    )
+                else:
+                    unlocked_exceptions.append(name)
+            else:
+                if not re.fullmatch(r"[0-9a-f]{40}", str(commit)):
+                    problems.append(
+                        f"registry 条目 {name} 的 commit 必须是 40 位 hex: {commit!r}"
+                    )
+                if not locked:
+                    problems.append(
+                        f"registry 条目 {name} 已声明 commit 但 locked 为 false"
+                        "（已锁定的条目必须 locked: true）"
+                    )
+
+    summary = {
+        "registry_entries": len(entries),
+        "lock_packages": len(packages),
+        "missing_packages": missing,
+        "redistributable": sorted(allowed),
+        "restricted": sorted(restricted),
+        "unlocked_exceptions": sorted(unlocked_exceptions),
+        "unlocked_exception_count": len(unlocked_exceptions),
+    }
+    return ("FAIL" if problems else "PASS", problems, summary)
 
 
 def yaml_load(path: Path) -> Any:
@@ -646,6 +977,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--forbidden", action="store_true", help="校验禁用名单")
     parser.add_argument("--package-map", action="store_true", help="PackageMap 解析冒烟")
     parser.add_argument(
+        "--upstream",
+        action="store_true",
+        help="上游资产三方交叉校验（MANIFEST ↔ versions.lock:upstream ↔ registry）",
+    )
+    parser.add_argument(
+        "--licenses",
+        action="store_true",
+        help="许可门禁（registry 包集 ⊇ lock 包集 + 必填字段 + 上游 commit 声明）",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=DEFAULT_MANIFEST,
+        help="上游资产清单路径（默认 third_party/MANIFEST.yaml）",
+    )
+    parser.add_argument(
+        "--archive-dir",
+        type=Path,
+        default=DEFAULT_ARCHIVE_DIR,
+        help="上游归档目录（仅用于报告归档是否物化；缺失不判为不一致）",
+    )
+    parser.add_argument(
         "--model", action="store_true", help="改造版 RM75-B 模型自检（DoF/质量/零位高度/限位）"
     )
     parser.add_argument(
@@ -668,6 +1021,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.wheels,
         args.forbidden,
         args.package_map,
+        args.upstream,
+        args.licenses,
         args.model,
         args.plan,
     ]
@@ -701,7 +1056,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     # ── 锁文件 ────────────────────────────────────────────────────────────
     lock: Optional[Dict[str, Any]] = None
-    if args.lock_only or args.check or args.forbidden:
+    if args.lock_only or args.check or args.forbidden or args.upstream or args.licenses:
         try:
             lock = load_lock(args.lock)
         except LockError as exc:
@@ -755,6 +1110,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.package_map:
         status, problems = check_package_map()
         emit("package-map", status, problems, "PackageMap 解析冒烟")
+
+    if args.upstream:
+        status, problems, summary = check_upstream(
+            lock, args.manifest, args.registry, args.archive_dir
+        )
+        if not args.json:
+            for note in summary.get("notes") or []:
+                print(f"    · {note}")
+        emit(
+            "upstream",
+            status,
+            problems,
+            "上游资产三方交叉校验（MANIFEST ↔ versions.lock ↔ registry）",
+            data=summary,
+        )
+
+    if args.licenses:
+        status, problems, summary = check_licenses(lock, args.registry)
+        if not args.json:
+            print(
+                f"    registry 条目 {summary.get('registry_entries')} 条；"
+                f"lock 包 {summary.get('lock_packages')} 个；"
+                f"允许再分发 {len(summary.get('redistributable') or [])} 个；"
+                f"受限禁止再分发 {len(summary.get('restricted') or [])} 个；"
+                f"commit 未锁定例外 {summary.get('unlocked_exception_count')} 个："
+                f"{summary.get('unlocked_exceptions')}"
+            )
+        emit(
+            "licenses",
+            status,
+            problems,
+            "许可门禁（包集覆盖 / 必填字段 / 上游 commit 声明）",
+            data=summary,
+        )
 
     if args.model:
         status, problems, summary = check_model(args.joint_limits)

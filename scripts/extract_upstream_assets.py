@@ -12,12 +12,16 @@
 
 真相源 = ``versions.lock:upstream.rm_models.archive.filename``（脚本不硬编码文件名）。
 
-退出码：0 成功；1 归档缺失 / 解包失败；2 环境或参数错误。
+退出码：0 成功；1 归档缺失 / **sha256 不符** / 解包失败；2 环境或参数错误。
+
+S07-T04：解包**之前**必须按 versions.lock:upstream.<asset>.archive.sha256 校验归档字节；
+不符即退出码 1 并打印期望值与实测值（不得先解包再报错，也不得静默通过）。
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 import tarfile
 from pathlib import Path
@@ -32,10 +36,19 @@ DEFAULT_DEST = third_party_dir / ".work" / "rm75b"
 RM75B_PREFIX = "RM75/urdf/RM75-B/"
 
 
-def load_lock_asset(name: str) -> dict:
+def sha256_file(path: Path) -> str:
+    """计算归档文件的 sha256（分块读取，避免大文件一次性入内存）。"""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_lock_asset(name: str, lock_path: Path = versions_lock_path) -> dict:
     import yaml
 
-    with versions_lock_path.open("r", encoding="utf-8") as fh:
+    with Path(lock_path).open("r", encoding="utf-8") as fh:
         lock = yaml.safe_load(fh) or {}
     upstream = lock.get("upstream") or {}
     spec = upstream.get(name)
@@ -52,6 +65,16 @@ def main(argv=None) -> int:
     ap.add_argument("--asset", default="rm_models", help="versions.lock:upstream 里的资产名")
     ap.add_argument("--dest", default=str(DEFAULT_DEST), help="解包目标目录")
     ap.add_argument(
+        "--lock",
+        default=str(versions_lock_path),
+        help="versions.lock 路径（测试可用临时目录替身）",
+    )
+    ap.add_argument(
+        "--archive-dir",
+        default=str(third_party_dir / "archives"),
+        help="上游归档目录（测试可用临时目录替身）",
+    )
+    ap.add_argument(
         "--prefix",
         default=RM75B_PREFIX,
         help=f"只解出该前缀下的条目（默认 {RM75B_PREFIX}）",
@@ -59,7 +82,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     try:
-        spec = load_lock_asset(args.asset)
+        spec = load_lock_asset(args.asset, Path(args.lock))
     except SystemExit:
         raise
     except Exception as exc:  # pragma: no cover - 环境异常
@@ -75,11 +98,31 @@ def main(argv=None) -> int:
         )
         return 2
 
-    archive_path = third_party_dir / "archives" / archive_name
+    archive_path = Path(args.archive_dir) / archive_name
     if not archive_path.is_file():
         print(
             f"[extract][ERROR] 归档不存在：{archive_path}\n"
             "  先运行 `python3 tools/fetch_upstream.py` 物化上游归档。",
+            file=sys.stderr,
+        )
+        return 1
+
+    # ── 解包前的 sha256 门禁（S07-T04）────────────────────────────────────
+    expected_sha = str(((spec.get("archive") or {}) or {}).get("sha256") or "")
+    if not expected_sha:
+        print(
+            f"[extract][ERROR] versions.lock:upstream.{args.asset}.archive.sha256 缺失"
+            "（无法校验归档字节；请重新执行 `python3 tools/fetch_upstream.py`）",
+            file=sys.stderr,
+        )
+        return 2
+    actual_sha = sha256_file(archive_path)
+    if actual_sha != expected_sha:
+        print(
+            f"[extract][ERROR] 归档 sha256 不符：{archive_path}\n"
+            f"  期望(expected)={expected_sha}\n"
+            f"  实测(actual)  ={actual_sha}\n"
+            "  拒绝解包（字节与锁定版本不一致，可能被篡改或下载不完整）。",
             file=sys.stderr,
         )
         return 1

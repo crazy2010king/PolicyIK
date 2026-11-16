@@ -9,6 +9,16 @@
 #   redistributable: true  → 允许再分发（可考虑入 git 或随产品分发）
 #   redistributable: false → 限制再分发（只能本机镜像，wheel 不得入 git）
 #   license: "未明示"     → 上游未给出明确许可，按最保守口径处理（禁止再分发）
+#
+# ── S07-T04 新增字段（资产与许可门禁）────────────────────────────────────
+#   commit: <40 位 hex>   → 上游资产**已锁定**的 commit（与 versions.lock:upstream 同源）
+#   commit: null         → 上游资产**未锁定**（方法论/范式参考类资产），必须同时
+#                          locked: false，并在 NOTICE 的「commit 未锁定例外」段落列出
+#   locked: true/false    → 该条目的 commit 是否已锁定。声明 commit 的条目必须同时
+#                          声明 locked；locked: true 时 commit 不得为 null。
+#
+# 约定：**不得编造 commit**。未锁定的上游一律 commit: null + locked: false。
+# NOTICE（仓库根）只能由 tools/gen_notice.py 从本文件派生，禁止手工编辑。
 
 schema_version: 1
 entries:
@@ -47,6 +57,8 @@ entries:
     license: "未明示"
     source: https://github.com/RealManRobot/rm_models
     redistributable: false
+    commit: "cff49bb40f5ed0728505c03bff0e521a0dc21acd"
+    locked: true
     usage_note: >-
       官方 URDF + STL 网格来源。上游未明示许可 → 官方网格（models/**/meshes/）
       不入 git；S01 改造后的模型（STL→OBJ、凸包化碰撞几何）在仓库内自产，
@@ -57,6 +69,8 @@ entries:
     license: "OpenAtom Open Hardware License 1.0"
     source: https://github.com/RealManRobot/Two-Finger-Gripper
     redistributable: true
+    commit: "91f587b1d4efaab235f3d227ee614b28f35060c9"
+    locked: true
     usage_note: >-
       官方两指夹爪硬件与协议参考（OpenAtom OHL 1.0，允许再分发，需保留许可与版权声明）。
       仓库内只归档元数据清单与许可文件，不归档大体积二进制。
@@ -73,6 +87,8 @@ entries:
     license: MIT
     source: https://github.com/cohnt/constrained-bimanual-planning-example
     redistributable: true
+    commit: null
+    locked: false
     usage_note: >-
       双臂最小坐标参数化方法论来源。S05 引用其解析 IK 思路，
       引用代码需注明出处与 MIT 许可；若直接搬运代码片段须登记 commit。
@@ -82,6 +98,8 @@ entries:
     license: BSD-3-Clause
     source: https://github.com/RussTedrake/manipulation
     redistributable: true
+    commit: null
+    locked: false
     usage_note: >-
       scenario YAML 与感知-规划课程范式参考（BSD-3）。
       S02 场景 schema 参考其风格，但本项目自有 schema，不整份复制。
@@ -120,3 +138,77 @@ entries:
     source: https://pypi.org/project/PyYAML/
     redistributable: true
     usage_note: scenario / 配置解析；MIT。
+
+  # ── 传递依赖（S07-T04 补齐；versions.lock:packages 共 17 个包，登记表必须全覆盖）──
+  # 许可取上游仓库 LICENSE 的真实 SPDX 标识；未明示者写「未明示」并禁再分发。
+  - name: contourpy
+    version: "1.3.2"
+    license: MIT
+    source: https://github.com/contourpy/contourpy
+    redistributable: true
+    usage_note: >-
+      传递依赖（matplotlib）；轮廓绘制。MIT，保留版权与许可声明即可。
+
+  - name: cycler
+    version: "0.12.1"
+    license: BSD-3-Clause
+    source: https://github.com/conda/cycler
+    redistributable: true
+    usage_note: >-
+      传递依赖（matplotlib）；色环生成器。BSD-3-Clause。
+
+  - name: fonttools
+    version: "4.68.0"
+    license: MIT
+    source: https://github.com/fonttools/fonttools
+    redistributable: true
+    usage_note: >-
+      传递依赖（matplotlib）；字体处理。MIT。
+
+  - name: kiwisolver
+    version: "1.5.1"
+    license: MIT
+    source: https://github.com/numpy/kiwisolver
+    redistributable: true
+    usage_note: >-
+      传递依赖（matplotlib）；Kiwi 布局求解。MIT。
+
+  - name: packaging
+    version: "26.3"
+    license: Apache-2.0 OR BSD-2-Clause
+    source: https://github.com/pypa/packaging
+    redistributable: true
+    usage_note: >-
+      传递依赖（matplotlib）；版本/元数据工具。Apache-2.0 OR BSD-2-Clause（双许可）。
+
+  - name: pillow
+    version: "12.2.0"
+    license: MIT-CMU
+    source: https://github.com/python-pillow/Pillow
+    redistributable: true
+    usage_note: >-
+      传递依赖（matplotlib）；图像栅格后端。MIT-CMU（CMU 许可变体）。
+
+  - name: pyparsing
+    version: "3.3.3"
+    license: MIT
+    source: https://github.com/pyparsing/pyparsing
+    redistributable: true
+    usage_note: >-
+      传递依赖（pydot）；表达式解析。MIT。
+
+  - name: python-dateutil
+    version: "4.0.0"
+    license: Apache-2.0 OR BSD-3-Clause
+    source: https://github.com/dateutil/dateutil
+    redistributable: true
+    usage_note: >-
+      传递依赖（matplotlib）；日期解析。Apache-2.0 OR BSD-3-Clause（双许可）。
+
+  - name: tzdata
+    version: "2026.6"
+    license: Apache-2.0
+    source: https://github.com/python/tzdata
+    redistributable: true
+    usage_note: >-
+      传递依赖（python-dateutil）；IANA 时区数据库。Apache-2.0。
