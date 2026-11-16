@@ -66,13 +66,12 @@ import numpy as np
 from .trajectory import (
     DEFAULT_ACCELERATION_LIMITS_RAD_S2,
     DEFAULT_DT,
+    GRID_TOLERANCE,
     JOINT_COUNT,
     Trajectory,
     TrajectoryError,
-    accelerations as _traj_accelerations,
     software_limits,
     trajectory_from_arrays,
-    velocities as _traj_velocities,
 )
 
 __all__ = [
@@ -81,7 +80,9 @@ __all__ = [
     "DEFAULT_GRIDPOINTS",
     "MARGIN_BACKOFF",
     "RetimedTrajectory",
+    "RetimedPath",
     "retime",
+    "retime_path",
     "retime_from_trajectory",
     "check_c2_continuity",
 ]
@@ -204,13 +205,15 @@ def check_c2_continuity(
     参数
     ----
     velocities:
-        ``(N-1, 7)`` 的速度矩阵（rad/s）。
+        ``(N-1, D)`` 的速度矩阵（rad/s），``D`` = 关节维度（7 = 单臂，
+        14 = 双臂；**维度无关**，与重定时通用核一致）。
     accelerations:
-        ``(N-2, 7)`` 的加速度矩阵（rad/s²）；长度不足 2 时跳过第 2 条检查。
+        ``(N-2, D)`` 的加速度矩阵（rad/s²）；长度不足 2 时跳过第 2 条检查。
     dt:
         采样周期（s），必须为正。
     acceleration_limits:
-        逐轴加速度上限（rad/s²），长度 7。
+        逐轴加速度上限（rad/s²），长度必须与速度 / 加速度矩阵的轴数一致
+        （7 维单臂时长度为 7）。
     jerk_limit:
         jerk 上限（rad/s³）。
 
@@ -225,13 +228,27 @@ def check_c2_continuity(
         raise RetimeError(f"[dt] dt 必须是正有限值，实际：{dt!r}")
 
     limits = np.asarray(acceleration_limits, dtype=float)
-    if limits.shape != (JOINT_COUNT,):
-        raise RetimeError(
-            f"[limits] 加速度上限必须是 {JOINT_COUNT} 维，实际 {limits.shape}"
-        )
-
     vel = np.asarray(velocities, dtype=float)
     acc = np.asarray(accelerations, dtype=float)
+
+    # **维度无关**：期望维度由速度 / 加速度矩阵的列数推断（7 维单臂与
+    # 14 维双臂走同一份实现）。7 维时错误信息与重构前逐字一致。
+    expected: Optional[int] = None
+    for arr in (vel, acc):
+        if arr.ndim == 2:
+            expected = int(arr.shape[1])
+            break
+    if expected is None:
+        expected = int(limits.shape[0]) if limits.ndim == 1 else -1
+    if limits.shape != (expected,):
+        raise RetimeError(
+            f"[limits] 加速度上限必须是 {expected} 维，实际 {limits.shape}"
+        )
+    for name, arr in (("速度", vel), ("加速度", acc)):
+        if arr.ndim == 2 and int(arr.shape[1]) != expected:
+            raise RetimeError(
+                f"[limits] {name}矩阵的轴数必须是 {expected}，实际 {arr.shape}"
+            )
 
     if vel.ndim == 2 and vel.shape[0] >= 2:
         jump = np.abs(np.diff(vel, axis=0)) - limits[None, :] * step
@@ -365,121 +382,37 @@ def retime(
     if not math.isfinite(float(jerk_limit)) or float(jerk_limit) <= 0.0:
         raise RetimeError(f"[limits] jerk 上限必须是正有限值，实际：{jerk_limit!r}")
 
-    waypoints, path_length = _dedupe_waypoints(points)
-    if path_length <= 1e-12:
-        raise RetimeError("[path] 路径长度为零（所有路径点重合），无法重定时")
-
-    toppra = _load_toppra()
-    grid_count = int(gridpoints)
-    if grid_count < 2:
-        raise RetimeError(f"[limits] gridpoints 至少为 2，实际：{gridpoints!r}")
-
-    failures: List[str] = []
-    for margin in MARGIN_BACKOFF:
-        try:
-            sampler, duration = _parameterize(
-                toppra,
-                waypoints,
-                vel_limits=vel_limits * margin,
-                acc_limits=acc_limits * margin,
-                gridpoints=grid_count,
-            )
-        except RetimeError as exc:
-            failures.append(f"margin={margin}: {exc}")
-            continue
-
-        samples_q = _sample_grid(sampler, duration, step)
-        try:
-            traj = trajectory_from_arrays(
-                samples_q,
-                t0=start,
-                dt=step,
-                robot_name=robot_name,
-                gripper_schedule=gripper_schedule,
-                acceleration_limits=tuple(float(v) for v in acc_limits),
-            )
-        except TrajectoryError as exc:
-            # 软限位等**与裕度无关**的不变量被违反 → 立即报错（回退裕度也救不回来）。
-            if "[soft_limits]" in str(exc) or "[finite]" in str(exc):
-                raise
-            # 速度 / 加速度越界：记入失败原因，由更保守的裕度档重试；
-            # 全部失败则抛 [parameterization]。
-            failures.append(f"margin={margin}: 轨迹不变量被违反：{exc}")
-            continue
-        vel = _traj_velocities(traj)
-        acc = _traj_accelerations(traj)
-
-        limit_hit = _first_limit_violation(vel, acc, vel_limits, acc_limits)
-        if limit_hit is not None:
-            failures.append(f"margin={margin}: {limit_hit}")
-            continue
-        try:
-            check_c2_continuity(
-                vel,
-                acc,
-                dt=step,
-                acceleration_limits=acc_limits,
-                jerk_limit=jerk_limit,
-            )
-        except RetimeError as exc:
-            failures.append(f"margin={margin}: {exc}")
-            continue
-
-        actual_duration = float(traj.duration)
-        if duration_limit is not None and actual_duration > float(duration_limit) + _TOL:
-            limit = float(duration_limit)
-            required_speed = path_length / limit
-            # 判定被哪个上限卡住：平均速度需求超过速度上限 → 速度；否则是加速度
-            #（要在 limit 内完成起步/刹停，加速度需求超过加速度上限）。
-            if required_speed > float(vel_limits.max()):
-                binding = (
-                    f"速度上限卡住（平均速度需求 {required_speed!r} rad/s > 最大速度上限 "
-                    f"{float(vel_limits.max())!r} rad/s）"
-                )
-            else:
-                binding = (
-                    f"加速度上限卡住（平均速度需求 {required_speed!r} rad/s 在速度上限内，"
-                    f"但在 {limit!r} s 内完成起步/刹停所需的加速度超过 "
-                    f"{float(acc_limits.max())!r} rad/s²）"
-                )
-            raise RetimeError(
-                f"[duration] 最短可行时长 {actual_duration!r} s 超过上限 {limit!r} s："
-                f"{binding}（路径长度 {path_length!r} rad）"
-            )
-
-        displacement = np.linalg.norm(np.diff(samples_q, axis=0), axis=1)
-        step_velocity = np.linalg.norm(vel, axis=1)
-        return RetimedTrajectory(
-            trajectory=traj,
-            duration=actual_duration,
-            peak_velocity=tuple(
-                float(v)
-                for v in (np.abs(vel).max(axis=0) if vel.size else np.zeros(JOINT_COUNT))
-            ),
-            peak_acceleration=tuple(
-                float(v)
-                for v in (np.abs(acc).max(axis=0) if acc.size else np.zeros(JOINT_COUNT))
-            ),
-            max_step_velocity=float(step_velocity.max()) if step_velocity.size else 0.0,
-            max_step_displacement=float(displacement.max()) if displacement.size else 0.0,
-            margin=float(margin),
-            gridpoints=grid_count,
+    def _validator(samples_q: np.ndarray) -> Trajectory:
+        """构造 7 维轨迹（复用 S02-T02 的全部不变量校验，零重复实现）。"""
+        return trajectory_from_arrays(
+            samples_q,
+            t0=start,
+            dt=step,
+            robot_name=robot_name,
+            gripper_schedule=gripper_schedule,
+            acceleration_limits=tuple(float(v) for v in acc_limits),
         )
 
-    # 失败归类：区分「速度越界」/「加速度越界」/「参数化失败」/「连续性失败」。
-    joined = "\n".join(failures)
-    if "有限差分速度越界" in joined:
-        tag = "[velocity]"
-    elif "有限差分加速度越界" in joined:
-        tag = "[acceleration]"
-    elif "[continuity]" in joined:
-        tag = "[continuity]"
-    else:
-        tag = "[parameterization]"
-    raise RetimeError(
-        f"{tag} 无法在约束裕度回退序列 "
-        f"{list(MARGIN_BACKOFF)} 内找到满足速度/加速度上限与 C2 连续性的参数化；"
-        "各档失败原因：\n  - " + "\n  - ".join(failures)
+    core = _retime_core(
+        points,
+        vel_limits=vel_limits,
+        acc_limits=acc_limits,
+        dt=step,
+        t0=start,
+        jerk_limit=float(jerk_limit),
+        gridpoints=gridpoints,
+        duration_limit=duration_limit,
+        validator=_validator,
+    )
+    return RetimedTrajectory(
+        trajectory=core.built,
+        duration=core.duration,
+        peak_velocity=core.peak_velocity,
+        peak_acceleration=core.peak_acceleration,
+        max_step_velocity=core.max_step_velocity,
+        max_step_displacement=core.max_step_displacement,
+        margin=core.margin,
+        gridpoints=core.gridpoints,
     )
 
 
@@ -511,6 +444,392 @@ def retime_from_trajectory(
         duration_limit=duration_limit,
         jerk_limit=jerk_limit,
         gridpoints=gridpoints,
+    )
+
+
+# ── 维度无关的重定时结果 ────────────────────────────────────────────────
+@dataclass(frozen=True)
+class RetimedPath:
+    """**维度无关**的重定时结果（不含 7 维 ``Trajectory`` 包装）。
+
+    S05 的双臂协调规划需要在 **14 维**（左臂 7 + 右臂 7）联合空间里做
+    重定时；而 :class:`rm75_drake.planning.trajectory.Trajectory` 是**冻结的
+    7 维类型**（S02 → S03 的交接面，不得改动）。因此本模块抽出**通用核**
+    （:func:`_retime_core`），7 维路径由 :func:`retime` 包装成
+    :class:`RetimedTrajectory`，任意维度的路径由 :func:`retime_path` 返回
+    本类型——**只有一份 TOPPRA 包装**。
+
+    字段
+    ----
+    q:
+        ``(N, D)`` 的重定时后关节角矩阵（rad），``D`` = 输入路径的维度。
+    dt:
+        采样周期（s）。
+    t0:
+        首点的绝对时刻（s）。
+    duration:
+        总时长（s）。
+    peak_velocity / peak_acceleration:
+        逐轴峰值速度 / 加速度（长度 ``D``）。
+    max_step_velocity:
+        相邻采样点速度差的 **L2 范数**的最大值（rad/s）。
+    max_step_displacement:
+        相邻采样点位移的 L2 范数的最大值（rad）。
+    margin:
+        实际采用的约束裕度因子。
+    gridpoints:
+        实际采用的 TOPPRA 参数化网格点数。
+    """
+
+    q: np.ndarray
+    dt: float
+    t0: float
+    duration: float
+    peak_velocity: Tuple[float, ...]
+    peak_acceleration: Tuple[float, ...]
+    max_step_velocity: float
+    max_step_displacement: float
+    margin: float
+    gridpoints: int
+
+    # -- 便捷访问 -------------------------------------------------------
+    @property
+    def num_joints(self) -> int:
+        """维度 ``D``（7 = 单臂，14 = 双臂）。"""
+        return int(self.q.shape[1])
+
+    @property
+    def num_samples(self) -> int:
+        """采样点数 ``N``。"""
+        return int(self.q.shape[0])
+
+    @property
+    def t_abs(self) -> np.ndarray:
+        """绝对时刻序列（``(N,)``）。"""
+        return self.t0 + np.arange(self.q.shape[0], dtype=float) * float(self.dt)
+
+    @property
+    def velocities(self) -> np.ndarray:
+        """相邻点速度矩阵（``(N-1, D)``，rad/s）。"""
+        if self.q.shape[0] < 2:
+            return np.zeros((0, self.num_joints), dtype=float)
+        return np.diff(self.q, axis=0) / float(self.dt)
+
+    @property
+    def accelerations(self) -> np.ndarray:
+        """相邻点加速度矩阵（``(N-2, D)``，rad/s²）。"""
+        if self.q.shape[0] < 3:
+            return np.zeros((0, self.num_joints), dtype=float)
+        return np.diff(self.q, n=2, axis=0) / (float(self.dt) ** 2)
+
+
+# ── 维度无关的通用核 ────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class _CoreResult:
+    """通用核的内部产物。"""
+
+    samples_q: np.ndarray
+    built: object
+    duration: float
+    peak_velocity: Tuple[float, ...]
+    peak_acceleration: Tuple[float, ...]
+    max_step_velocity: float
+    max_step_displacement: float
+    margin: float
+    gridpoints: int
+
+
+def _retime_core(
+    points: np.ndarray,
+    *,
+    vel_limits: np.ndarray,
+    acc_limits: np.ndarray,
+    dt: float,
+    t0: float,
+    jerk_limit: float,
+    gridpoints: int,
+    duration_limit: Optional[float],
+    validator,
+) -> _CoreResult:
+    """**维度无关**的重定时通用核（7 维单臂与 14 维双臂共用）。
+
+    参数
+    ----
+    points:
+        ``(N, D)`` 的几何关节路径（rad），``N >= 2``；``D`` 任意。
+    vel_limits / acc_limits:
+        逐轴上限数组，长度必须等于 ``D``。
+    validator:
+        可调用对象 ``validator(samples_q)``，负责**与维度相关的额外校验**
+        （7 维时构造 :class:`Trajectory`；任意维度时可做软限位检查）。
+        抛出带 ``[soft_limits]`` / ``[finite]`` 标签的
+        :class:`TrajectoryError` → **立即报错**（裕度回退救不回来）；
+        其余异常 → 记入失败原因并换下一档裕度重试。
+    """
+    dim = int(points.shape[1])
+    waypoints, path_length = _dedupe_waypoints(points)
+    if path_length <= 1e-12:
+        raise RetimeError("[path] 路径长度为零（所有路径点重合），无法重定时")
+
+    toppra = _load_toppra()
+    grid_count = int(gridpoints)
+    if grid_count < 2:
+        raise RetimeError(f"[limits] gridpoints 至少为 2，实际：{gridpoints!r}")
+
+    failures: List[str] = []
+    for margin in MARGIN_BACKOFF:
+        try:
+            sampler, duration = _parameterize(
+                toppra,
+                waypoints,
+                vel_limits=vel_limits * margin,
+                acc_limits=acc_limits * margin,
+                gridpoints=grid_count,
+            )
+        except RetimeError as exc:
+            failures.append(f"margin={margin}: {exc}")
+            continue
+
+        samples_q = _sample_grid(sampler, duration, dt)
+
+        built: object = None
+        try:
+            built = validator(samples_q)
+        except TrajectoryError as exc:
+            # 软限位等**与裕度无关**的不变量被违反 → 立即报错（回退裕度也救不回来）。
+            if "[soft_limits]" in str(exc) or "[finite]" in str(exc):
+                raise
+            # 速度 / 加速度越界：记入失败原因，由更保守的裕度档重试；
+            # 全部失败则抛 [parameterization]。
+            failures.append(f"margin={margin}: 轨迹不变量被违反：{exc}")
+            continue
+        except Exception as exc:  # pragma: no cover - 防御性：校验器异常不得静默
+            failures.append(f"margin={margin}: 轨迹不变量被违反：{exc}")
+            continue
+
+        vel = np.diff(samples_q, axis=0) / float(dt)
+        acc = np.diff(samples_q, n=2, axis=0) / (float(dt) * float(dt))
+
+        limit_hit = _first_limit_violation(vel, acc, vel_limits, acc_limits)
+        if limit_hit is not None:
+            failures.append(f"margin={margin}: {limit_hit}")
+            continue
+        try:
+            check_c2_continuity(
+                vel,
+                acc,
+                dt=dt,
+                acceleration_limits=acc_limits,
+                jerk_limit=jerk_limit,
+            )
+        except RetimeError as exc:
+            failures.append(f"margin={margin}: {exc}")
+            continue
+
+        actual_duration = (
+            float(built.duration)
+            if built is not None and hasattr(built, "duration")
+            else float(samples_q.shape[0] - 1) * float(dt)
+        )
+        if duration_limit is not None and actual_duration > float(duration_limit) + _TOL:
+            limit = float(duration_limit)
+            required_speed = path_length / limit
+            # 判定被哪个上限卡住：平均速度需求超过速度上限 → 速度；否则是加速度
+            #（要在 limit 内完成起步/刹停，加速度需求超过加速度上限）。
+            if required_speed > float(vel_limits.max()):
+                binding = (
+                    f"速度上限卡住（平均速度需求 {required_speed!r} rad/s > 最大速度上限 "
+                    f"{float(vel_limits.max())!r} rad/s）"
+                )
+            else:
+                binding = (
+                    f"加速度上限卡住（平均速度需求 {required_speed!r} rad/s 在速度上限内，"
+                    f"但在 {limit!r} s 内完成起步/刹停所需的加速度超过 "
+                    f"{float(acc_limits.max())!r} rad/s²）"
+                )
+            raise RetimeError(
+                f"[duration] 最短可行时长 {actual_duration!r} s 超过上限 {limit!r} s："
+                f"{binding}（路径长度 {path_length!r} rad）"
+            )
+
+        displacement = np.linalg.norm(np.diff(samples_q, axis=0), axis=1)
+        step_velocity = np.linalg.norm(vel, axis=1)
+        return _CoreResult(
+            samples_q=samples_q,
+            built=built,
+            duration=actual_duration,
+            peak_velocity=tuple(
+                float(v) for v in (np.abs(vel).max(axis=0) if vel.size else np.zeros(dim))
+            ),
+            peak_acceleration=tuple(
+                float(v) for v in (np.abs(acc).max(axis=0) if acc.size else np.zeros(dim))
+            ),
+            max_step_velocity=float(step_velocity.max()) if step_velocity.size else 0.0,
+            max_step_displacement=float(displacement.max()) if displacement.size else 0.0,
+            margin=float(margin),
+            gridpoints=grid_count,
+        )
+
+    # 失败归类：区分「速度越界」/「加速度越界」/「参数化失败」/「连续性失败」。
+    joined = "\n".join(failures)
+    if "有限差分速度越界" in joined:
+        tag = "[velocity]"
+    elif "有限差分加速度越界" in joined:
+        tag = "[acceleration]"
+    elif "[continuity]" in joined:
+        tag = "[continuity]"
+    else:
+        tag = "[parameterization]"
+    raise RetimeError(
+        f"{tag} 无法在约束裕度回退序列 "
+        f"{list(MARGIN_BACKOFF)} 内找到满足速度/加速度上限与 C2 连续性的参数化；"
+        "各档失败原因：\n  - " + "\n  - ".join(failures)
+    )
+
+
+def retime_path(
+    q_seq: Sequence[Sequence[float]],
+    *,
+    velocity_limits: Optional[Sequence[float]] = None,
+    acceleration_limits: Optional[Sequence[float]] = None,
+    dt: float = DEFAULT_DT,
+    t0: float = 0.0,
+    jerk_limit: float = DEFAULT_JERK_LIMIT_RAD_S3,
+    gridpoints: int = DEFAULT_GRIDPOINTS,
+    duration_limit: Optional[float] = None,
+    soft_limits: Optional[Tuple[Sequence[float], Sequence[float]]] = None,
+) -> RetimedPath:
+    """对**任意维度**的关节路径做重定时（维度无关的公开入口）。
+
+    与 :func:`retime` 的关系
+    ----------------------
+    :func:`retime` 是**冻结的 7 维 API**（S02 → S03 交接面），公开签名与行为
+    逐字不变；本函数是 S05 为**14 维双臂联合空间**新增的入口，二者共用
+    **同一份 TOPPRA 包装**（:func:`_retime_core`）——**禁止新建第二套 toppra
+    包装**。
+
+    参数
+    ----
+    q_seq:
+        ``(N, D)`` 的几何关节路径（rad），``N >= 2``、``D >= 1``。
+    velocity_limits / acceleration_limits:
+        逐轴上限数组，长度必须等于 ``D``。
+        ``None`` **仅在 ``D == 7`` 时**允许（回落到 S02 的软件限位 / 自研
+        默认加速度上限）；其余维度必须**显式**给出（否则抛 ``[limits]``）。
+    dt / t0 / jerk_limit / gridpoints / duration_limit:
+        与 :func:`retime` 同义。
+    soft_limits:
+        可选的 ``(lower, upper)`` 逐轴软限位数组（长度 ``D``）。给出时，
+        重定时结果必须逐点落在软限位内，否则抛
+        :class:`rm75_drake.planning.trajectory.TrajectoryError`（标签
+        ``[soft_limits]``，**立即失败**，不做静默纠正）。
+
+    返回
+    ----
+    :class:`RetimedPath`（**不是** 7 维 ``Trajectory``）。
+    """
+    step = float(dt)
+    if not math.isfinite(step) or step <= 0.0:
+        raise RetimeError(f"[dt] dt 必须是正有限值，实际：{dt!r}")
+
+    start = float(t0)
+    if not math.isfinite(start):
+        raise RetimeError(f"[dt] t0 必须是有限值，实际：{t0!r}")
+
+    points = np.asarray(q_seq, dtype=float)
+    if points.ndim != 2 or points.shape[1] < 1:
+        raise RetimeError(
+            f"[shape] q_seq 必须是 (D, N) 的二维数组，实际：{points.shape}"
+        )
+    dim = int(points.shape[1])
+    if points.shape[0] < 2:
+        raise RetimeError(
+            f"[shape] q_seq 至少需要 2 个点（起点与终点），实际：{points.shape[0]}"
+        )
+    if not np.all(np.isfinite(points)):
+        row, axis = (int(v) for v in np.argwhere(~np.isfinite(points))[0])
+        raise RetimeError(
+            f"[finite] 第 {row} 个路径点第 {axis} 轴关节角非有限值：{points[row, axis]!r}"
+        )
+
+    if velocity_limits is None:
+        if dim != JOINT_COUNT:
+            raise RetimeError(
+                f"[limits] {dim} 维路径必须显式给出速度上限"
+                f"（软件限位只覆盖 {JOINT_COUNT} 维单臂）"
+            )
+        vel_limits = np.asarray(software_limits().velocity, dtype=float)
+    else:
+        vel_limits = np.asarray(velocity_limits, dtype=float)
+
+    if acceleration_limits is None:
+        if dim != JOINT_COUNT:
+            raise RetimeError(
+                f"[limits] {dim} 维路径必须显式给出加速度上限"
+                f"（自研默认值只覆盖 {JOINT_COUNT} 维单臂）"
+            )
+        acc_limits = np.asarray(DEFAULT_ACCELERATION_LIMITS_RAD_S2, dtype=float)
+    else:
+        acc_limits = np.asarray(acceleration_limits, dtype=float)
+
+    for name, arr in (("速度", vel_limits), ("加速度", acc_limits)):
+        if arr.shape != (dim,):
+            raise RetimeError(f"[limits] {name}上限必须是 {dim} 维，实际 {arr.shape}")
+        if not np.all(np.isfinite(arr)) or np.any(arr <= 0.0):
+            raise RetimeError(
+                f"[limits] {name}上限必须是正有限值，实际：{arr.tolist()}"
+            )
+    if not math.isfinite(float(jerk_limit)) or float(jerk_limit) <= 0.0:
+        raise RetimeError(f"[limits] jerk 上限必须是正有限值，实际：{jerk_limit!r}")
+
+    lower = upper = None
+    if soft_limits is not None:
+        lower = np.asarray(soft_limits[0], dtype=float)
+        upper = np.asarray(soft_limits[1], dtype=float)
+        for name, arr in (("下限", lower), ("上限", upper)):
+            if arr.shape != (dim,):
+                raise RetimeError(
+                    f"[limits] 软限位{name}必须是 {dim} 维，实际 {arr.shape}"
+                )
+
+    def _validator(samples_q: np.ndarray) -> None:
+        """软限位逐点检查（与 S02-T02 的 ``[soft_limits]`` 口径一致）。"""
+        if lower is None or upper is None:
+            return None
+        outside = (samples_q < lower[None, :] - GRID_TOLERANCE) | (
+            samples_q > upper[None, :] + GRID_TOLERANCE
+        )
+        if np.any(outside):
+            row, axis = (int(v) for v in np.argwhere(outside)[0])
+            raise TrajectoryError(
+                f"[soft_limits] 第 {row} 个采样点第 {axis} 轴关节角 "
+                f"{samples_q[row, axis]!r} 超出软件软限位 "
+                f"[{lower[axis]}, {upper[axis]}]"
+            )
+        return None
+
+    core = _retime_core(
+        points,
+        vel_limits=vel_limits,
+        acc_limits=acc_limits,
+        dt=step,
+        t0=start,
+        jerk_limit=float(jerk_limit),
+        gridpoints=gridpoints,
+        duration_limit=duration_limit,
+        validator=_validator,
+    )
+    return RetimedPath(
+        q=core.samples_q,
+        dt=step,
+        t0=start,
+        duration=core.duration,
+        peak_velocity=core.peak_velocity,
+        peak_acceleration=core.peak_acceleration,
+        max_step_velocity=core.max_step_velocity,
+        max_step_displacement=core.max_step_displacement,
+        margin=core.margin,
+        gridpoints=core.gridpoints,
     )
 
 

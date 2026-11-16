@@ -14,16 +14,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from rm75_drake.planning.retime import (
     DEFAULT_JERK_LIMIT_RAD_S3,
     RetimeError,
+    RetimedPath,
     RetimedTrajectory,
     check_c2_continuity,
     retime,
     retime_from_trajectory,
+    retime_path,
 )
 from rm75_drake.planning.trajectory import (
     DEFAULT_ACCELERATION_LIMITS_RAD_S2,
@@ -278,3 +282,93 @@ def test_check_c2_continuity_rejects_bad_inputs():
 def test_default_jerk_limit_is_documented_self_research_value():
     """正例：jerk 上限是**自研默认值**（官方未公布），常量存在且为正。"""
     assert DEFAULT_JERK_LIMIT_RAD_S3 > 0.0
+
+
+# ── 零回归：重构（抽通用核）后 7 维输出逐点不变（S05-T02）──────────────
+#: 重构**前**录下的 7 维 golden（逐点 q / 时长 / 裕度 / 峰值）。
+GOLDEN_PATH = Path(__file__).resolve().parent / "data" / "retime_golden.npz"
+
+
+def test_retime_output_is_bit_identical_to_pre_refactor_golden():
+    """零回归：7 维 retime() 的输出与重构前**逐点一致**（不是“差不多”）。"""
+    golden = np.load(GOLDEN_PATH)
+    result = retime(
+        STRAIGHT_PATH,
+        velocity_limits=VEL_LIMITS,
+        acceleration_limits=ACC_LIMITS,
+    )
+
+    assert np.array_equal(result.q_matrix, golden["q"])
+    assert result.duration == float(golden["duration"])
+    assert result.margin == float(golden["margin"])
+    assert result.gridpoints == int(golden["gridpoints"])
+    assert np.array_equal(np.asarray(result.peak_velocity), golden["peak_velocity"])
+    assert np.array_equal(np.asarray(result.peak_acceleration), golden["peak_acceleration"])
+    assert result.trajectory.dt == float(golden["dt"])
+    assert result.trajectory.start_time == float(golden["t0"])
+
+
+# ── 维度泛化：14 维联合路径（S05-T02）─────────────────────────────────
+#: 14 维（双臂）联合路径：左臂沿 +x 方向小幅移动，右臂镜像。
+DUAL_PATH = np.hstack(
+    [
+        STRAIGHT_PATH,
+        -STRAIGHT_PATH,
+    ]
+)
+
+
+def test_retime_path_supports_14_dimensions():
+    """正例：14 维联合路径可重定时（与 7 维共用同一份 TOPPRA 包装）。"""
+    result = retime_path(
+        DUAL_PATH,
+        velocity_limits=np.concatenate([VEL_LIMITS, VEL_LIMITS]),
+        acceleration_limits=np.concatenate([ACC_LIMITS, ACC_LIMITS]),
+    )
+
+    assert isinstance(result, RetimedPath)
+    assert result.q.shape == (result.num_samples, 14)
+    assert result.num_joints == 14
+    assert len(result.peak_velocity) == 14
+    assert len(result.peak_acceleration) == 14
+    assert result.duration > 0.0
+    assert result.margin > 0.0
+
+    # 逐轴速度 / 加速度不超限
+    vel = result.velocities
+    acc = result.accelerations
+    assert vel.shape[1] == 14
+    assert np.all(np.abs(vel) <= np.asarray(VEL_LIMITS * 2)[None, :] + 1e-9)
+    assert np.all(np.abs(acc) <= np.asarray(ACC_LIMITS * 2)[None, :] + 1e-9)
+
+    # 起点 / 终点保持
+    assert np.allclose(result.q[0], DUAL_PATH[0], atol=1e-9)
+    assert np.allclose(result.q[-1], DUAL_PATH[-1], atol=1e-6)
+
+
+def test_retime_path_requires_explicit_limits_for_non_7d():
+    """负例：非 7 维路径未显式给出上限 → 抛错（不静默套用单臂数值）。"""
+    with pytest.raises(RetimeError) as excinfo:
+        retime_path(DUAL_PATH)
+    assert "[limits]" in str(excinfo.value)
+
+
+def test_retime_path_rejects_bad_shape_and_limits():
+    """负例：维度 / 点数 / 上限维度 / 软限位越界 → 全部显式抛错。"""
+    with pytest.raises(RetimeError) as excinfo:
+        retime_path(np.zeros((2, 14)), velocity_limits=np.ones(7), acceleration_limits=np.ones(14))
+    assert "[limits]" in str(excinfo.value)
+
+    with pytest.raises(RetimeError) as excinfo:
+        retime_path(np.zeros((1, 14)), velocity_limits=np.ones(14), acceleration_limits=np.ones(14))
+    assert "[shape]" in str(excinfo.value)
+
+    # 软限位越界 → 立即失败（[soft_limits]，不静默纠正）
+    with pytest.raises(TrajectoryError) as excinfo:
+        retime_path(
+            DUAL_PATH,
+            velocity_limits=np.concatenate([VEL_LIMITS, VEL_LIMITS]),
+            acceleration_limits=np.concatenate([ACC_LIMITS, ACC_LIMITS]),
+            soft_limits=(np.full(14, -0.01), np.full(14, 0.01)),
+        )
+    assert "[soft_limits]" in str(excinfo.value)
