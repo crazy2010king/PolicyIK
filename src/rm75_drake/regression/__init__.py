@@ -10,7 +10,10 @@
   —— 设备层消息流（**只读消费**）；
 * :mod:`rm75_drake.regression.session`（S07-T01，``SESSION_SCHEMA_VERSION = 1``）
   —— **全链路会话产物**：把上面两份产物内联进**一个自洽文件**，
-  并加**顶层校验和**（篡改可检出）。
+  并加**顶层校验和**（篡改可检出）；
+* :mod:`rm75_drake.regression.golden`（S07-T02，``GOLDEN_SCHEMA_VERSION = 1``）
+  —— **golden-file 基线**与「逐点一致」离线回放比较器
+  （基线绑定模型 / 场景 / 任务三枚指纹 ⇒ 模型漂移会让基线**主动失效**）。
 
 为什么另立 schema（而不是改既有两份）
 --------------------------------------
@@ -36,6 +39,7 @@ from typing import Any
 
 __all__ = [
     "session",
+    "golden",
     "SESSION_SCHEMA_VERSION",
     "SessionError",
     "Session",
@@ -46,10 +50,20 @@ __all__ = [
     "session_segment_digests",
     "source_schema_versions",
     "assert_source_schemas_unchanged",
+    "GOLDEN_SCHEMA_VERSION",
+    "GoldenError",
+    "GoldenBaseline",
+    "GoldenComparison",
+    "build_golden",
+    "write_golden",
+    "load_golden",
+    "compare_golden",
+    "repo_fingerprints",
+    "tcp_positions_from_joints",
 ]
 
 #: 惰性子模块（PEP 562）：import 本包不拉起任何子模块。
-_LAZY_MODULES = ("session",)
+_LAZY_MODULES = ("session", "golden")
 
 #: 从 ``session`` 子模块透出的符号。
 _SESSION_EXPORTS = (
@@ -65,6 +79,20 @@ _SESSION_EXPORTS = (
     "assert_source_schemas_unchanged",
 )
 
+#: 从 ``golden`` 子模块透出的符号。
+_GOLDEN_EXPORTS = (
+    "GOLDEN_SCHEMA_VERSION",
+    "GoldenError",
+    "GoldenBaseline",
+    "GoldenComparison",
+    "build_golden",
+    "write_golden",
+    "load_golden",
+    "compare_golden",
+    "repo_fingerprints",
+    "tcp_positions_from_joints",
+)
+
 
 def __getattr__(name: str) -> Any:
     """PEP 562 惰性导入 / 符号透出。"""
@@ -74,6 +102,11 @@ def __getattr__(name: str) -> Any:
         return module
     if name in _SESSION_EXPORTS:
         module = importlib.import_module(f"{__name__}.session")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _GOLDEN_EXPORTS:
+        module = importlib.import_module(f"{__name__}.golden")
         value = getattr(module, name)
         globals()[name] = value
         return value
