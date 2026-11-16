@@ -8,9 +8,13 @@
 * :mod:`rm75_drake.tasks.goals` —— **原子目标**类型：:class:`TaskGoal` /
   :class:`PoseGoal` / :class:`RelativePoseGoal` / :class:`ObjectGoal`
   （``goal_id`` 非空、任务内唯一）。
-* （后续切片）:mod:`rm75_drake.tasks.primitives` / :mod:`rm75_drake.tasks.state_machine`
+* :mod:`rm75_drake.tasks.primitives` —— **原语目录**（10 个原语的静态元数据
+  与默认误差门槛）。
+* :mod:`rm75_drake.tasks.solver` —— **单一求解器入口**
+  （:func:`~rm75_drake.tasks.solver.solve_task`：numpy 快路径）。
+* （后续切片）:mod:`rm75_drake.tasks.state_machine`
   / :mod:`rm75_drake.tasks.bimanual` / :mod:`rm75_drake.tasks.metrics`
-  —— 原语库、状态机、双臂搬运/交接与原语级指标口径。
+  —— 状态机、双臂搬运/交接与原语级指标口径。
 
 目录语义（**同名易混，必须分清**）
 --------------------------------
@@ -58,10 +62,22 @@ __all__ = [
     "GoalRegistry",
     "build_goal_registry",
     "GOAL_KINDS",
+    "PRIMITIVE_SPECS",
+    "primitive_spec",
+    "primitive_names",
+    "DEFAULT_POSITION_TOLERANCE_M",
+    "DEFAULT_ORIENTATION_TOLERANCE_RAD",
+    "PrimitiveCatalogSpec",
+    "solve_task",
+    "solve_primitive",
+    "SolverOptions",
+    "SolveState",
+    "PrimitiveResult",
+    "TaskResult",
 ]
 
 #: 惰性子模块（PEP 562）：import 本包不拉起任何重依赖。
-_LAZY_MODULES = ("schema", "goals")
+_LAZY_MODULES = ("schema", "goals", "primitives", "solver")
 
 #: 从 ``schema`` 子模块透出的符号。
 _SCHEMA_EXPORTS = (
@@ -81,6 +97,31 @@ _SCHEMA_EXPORTS = (
     "parse_task",
     "load_task_file",
     "goal_for_primitive",
+)
+
+#: 从 ``primitives`` 子模块透出的符号。
+#:
+#: 注意：:class:`rm75_drake.tasks.primitives.PrimitiveSpec`（**原语目录**条目）
+#: 与 :class:`rm75_drake.tasks.schema.PrimitiveSpec`（**任务文件里的原语条目**）
+#: 是两个不同的类型；包级 ``PrimitiveSpec`` 沿用 schema 的那个（不变），
+#: 原语目录的那个在本包以 ``PrimitiveCatalogSpec`` 暴露，避免同名歧义。
+_PRIMITIVES_EXPORTS = (
+    "PRIMITIVE_SPECS",
+    "primitive_spec",
+    "primitive_names",
+    "DEFAULT_POSITION_TOLERANCE_M",
+    "DEFAULT_ORIENTATION_TOLERANCE_RAD",
+    "PrimitiveCatalogSpec",
+)
+
+#: 从 ``solver`` 子模块透出的符号。
+_SOLVER_EXPORTS = (
+    "solve_task",
+    "solve_primitive",
+    "SolverOptions",
+    "SolveState",
+    "PrimitiveResult",
+    "TaskResult",
 )
 
 #: 从 ``goals`` 子模块透出的符号。
@@ -108,6 +149,16 @@ def __getattr__(name: str) -> Any:
         return value
     if name in _GOALS_EXPORTS:
         module = importlib.import_module(f"{__name__}.goals")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _PRIMITIVES_EXPORTS:
+        module = importlib.import_module(f"{__name__}.primitives")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _SOLVER_EXPORTS:
+        module = importlib.import_module(f"{__name__}.solver")
         value = getattr(module, name)
         globals()[name] = value
         return value
