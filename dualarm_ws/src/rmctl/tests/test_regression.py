@@ -297,9 +297,12 @@ def test_registry_exposes_registered_segments():
     意外改动时**立刻**暴露（不静默增删证据链）。
     """
     assert orch.segment_ids() == ["gripper_offline", "process_offline",
-                                  "planner_golden", "planner_acceptance"]
+                                  "planner_golden", "planner_acceptance",
+                                  "perf_baseline"]
     for seg_id, spec in orch.SPECS.items():
-        assert os.path.isfile(os.path.join(REPO_ROOT, spec.script)), spec
+        # 子进程段必须有脚本；自带 runner 的段（如 perf_baseline）没有脚本
+        if spec.script:
+            assert os.path.isfile(os.path.join(REPO_ROOT, spec.script)), spec
         assert spec.report_name.endswith(".json"), spec
         # 各段报告文件互不覆盖（否则一段的证据会覆盖另一段）
         names = [item.report_name for item in orch.SPECS.values()]

@@ -77,6 +77,7 @@ __all__ = [
     "SegmentSpec",
     "build_context",
     "normalize_report",
+    "register_runner",
     "register_segment",
     "run_regression",
     "run_segment",
@@ -154,6 +155,25 @@ def register_segment(spec: SegmentSpec) -> None:
     """注册一段（后续任务各自追加注册行即可扩展段集合）。"""
     SPECS[spec.seg_id] = spec
     SEGMENTS[spec.seg_id] = _make_script_runner(spec)
+
+
+def register_runner(seg_id: str,
+                   runner: Callable[[SegmentContext], Dict[str, Any]],
+                   mode: str = "offline",
+                   report_name: str = "") -> None:
+    """注册一个**非子进程**段（自带 runner 的段）。
+
+    用于「不是「跑某个既有脚本 + 读它的报告」的段——例如 S09/T4 的
+    ``perf_baseline``（读既有 S08 报告 → 投影成基线表）。这类段自己
+    负责产出段级结果字典，编排器只负责**注册、排序、聚合**。
+    """
+    SPECS[seg_id] = SegmentSpec(
+        seg_id=seg_id,
+        script="",
+        report_name=report_name or ("s09_segment_%s.json" % seg_id),
+        mode=mode,
+    )
+    SEGMENTS[seg_id] = runner
 
 
 def segment_ids() -> List[str]:
@@ -549,3 +569,27 @@ register_segment(SegmentSpec(
     ),
     timeout_s=3600.0,
 ))
+
+
+def _run_perf_baseline(ctx: SegmentContext) -> Dict[str, Any]:
+    """``perf_baseline`` 段的 runner（读既有 S08 报告 → 投影成基线表）。
+
+    段级判定在 :mod:`rmctl.regression.perf_baseline` 内部完成（口径唯一）：
+    S08 报告缺失 → ``blocked``（外部产物未生成）；S08 报告结构变化 →
+    ``fail``（契约回归）；投影成功 → ``pass``。
+    """
+    from rmctl.regression import perf_baseline as _perf
+
+    return _perf.run_perf_baseline(
+        repo_root=ctx.repo_root,
+        ws=ctx.ws,
+        reports_dir=ctx.reports_dir,
+    )
+
+
+register_runner(
+    seg_id="perf_baseline",
+    runner=_run_perf_baseline,
+    mode="offline",
+    report_name="s09_segment_perf_baseline.json",
+)
