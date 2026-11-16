@@ -59,7 +59,8 @@ usage() {
             **上游资产与许可门禁**（verify_env --upstream --licenses 三方交叉校验
             + NOTICE 与许可登记表逐字一致，恒跑——不需要归档实体）、
             **上游获取与许可门禁测试**（fetch_upstream / asset_license_gate，
-            恒跑——零硬件也能回归）。
+            恒跑——零硬件也能回归）、
+            **verify_env 退出码契约**（参数错误 2 / 内容漂移 1，恒跑——零硬件也能回归）。
   medium    在 fast 之上追加：constraints ↔ versions.lock 依赖锁一致性、
             package:// 解析测试、wheel 离线归档 sha256 校验（归档缺失时 SKIP）。
   nightly   在 medium 之上追加：**规划统计真实调用**（scripts/plan_stats.py，
@@ -207,6 +208,12 @@ else
     record_skip "tests/model" "Drake（pydrake）不可用：模型回归断言跳过（环境未就绪）"
     record_skip "model/verify-env" "Drake（pydrake）不可用：模型自检跳过（环境未就绪）"
 fi
+
+# 5b) verify_env 退出码契约（S08-T01）：01-01-UAT.md:47 逐字要求「非法 --joint-limits
+#     路径 → 退出码 2（参数错误）」，而「路径合法但内容漂移 → 退出码 1（检查失败）」。
+#     契约项零硬件可验证（参数错误在 Drake 导入之前就暴露）⇒ **恒跑**，不得 SKIP。
+run_check "tests/verify-env-contract" "verify_env 退出码契约（参数错误 2 / 内容漂移 1）" -- \
+    "$PYTHON" -m pytest -q tests/test_verify_env_contract.py
 
 # 6) 网格工具单测（合成夹具部分与上游归档无关 → 恒跑；归档依赖用例内部 SKIP）
 run_check "tests/mesh-tools" "网格工具单测（STL 解析 / OBJ 写出 / 包围盒）" -- \

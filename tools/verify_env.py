@@ -7,7 +7,10 @@
   profile 的解析、包的解析全部复用 ``tools/gen_constraints.py``（T01）与
   ``tools/wheels_lock.py``（T03）的既有内核，避免出现第二份真相源。
 * 本工具是 **CLI 可读**的：每个子检查输出一段人类可读的对照表，
-  并以**退出码**表达一致性（0 = 通过，1 = 检查失败，2 = 运行期错误）。
+  并以**退出码**表达一致性（0 = 通过，1 = 检查失败，2 = 参数错误或运行期错误）。
+* **参数错误前置**：``--joint-limits`` 的路径在**任何子检查与任何 Drake 导入之前**
+  先被校验——路径不存在或不是文件 ⇒ 参数错误（退出码 2）；路径合法但**内容**非法
+  ⇒ 仍由 ``--model`` 判为检查失败（退出码 1）。两类语义不得合并。
 * 可被 pytest（``tests/test_verify_env.py``）与 CI（``scripts/ci.sh``）直接复用，
   因此锁文件不会静默漂移。
 
@@ -40,8 +43,12 @@
                     → 一次碰撞复检；打印 ``[PASS]/[FAIL] plan — ...``。
                     该子检查**依赖 Drake**，同样需显式指定。
 
-退出码：0 通过 / 1 检查失败 / 2 运行期错误（锁文件不可读、包映射构建失败、
-Drake 不可用等）。
+退出码
+------
+    0  通过：所有被选中的子检查均通过。
+    1  检查失败：模型数值与 URDF 不一致、限位交接件内容非法/漂移等**内容**问题。
+    2  参数错误 或 环境错误：``--joint-limits`` 路径非法（参数错误）、Drake 缺失、
+       profile 选择失败、锁文件不可读、包映射构建失败等。
 """
 
 from __future__ import annotations
@@ -1010,10 +1017,38 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--joint-limits",
         type=Path,
         default=None,
-        help="限位交接件路径（默认 models/rm75_drake/joint_limits.yaml）",
+        help=(
+            "限位交接件路径（默认 models/rm75_drake/joint_limits.yaml）；"
+            "路径非法（不存在或不是文件）→ 参数错误，退出码 2"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    # ── 参数前置校验（先于任何子检查、任何文件读取、任何 Drake 导入）────
+    # 契约（.gsd/phases/01-acm1jg-phase/01-01-UAT.md:47）：
+    #   传入非法 --joint-limits 路径 → 退出码 2（参数错误）。
+    # 与「路径合法但内容非法/漂移」严格分层：后者仍由 --model 判为 FAIL → 退出码 1。
+    if args.joint_limits is not None and not Path(args.joint_limits).is_file():
+        problem = f"--joint-limits 路径不存在或不是文件：{args.joint_limits}"
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "checks": {
+                            "joint-limits": {
+                                "status": "ERROR",
+                                "problems": [problem],
+                            }
+                        },
+                        "ok": False,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        print(f"verify_env: 参数错误：{problem}", file=sys.stderr)
+        return 2
 
     selected = [
         args.check,

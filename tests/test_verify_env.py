@@ -9,6 +9,10 @@
 * ``setup_env.sh`` 必须语法正确、帮助齐全、``--dry-run`` 不产生任何副作用。
 
 负例同样重要：伪造缺字段的锁、错配版本、缺包、削减禁用名单都必须被显式报错。
+
+注：``--joint-limits`` 的**退出码**契约（非法路径 → 2 / 内容漂移 → 1）由
+``tests/test_verify_env_contract.py`` 单独守卫（对应 01-01-UAT.md:47）；
+本文件里的两条负例只负责守住「内容漂移仍是退出码 1」的既有语义。
 """
 
 from __future__ import annotations
