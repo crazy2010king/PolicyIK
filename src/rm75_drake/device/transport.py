@@ -40,6 +40,9 @@ __all__ = [
     "REASON_LINK_DOWN",
     "REASON_INVALID_INPUT",
     "REASON_GRIPPER_OFFLINE",
+    "REASON_UNSUPPORTED",
+    "GRIPPER_POSITION_MIN",
+    "GRIPPER_POSITION_MAX",
     "StateFrame",
     "GripperState",
     "ArmTransport",
@@ -55,6 +58,11 @@ REASON_SDK_UNAVAILABLE = "sdk_unavailable"
 REASON_LINK_DOWN = "link_down"
 REASON_INVALID_INPUT = "invalid_input"
 REASON_GRIPPER_OFFLINE = "gripper_offline"
+REASON_UNSUPPORTED = "unsupported"
+
+#: 夹爪位置是**无量纲**的 0–1000 整数（不是角度，不做任何 rad/deg 换算）。
+GRIPPER_POSITION_MIN = 0
+GRIPPER_POSITION_MAX = 1000
 
 
 class TransportError(RuntimeError):
@@ -206,6 +214,35 @@ class ArmTransport(abc.ABC):
     def read_gripper(self) -> GripperState:
         """读取夹爪状态。"""
 
+    # -- 夹爪下发 --------------------------------------------------------
+    def command_gripper_position(self, position: int, *, speed: int = 100) -> None:
+        """下发夹爪位置（**夹爪下发通道**）。
+
+        命名理由
+        --------
+        :meth:`ScriptedTransport.set_gripper_position` 是**回读值设定器**
+        （模拟「夹爪已到位」），被 ``tests/test_device_recovery.py`` 与
+        ``scripts/fault_inject.py`` 使用，其语义**不得改动**；因此**下发**
+        通道另起名 ``command_gripper_position``，避免同名不同义。
+
+        参数
+        ----
+        position:
+            夹爪位置（**无量纲** 0–1000 整数；不涉及 rad/deg 换算）。
+        speed:
+            夹爪速度（0–100 整数；仅做入参校验，当前 SDK 白名单符号只接受位置）。
+
+        异常
+        ----
+        TransportError
+            基类默认实现恒抛 ``reason="unsupported"``（当前传输层不支持夹爪下发）。
+        """
+        raise TransportError(
+            "command_gripper_position：当前传输层不支持夹爪下发"
+            "（基类默认实现；请由具体传输层覆盖本方法）",
+            reason=REASON_UNSUPPORTED,
+        )
+
     # -- 内部工具 --------------------------------------------------------
     def _require_open(self) -> None:
         if not self._open:
@@ -242,6 +279,39 @@ def _validate_joint_vector(
             )
         out.append(fv)
     return tuple(out)
+
+
+def _validate_gripper_position(position: int, *, name: str = "position") -> int:
+    """校验夹爪位置：必须是 0–1000 的**整数**（bool 不算整数）。
+
+    夹爪位置是**无量纲**的（不是角度）⇒ 这里**不做任何 rad/deg 换算**，
+    换算实现只能有一份（在 :mod:`rm75_drake.device.sdk`）。
+    """
+    if isinstance(position, bool) or not isinstance(position, int):
+        raise TransportError(
+            f"{name} 必须是 {GRIPPER_POSITION_MIN}–{GRIPPER_POSITION_MAX} 之间的整数，"
+            f"收到 {position!r}",
+            reason=REASON_INVALID_INPUT,
+        )
+    if not (GRIPPER_POSITION_MIN <= position <= GRIPPER_POSITION_MAX):
+        raise TransportError(
+            f"{name} 必须在 {GRIPPER_POSITION_MIN}–{GRIPPER_POSITION_MAX} 之间，"
+            f"收到 {position}",
+            reason=REASON_INVALID_INPUT,
+        )
+    return int(position)
+
+
+def _validate_gripper_speed(speed: int, *, name: str = "speed") -> int:
+    """校验夹爪速度：必须是 0–100 的**整数**。"""
+    if isinstance(speed, bool) or not isinstance(speed, int):
+        raise TransportError(
+            f"{name} 必须是 0–100 之间的整数，收到 {speed!r}",
+            reason=REASON_INVALID_INPUT,
+        )
+    if not (0 <= speed <= 100):
+        raise TransportError(f"{name} 必须在 0–100 之间，收到 {speed}", reason=REASON_INVALID_INPUT)
+    return int(speed)
 
 
 # ── 真机实现 ────────────────────────────────────────────────────────────
@@ -389,6 +459,18 @@ class SdkTransport(ArmTransport):
         self._require_open()
         raw = self._require_proxy().rm_get_gripper_state()
         return _gripper_state_from_raw(raw)
+
+    def command_gripper_position(self, position: int, *, speed: int = 100) -> None:
+        """下发夹爪位置（``rm_set_gripper_position``）。
+
+        * 夹爪位置是**无量纲** 0–1000 整数 ⇒ **不涉及 rad/deg 换算**；
+        * ``rm_set_gripper_position`` 已在 SDK 白名单内（``device/sdk.py``）
+          ⇒ **不改** ``sdk.py`` / ``versions.lock``。
+        """
+        self._require_open()
+        value = _validate_gripper_position(position)
+        _validate_gripper_speed(speed)
+        self._require_proxy().rm_set_gripper_position(value)
 
     # -- 内部工具 --------------------------------------------------------
     def _require_proxy(self) -> SdkProxy:
@@ -588,6 +670,18 @@ class ScriptedTransport(ArmTransport):
         return GripperState(
             online=not self.gripper_offline, position=self._gripper_position
         )
+
+    def command_gripper_position(self, position: int, *, speed: int = 100) -> None:
+        """记录一次夹爪下发，并把回读值更新为该位置（离线「夹爪到位」语义）。
+
+        注意：:meth:`set_gripper_position` 是**回读值设定器**（不记录调用），
+        语义与本方法（**下发**）不同，不可混用。
+        """
+        self._require_open()
+        value = _validate_gripper_position(position)
+        _validate_gripper_speed(speed)
+        self.calls.append(("command_gripper_position", (value,)))
+        self._gripper_position = value
 
     # -- 观测 ------------------------------------------------------------
     def called(self, name: str) -> int:

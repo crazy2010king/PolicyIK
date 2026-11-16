@@ -19,9 +19,11 @@ import pytest
 from rm75_drake.device import sdk as sdk_mod
 from rm75_drake.device.config import device_config_from_dict
 from rm75_drake.device.transport import (
+    ArmTransport,
     REASON_INVALID_INPUT,
     REASON_LINK_DOWN,
     REASON_NOT_OPEN,
+    REASON_UNSUPPORTED,
     ScriptedTransport,
     SdkTransport,
     StateFrame,
@@ -90,6 +92,10 @@ class _FakeSdk:
     def rm_get_gripper_state(self):
         self.calls.append(("rm_get_gripper_state",))
         return types.SimpleNamespace(rm_plus_state=0, gripper_position=512)
+
+    def rm_set_gripper_position(self, position):
+        self.calls.append(("rm_set_gripper_position", int(position)))
+        return 0
 
 
 # ── ScriptedTransport ──────────────────────────────────────────────────
@@ -334,3 +340,145 @@ def test_both_transports_share_the_same_protocol():
 
     assert issubclass(ScriptedTransport, ArmTransport)
     assert issubclass(SdkTransport, ArmTransport)
+
+
+# ── 夹爪下发通道（S06-T02）─────────────────────────────────────────────
+class _BareTransport(ArmTransport):
+    """最小可实例化传输层：只实现抽象方法，用于验证**基类默认实现**。"""
+
+    name = "bare_transport"
+
+    def open(self) -> None:
+        self._open = True
+        self._closed = False
+
+    def close(self) -> None:
+        self._open = False
+        self._closed = True
+
+    def move_j_canfd(self, joint_rad, *, follow: bool = True) -> None:
+        self._require_open()
+
+    def enable(self, state: bool) -> None:
+        self._require_open()
+
+    def clear_error(self) -> None:
+        self._require_open()
+
+    def emergency_stop(self) -> None:
+        self._require_open()
+
+    def slow_stop(self) -> None:
+        self._require_open()
+
+    def set_joint_limits(self, lower_rad, upper_rad) -> None:
+        self._require_open()
+
+    def read_state(self):
+        self._require_open()
+        return None
+
+    def read_gripper(self):
+        self._require_open()
+        from rm75_drake.device.transport import GripperState
+
+        return GripperState(online=True, position=0)
+
+
+def test_base_transport_command_gripper_position_is_unsupported():
+    """基类默认实现：抛 TransportError（reason=unsupported），不得静默无操作。"""
+    transport = _BareTransport()
+    transport.open()
+    with pytest.raises(TransportError) as excinfo:
+        transport.command_gripper_position(500)
+    assert excinfo.value.reason == REASON_UNSUPPORTED
+    assert "command_gripper_position" in str(excinfo.value)
+
+
+def test_sdk_transport_command_gripper_position_uses_whitelisted_symbol():
+    """真机实现：走白名单符号 rm_set_gripper_position（审计可见）。"""
+    fake = _FakeSdk()
+    transport = SdkTransport(_config(), sdk=fake)
+    transport.open()
+    transport.command_gripper_position(700)
+    names = [call[0] for call in fake.calls]
+    assert "rm_set_gripper_position" in names
+    assert transport.audit.called("rm_set_gripper_position") == 1
+    assert transport.audit.non_whitelist_call_count == 0
+
+
+def test_sdk_transport_command_gripper_position_passes_raw_dimensionless_value():
+    """夹爪位置是无量纲 0–1000 整数：不换算，原值下发。"""
+    fake = _FakeSdk()
+    transport = SdkTransport(_config(), sdk=fake)
+    transport.open()
+    transport.command_gripper_position(800)
+    args = [call for call in fake.calls if call[0] == "rm_set_gripper_position"]
+    assert args[0][1] == 800
+
+
+def test_sdk_transport_command_gripper_position_requires_open():
+    fake = _FakeSdk()
+    transport = SdkTransport(_config(), sdk=fake)
+    with pytest.raises(TransportError) as excinfo:
+        transport.command_gripper_position(500)
+    assert excinfo.value.reason == REASON_NOT_OPEN
+
+
+@pytest.mark.parametrize("bad", [1001, -1, 0.5, "500", None, True])
+def test_sdk_transport_command_gripper_position_rejects_invalid(bad):
+    """越界 / 非整数：显式报错并点名 position。"""
+    fake = _FakeSdk()
+    transport = SdkTransport(_config(), sdk=fake)
+    transport.open()
+    with pytest.raises(TransportError) as excinfo:
+        transport.command_gripper_position(bad)
+    assert excinfo.value.reason == REASON_INVALID_INPUT
+    assert "position" in str(excinfo.value)
+
+
+def test_sdk_transport_command_gripper_position_rejects_invalid_speed():
+    fake = _FakeSdk()
+    transport = SdkTransport(_config(), sdk=fake)
+    transport.open()
+    with pytest.raises(TransportError) as excinfo:
+        transport.command_gripper_position(500, speed=500)
+    assert excinfo.value.reason == REASON_INVALID_INPUT
+    assert "speed" in str(excinfo.value)
+
+
+def test_scripted_transport_command_gripper_position_records_and_updates_readback():
+    """离线替身：记录下发调用，并把回读值更新为该位置（夹爪到位语义）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.command_gripper_position(300)
+    assert transport.called("command_gripper_position") == 1
+    assert transport.calls[-1] == ("command_gripper_position", (300,))
+    assert transport.read_gripper().position == 300
+
+
+def test_scripted_transport_command_gripper_position_requires_open():
+    transport = ScriptedTransport()
+    with pytest.raises(TransportError) as excinfo:
+        transport.command_gripper_position(300)
+    assert excinfo.value.reason == REASON_NOT_OPEN
+
+
+def test_scripted_transport_set_gripper_position_semantics_unchanged():
+    """回读设定器 set_gripper_position 不记录调用（语义与下发通道不同）。"""
+    transport = ScriptedTransport()
+    transport.open()
+    transport.set_gripper_position(42)
+    assert transport.called("command_gripper_position") == 0
+    assert transport.read_gripper().position == 42
+
+
+def test_both_transports_expose_the_same_gripper_command_surface():
+    """真机实现与离线替身共享同一夹爪下发签名（可互换性）。"""
+    import inspect
+
+    for klass in (ArmTransport, SdkTransport, ScriptedTransport):
+        sig = inspect.signature(klass.command_gripper_position)
+        assert list(sig.parameters) == ["self", "position", "speed"]
+        assert sig.parameters["speed"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert sig.parameters["speed"].default == 100
