@@ -28,6 +28,7 @@
 | 看三条验收报告 | `build/reports/s07_planner_acceptance.json` |
 | 看黄金场景集（S08 性能基线复用它） | `dualarm_ws/src/rmctl/tests/golden/planner_scenarios.json` |
 | 跑性能基准（优化前 vs 优化后对比表） | `python3 scripts/rm_planner_perf.py` → `build/reports/s08_planner_perf.json` |
+| 跑克隆探针（克隆成本 + 笛卡尔可行性） | `python3 scripts/rm_planner_clone_probe.py` → `build/reports/s08_clone_probe.json` |
 | 规划配置（唯一来源，只读） | `workcell/planner/pipeline.yaml` + `workcell/planner/profiles.yaml` |
 
 > **诚实分层（贯穿全文）**：本轮证据为**离线层** —— 真实规划内核
@@ -642,14 +643,133 @@ baseline 的任何结论**。
 3. **`max_time_scaling` 提到 3.0**：只放宽「允许多慢」，不放宽限值；
    但它同时是请求侧 `constraints.time_scaling` 的上限 → 客户端可请求的
    上限随之放宽（**这是行为变化，不是纯性能变化**）。
-4. **笛卡尔克隆**：本切片不交付笛卡尔路径规划功能 —— 厂商
-   `CartesianPipeline` 实测跑不通（`Failed to build graph`），根因是
-   Descartes 需要多组冗余 IK 种子，7 自由度单链在 KDL 下拿不到
-   （属自研 TRAC-IK 的远期项）。详见 **S08/T05** 的原型与范围判定。
+4. **笛卡尔克隆**：本切片**不交付**笛卡尔路径规划功能 —— 探针实测
+   （§13）：纯平移的笛卡尔路径能跑通（TCP 跟踪偏差 ~1.9 mm），但
+   **带姿态约束**的笛卡尔路径失败（`DescartesMotionPlannerTask: Failed to
+   build graph`），根因是 Descartes 需要多组冗余 IK 种子，7 自由度单链在
+   KDL 下拿不到（属自研 TRAC-IK 的远期项）。详见 **§13**。
 
 ---
 
-## 13. 关联索引
+## 13. 笛卡尔克隆原型与范围判定（S08/T05）
+
+### 13.1 交付形态与范围声明
+
+切片标题里的第三项「笛卡尔克隆」在当前栈里**没有可直接交付的功能形态**
+（厂商 `CartesianPipeline` 存在，但带姿态约束的笛卡尔路径跑不通，见
+§13.4）。因此本切片按**原型级形态**诚实交付三样东西：
+
+1. **环境克隆成本画像**（`Environment.clone()`：耗时 / 内存 / 隔离性）；
+2. **笛卡尔管线可行性探针**（可复现的结论 + **原始错误信息**）；
+3. **明确的 out-of-scope 声明**。
+
+> **范围声明（逐字写进报告 `scope_statement`）**：
+> 本切片不交付笛卡尔路径规划功能；笛卡尔路径依赖自研 TRAC-IK（远期）。
+> 「笛卡尔克隆」以「环境克隆成本画像 + 笛卡尔管线可行性探针」的原型形态交付。
+
+探针脚本：`scripts/rm_planner_clone_probe.py` →
+`build/reports/s08_clone_probe.json`（运行时产物，gitignore）。
+退出码 `0` = 探针跑完且**隔离性断言全部通过**（笛卡尔**不可行**是**预期
+结论**，不算失败）；`4` = 探针自身异常。
+
+### 13.2 环境克隆成本画像（实测）
+
+克隆对象 = 规划模型 env（8 个 link，`revision=3`），连续 clone 5 次：
+
+| 指标 | 实测值（逐次记录在报告 `clone_profile.clones`） |
+|---|---|
+| 单次克隆耗时 | 均 **≈ 3.0 ms**（逐次 2.99–3.10 ms） |
+| 单次克隆 RSS 增量 | 均 **≈ 12.8 MB**（`/proc/self/status` 的 `VmRSS` 前后差，**含克隆体的碰撞世界**） |
+| 5 次累计 RSS 增量 | **≈ 64 MB** |
+| 克隆体 link 数 / revision | 与原 env **完全一致**（8 / 3） |
+
+**「每规划器一份克隆」的预算**（`num_planners=2`，取自
+`workcell/planner/pipeline.yaml`）：**≈ 6 ms + ≈ 26 MB** → 相对
+worker 峰值 RSS **≈ 323 MB**（§12.4 / §13.5）**可忽略**（~8%）。
+结论：**每规划器一份环境克隆在成本上可行**（时间上不到 6 ms，内存上是
+两位数 MB 量级），但它**不是**内存治理的杠杆（见 §13.5）。
+
+### 13.3 场景隔离性（逐项断言，不是"看起来对"）
+
+在 `clone1` 上加一个盒子障碍物（`probe_obstacle`，0.2³ m，放在 TCP 处
+z = 0.8505 m）后，逐项断言：
+
+| 断言 | 实测 |
+|---|---|
+| `clone1_received_obstacle` | clone1 的 link 集合多出 `probe_obstacle` ✔ |
+| `clone2_links_unchanged` | clone2 的 link 集合 = 原 env ✔ |
+| `original_links_unchanged` | 原 env 的 link 集合未变 ✔ |
+| `clone1_collides_with_obstacle` | clone1 在探针状态下**接触数 = 2**（障碍物真的落在机器人上）✔ |
+| `clone2_collision_state_matches_original` | clone2 接触数 **0** = 原 env 接触数 **0** ✔ |
+
+→ **结论**：厂商 `Environment.clone()` 的 scene graph 与**碰撞状态**都
+**完全隔离** → 「每个规划器一份环境」在语义上成立（不会出现一个规划器
+的障碍物漏到另一个规划器里）。
+
+### 13.4 笛卡尔管线可行性探针（可复现证据）
+
+探针跑在**子进程**里（有限超时保护，厂商卡死 / 崩溃不影响脚本），
+用厂商 `create_cartesian_pipeline_profiles()` 构造笛卡尔管线：
+
+| 用例 | 管线 / 路点 | 结果 | 原始错误 |
+|---|---|---|---|
+| `translation_only_3wp` | `CartesianPipeline` / 3 路点**纯平移** | **成功**（11 点轨迹，TCP 跟踪偏差最大 **1.89 mm** ≤ 10 mm 容差） | — |
+| `orientation_change_3wp` | `CartesianPipeline` / 3 路点**带姿态变化** | **失败** | `DescartesMotionPlannerTask: Failed to build graph` |
+| `orientation_change_redundant_ik` | `DescartesFPipeline` + `use_redundant_joint_solutions=True` | **失败** | `DescartesMotionPlannerTask: Failed to build graph` |
+| `orientation_change_kdl_ik` | `DescartesFPipeline` + `ik_solver="KDL"` | **失败** | `DescartesMotionPlannerTask: Failed to build graph` |
+| `single_waypoint` | `CartesianPipeline` / 1 路点 | **失败** | `TrajOptPlanner failed to generate problem: TrajOpt JointVelTermInfo requires at least two states` |
+
+厂商 stderr 原文（报告 `cartesian_pipeline.vendor_evidence`）：
+
+```
+Warning: Failed vertices:
+	2
+Warning: Failed edges:
+	1
+Error:   LadderGraphSolver failed to build graph.
+```
+
+**判据与结论**（报告字段 `cartesian_pipeline.feasible`）：
+
+* 可行 = **带姿态约束的用例全部成功** 且 **TCP 跟踪偏差 ≤ 10 mm**；
+* 实测 **`feasible = false`** —— 带姿态约束的笛卡尔路径失败，
+  **根因**：Descartes 需要为每个路点拿到**多组冗余 IK 种子**才能连成
+  ladder graph，而 7 自由度**单链**在 KDL 下拿不到（这是自研 TRAC-IK 的活，
+  属远期项）；
+* **尝试过的补救项**（全部无效，见上表）：`use_redundant_joint_solutions=True`
+  / `ik_solver=KDL` / `assignCurrentStateAsSeed`（当前状态作笛卡尔种子）/
+  **纯笛卡尔目标**（无关节目标混入）。
+
+**与研究预期的一处偏差（如实记录）**：切片计划与研究都预期「笛卡尔管线
+整体跑不通」。实测更精确：**纯平移**的笛卡尔路径**能跑通**（跟踪偏差
+1.89 mm），**跑不通的是带姿态约束的笛卡尔路径**。这不改变交付结论 ——
+本切片仍**不交付**笛卡尔路径规划功能：它没有接入 rmctl 请求链路
+（`pipeline.yaml` 的管线名仍是 `FreespacePipeline`）、没有走四道校验、
+没有确定性验证，也没有姿态约束下的 IK 冗余。
+
+### 13.5 内存治理的因果链与实测曲线
+
+内存治理的**唯一有效杠杆仍然是降点数**（不是克隆、不是关碰撞裕度）：
+
+* 厂商 TrajOpt **每个轨迹点克隆一份完整碰撞世界**（trajopt#625）
+  → **点数线性决定内存**：329 点 ≈ **4729.74 MB**，14 点 ≈ **324.55 MB**
+  （§12.5 / `build/reports/s08_planner_perf.json`）；
+* 而**环境克隆**本身是**一次性、可控**的成本：~3.0 ms + ~12.8 MB/份，
+  `num_planners=2` 时合计 ≈ 6 ms + ≈ 26 MB（§13.2）—— 相对 ~324 MB
+  的 worker 峰值可忽略；
+* 因此 T04 固化的档位（`planner_range=0.3`）**无需再调**：T05 复核重跑
+  `python3 scripts/rm_planner_perf.py --out build/reports/s08_planner_perf.json`
+  （退出码 0，14 条场景 status 全匹配），报告里 optimized 档 worker 峰值 RSS
+  **323.47 MB < 500 MB** ✔（成功率 1.0、`success_only` p95 0.347 s ≤ 1.0 s ✔）。
+  （§12 引用的 324.55 MB / 0.304 s 是 T04 那次跑的**同一口径** —— 同一台机器、
+  同一场景集，两次相差 ~1 MB / 0.04 s，属采样噪声，不是趋势。）
+
+**明确不做**：靠关闭碰撞裕度（`collision_cost_config.enabled`）降内存 ——
+它会削弱避障裕度，与四道校验的保守性冲突（§12.6）。
+
+---
+
+## 14. 关联索引
 
 * 需求：R002（四道校验）、R009（性能口径）、R010（上手体验与操作效率）、
   R013（零编译主线）。
@@ -666,3 +786,6 @@ baseline 的任何结论**。
   → `build/reports/s07_planner_acceptance.json`。
 * 性能基准脚本：`scripts/rm_planner_perf.py`
   → `build/reports/s08_planner_perf.json`（前后对比表，口径见 §12.3–§12.7）。
+* 克隆探针脚本：`scripts/rm_planner_clone_probe.py`
+  → `build/reports/s08_clone_probe.json`（克隆成本画像 / 隔离性断言 /
+  笛卡尔可行性，结论见 §13）。
