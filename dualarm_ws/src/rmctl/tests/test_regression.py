@@ -290,10 +290,17 @@ def test_normalize_unknown_status_is_fail():
 # ---------------------------------------------------------------------------
 # 注册表
 # ---------------------------------------------------------------------------
-def test_registry_exposes_three_evidence_chains():
-    """本任务收编三条既有证据链（后续任务各自追加注册行）。"""
+def test_registry_exposes_registered_segments():
+    """注册表暴露全部已注册段（S09/T2 收编三条既有证据链；S09/T3 追加规划段）。
+
+    段集合是**逐任务追加**的：新增段必须在本用例里显式登记 → 段集合被
+    意外改动时**立刻**暴露（不静默增删证据链）。
+    """
     assert orch.segment_ids() == ["gripper_offline", "process_offline",
-                                  "planner_acceptance"]
+                                  "planner_golden", "planner_acceptance"]
     for seg_id, spec in orch.SPECS.items():
         assert os.path.isfile(os.path.join(REPO_ROOT, spec.script)), spec
         assert spec.report_name.endswith(".json"), spec
+        # 各段报告文件互不覆盖（否则一段的证据会覆盖另一段）
+        names = [item.report_name for item in orch.SPECS.values()]
+        assert len(names) == len(set(names)), names

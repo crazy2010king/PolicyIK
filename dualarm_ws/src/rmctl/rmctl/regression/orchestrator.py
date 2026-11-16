@@ -529,6 +529,15 @@ register_segment(SegmentSpec(
 ))
 
 register_segment(SegmentSpec(
+    seg_id="planner_golden",
+    script="scripts/rm_planner_golden.py",
+    report_name="s09_segment_planner_golden.json",
+    mode="offline",
+    requires=(),
+    timeout_s=300.0,
+))
+
+register_segment(SegmentSpec(
     seg_id="planner_acceptance",
     script="scripts/rm_planner_acceptance.py",
     report_name="s09_segment_planner_acceptance.json",
