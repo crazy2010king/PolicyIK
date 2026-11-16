@@ -1,0 +1,55 @@
+# 工艺任务规格：取放工艺（pick_place）
+#
+# 本文件是「工艺长什么样」的**唯一来源**：声明式、可 diff、可评审、版本化（git 跟踪）。
+# 加载器 = rmctl.process.spec.load_task_spec（唯一入口）；代码里**不写死**段序列。
+#
+# 单位约定：
+#   * 关节角单位为**度**（home_joints_deg / goal_joints_deg）；
+#     度→弧度的换算在客户端层完成（唯一换算点），本层只做值域校验。
+#   * goal_pose 为**可选**的笛卡尔目标形式：[x, y, z, r, p, y]（米 + 弧度），
+#     与 goal_joints_deg **二选一**（都给或都缺 → blocked，代码不猜）。
+#     本工艺只用点到点（关节角），笛卡尔形式留作同一段类型的另一种目标。
+#
+# 其他约定：
+#   * **恢复阶梯上限不在本文件**：唯一来源 =
+#     workcell/rm_workcell.yaml::gripper.max_regrasp +
+#     rm_hw_bridge.gripper_state.RECOVERY_LADDER（规格里出现会被 blocked）。
+#   * iterations 上限 50（连续 ≤50 圈后强制人工检查）。
+#   * 每圈最后一段回到 home，保证下一圈规划起点一致。
+version: 1
+name: pick_place
+iterations: 50
+home_joints_deg: [0, 0, 0, 0, 0, 0, 0]
+segments:
+  - name: approach_pick
+    type: motion
+    goal_joints_deg: [0, 20, 30, 0, 0, 0, 0]
+
+  - name: grasp
+    type: gripper
+    action: close
+    speed: 100
+    force: 100
+    expect: grasp_ok
+
+  - name: lift
+    type: motion
+    goal_joints_deg: [0, 25, 35, 0, 0, 0, 0]
+
+  - name: place_approach
+    type: motion
+    goal_joints_deg: [10, 20, 30, 0, 0, 0, 0]
+
+  - name: release
+    type: gripper
+    action: open
+    speed: 100
+    expect: grasp_empty
+
+  - name: retreat
+    type: motion
+    goal_joints_deg: [0, 20, 30, 0, 0, 0, 0]
+
+  - name: home
+    type: motion
+    goal_joints_deg: [0, 0, 0, 0, 0, 0, 0]
