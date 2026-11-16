@@ -50,6 +50,9 @@ usage() {
             恒跑——零硬件也能回归）、
             **双臂紧协调回归**（RM75 解析 IK / 双臂 14 维限位 / 共享时间轴双轨迹 /
             最小坐标参数化 / 最小坐标凸区域 / 协调规划 / 协调指标脚本 / 协调 CLI，
+            恒跑——零硬件也能回归）、
+            **任务原语与感知回归**（任务 schema / 10 个原语 / 任务状态机 /
+            双臂搬运与交接 / 感知适配 / 原语级指标口径 / task CLI，
             恒跑——零硬件也能回归）。
   medium    在 fast 之上追加：constraints ↔ versions.lock 依赖锁一致性、
             package:// 解析测试、wheel 离线归档 sha256 校验（归档缺失时 SKIP）。
@@ -281,6 +284,25 @@ BIMANUAL_COORDINATION_TESTS=(
 )
 run_check "tests/bimanual-coordination" "双臂紧协调回归（零硬件：解析 IK / 双臂限位 / 共享时间轴 / 最小坐标参数化 / 凸区域 / 协调规划 / 指标脚本 / 协调 CLI）" -- \
     "$PYTHON" -m pytest -q "${BIMANUAL_COORDINATION_TESTS[@]}"
+
+# 12) **任务原语与感知回归（零硬件）**（S06-T08 接入）。
+#     任务 schema 校验 / 10 个原语 / 任务状态机 / 双臂搬运与交接 /
+#     感知适配（非阻塞事件 + 保守膨胀 + 重建 checker）/ 原语级指标口径 /
+#     task CLI 与 task_stats 脚本。
+#     全部可在**无真机、无 SDK** 的环境里被真实验证 ⇒ **恒跑**，不得 SKIP。
+#     新增项失败即整体失败（run_check 的语义，绝不降级成 run_check_skippable）。
+TASK_TESTS=(
+    tests/test_tasks_schema.py
+    tests/test_tasks_primitives.py
+    tests/test_tasks_state_machine.py
+    tests/test_tasks_bimanual.py
+    tests/test_tasks_perception.py
+    tests/test_tasks_metrics.py
+    tests/test_tasks_cli.py
+)
+run_check "tests/tasks" "任务原语与感知回归（零硬件：schema / 原语 / 状态机 / 双臂 / 感知 / 指标 / CLI）" -- \
+    "$PYTHON" -m pytest -q "${TASK_TESTS[@]}"
+
 
 # --------------------------------------------------------------------------- #
 # medium 档

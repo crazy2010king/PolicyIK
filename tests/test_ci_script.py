@@ -150,3 +150,48 @@ def test_ci_usage_mentions_bimanual_coordination():
     result = run_ci("--help", timeout=60)
     assert result.returncode == 0
     assert "紧协调" in result.stdout
+
+
+def test_ci_fast_tier_runs_task_primitives_suite():
+    """fast 档必须纳入「任务原语与感知」回归项（S06-T08）。
+
+    任务 schema / 原语 / 状态机 / 双臂搬运交接 / 感知适配 / 原语级指标 /
+    task CLI 全部**零硬件即可验证** ⇒ 必须**恒跑**，不得 SKIP。
+    """
+    result = run_ci("fast")
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "tests/tasks" in combined
+    assert "[SKIP] tests/tasks" not in combined
+
+
+def test_ci_task_primitives_check_fails_the_build():
+    """新增的任务原语回归项失败即整体失败（不得被降级成 SKIP）。"""
+    text = CI_SCRIPT.read_text(encoding="utf-8")
+    assert (
+        'run_check "tests/tasks"' in text
+    ), "任务原语回归项必须用 run_check（失败即整体失败）"
+    assert 'run_check_skippable "tests/tasks"' not in text
+
+
+def test_ci_task_primitives_check_covers_s06_task_tests():
+    """常驻项必须覆盖 S06 的全部任务测试文件（漏一个 ⇒ 该文件不再是门禁）。"""
+    text = CI_SCRIPT.read_text(encoding="utf-8")
+    expected = (
+        "tests/test_tasks_schema.py",
+        "tests/test_tasks_primitives.py",
+        "tests/test_tasks_state_machine.py",
+        "tests/test_tasks_bimanual.py",
+        "tests/test_tasks_perception.py",
+        "tests/test_tasks_metrics.py",
+        "tests/test_tasks_cli.py",
+    )
+    for path in expected:
+        assert path in text, f"fast 档常驻项必须覆盖 {path}"
+
+
+def test_ci_usage_mentions_task_primitives_suite():
+    """--help 必须说明 fast 档已含任务原语与感知回归（避免"以为没跑"）。"""
+    result = run_ci("--help", timeout=60)
+    assert result.returncode == 0
+    assert "任务原语" in result.stdout
