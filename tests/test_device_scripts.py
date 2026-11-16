@@ -8,7 +8,7 @@
   与 CLI 的 ``exec`` 子命令完全一致）；
 * **离线演练（``--dry-run``）永远标注「不代表真机指标」**，且仍列出
   未验证指标（不得因为跑了个替身就把真机指标说成已验证）；
-* 故障注入脚本的**四类故障**都必须走完「注入 → 安全态 → 恢复 → READY」；
+* 故障注入脚本的**五类故障**都必须走完「注入 → 安全态 → 恢复 → READY」；
 * **负例**：未知参数 / 缺设备配置 / 非法位姿 → 退出码 2（用法错误），
   不得被当成「SKIP 成功」。
 
@@ -36,8 +36,8 @@ FAULT_INJECT = SCRIPTS_DIR / "fault_inject.py"
 #: 三个脚本都必须存在（缺一个 ⇒ 硬件门控入口不完整）。
 ALL_SCRIPTS = (MEASURE_JITTER, SOAK_TEST, FAULT_INJECT)
 
-#: 四类故障的人类可读标签（脚本输出里必须逐条出现）。
-FAULT_LABELS = ("拔网线", "物体掉落", "夹爪夹空", "关节超限位")
+#: 五类故障的人类可读标签（脚本输出里必须逐条出现）。
+FAULT_LABELS = ("拔网线", "物体掉落", "夹爪夹空", "关节超限位", "供电跌落")
 
 
 def run_script(script: Path, *args: str, timeout: int = 300) -> subprocess.CompletedProcess:
@@ -196,8 +196,8 @@ def test_soak_test_rejects_non_positive_duration():
     assert result.returncode == 2, result.stdout + result.stderr
 
 
-def test_fault_inject_offline_rehearsal_covers_four_faults():
-    """离线演练：四类故障逐条「注入 → 安全态 → 恢复 → READY」全绿。"""
+def test_fault_inject_offline_rehearsal_covers_five_faults():
+    """离线演练：五类故障逐条「注入 → 安全态 → 恢复 → READY」全绿。"""
     result = run_script(
         FAULT_INJECT, "--json", "--device-config", str(DEVICE_CONFIG)
     )
@@ -205,7 +205,7 @@ def test_fault_inject_offline_rehearsal_covers_four_faults():
     assert result.returncode == 0, combined
     payload = json.loads(result.stdout)
     assert payload["physical_faults_verified"] is False
-    assert len(payload["cases"]) == 4
+    assert len(payload["cases"]) == 5
     for case in payload["cases"]:
         assert case["ok"] is True, case
         assert case["recovered"] is True, case
@@ -214,7 +214,7 @@ def test_fault_inject_offline_rehearsal_covers_four_faults():
 
 
 def test_fault_inject_offline_rehearsal_lists_all_fault_labels():
-    """四类故障的标签必须逐条出现在输出里（便于人工核对）。"""
+    """五类故障的标签必须逐条出现在输出里（便于人工核对）。"""
     result = run_script(FAULT_INJECT, "--device-config", str(DEVICE_CONFIG))
     assert result.returncode == 0, result.stdout + result.stderr
     for label in FAULT_LABELS:
@@ -235,6 +235,53 @@ def test_fault_inject_only_single_case():
     payload = json.loads(result.stdout)
     assert len(payload["cases"]) == 1
     assert payload["cases"][0]["key"] == "link_down"
+
+
+def test_fault_inject_only_power_supply_drop():
+    """``--only power_supply_drop`` 只跑第五类故障，且全链闭合。"""
+    result = run_script(
+        FAULT_INJECT,
+        "--json",
+        "--only",
+        "power_supply_drop",
+        "--device-config",
+        str(DEVICE_CONFIG),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(result.stdout)
+    assert len(payload["cases"]) == 1
+    case = payload["cases"][0]
+    assert case["key"] == "power_supply_drop"
+    assert case["detected_reason"] == "power_supply_drop"
+    assert case["safe_state"] == "fault"
+    assert case["final_state"] == "ready"
+    assert case["recovered"] is True
+    assert case["ok"] is True
+
+
+def test_fault_inject_covered_metric_matches_hardware_gate_truth_source():
+    """真相源一致性：脚本的 ``COVERED_METRIC`` 必须与门控清单**逐字相同**。
+
+    两处措辞一旦漂移，差集（``m != COVERED_METRIC``）会把未验证的物理故障
+    从未验证清单里抹掉 ⇒ 等于把「没测」伪装成「已测」。
+    """
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    import importlib.util
+
+    from rm75_drake.device.hardware_gate import UNVERIFIED_HARDWARE_METRICS
+
+    spec = importlib.util.spec_from_file_location(
+        "fault_inject_script", str(FAULT_INJECT)
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    # dataclass 装饰器需要模块已在 sys.modules 中（否则解析 __module__ 失败）。
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    fault_metrics = [m for m in UNVERIFIED_HARDWARE_METRICS if "故障注入的物理验证" in m]
+    assert len(fault_metrics) == 1, UNVERIFIED_HARDWARE_METRICS
+    assert module.COVERED_METRIC == fault_metrics[0]
 
 
 # --------------------------------------------------------------------------- #

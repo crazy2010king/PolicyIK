@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""四类故障注入的**人工操作编排**与恢复流程校验（S03-T08）。
+"""五类故障注入的**人工操作编排**与恢复流程校验（S03-T08）。
 
-四类故障（研究 F1）
+五类故障（研究 F1）
 ------------------
 ====================  ==========================  ========================
 故障                  物理操作（人工）            期望安全态
@@ -10,12 +10,16 @@
 物体掉落              夹爪上的物体掉落            ``HOLDING``
 夹爪夹空              夹爪空夹 / 未夹到            ``HOLDING``
 关节超限位            手动撞限位 / 关节报错        ``FAULT``
+供电跌落              断开供电或制造欠压          ``FAULT``
 ====================  ==========================  ========================
+
+第五类「供电跌落」由**帧级系统错误码**（``errCode``）承载，reason 标签为
+``power_supply_drop``（本项目自定的稳定标签，**不代表厂商错误码表**）。
 
 两种模式
 --------
 * **默认（离线演练）**：用传输层替身
-  （:class:`~rm75_drake.device.transport.ScriptedTransport`）精确注入四类故障，
+  （:class:`~rm75_drake.device.transport.ScriptedTransport`）精确注入五类故障，
   逐条走「注入 → 安全态 → 恢复 → 回到 READY 且 q 已重同步」，
   **并明确标注「物理故障未验证」**——流程正确 ≠ 物理故障已复现；
 * **``--hardware``（真机）**：按 runbook 打印**逐步人工操作**，
@@ -72,6 +76,7 @@ from rm75_drake.device.recovery import (  # noqa: E402
     REASON_GRIPPER_OFFLINE,
     REASON_JOINT_ERROR,
     REASON_LINK_DOWN,
+    REASON_POWER_SUPPLY_DROP,
     RecoveryProcedure,
     classify_fault,
     enter_safe_state,
@@ -89,13 +94,16 @@ EXIT_FAILURE = 1
 EXIT_USAGE = 2
 
 #: 本脚本**覆盖**的指标（其它指标仍未验证，必须列出）。
-COVERED_METRIC = "四类故障注入的物理验证（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位）"
+COVERED_METRIC = "五类故障注入的物理验证（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位 / 供电跌落）"
 
 #: 期望的夹爪位置（0–1000）——夹爪夹空判定用。
 GRIPPER_TARGET = 500
 
 #: 真机模式下等待人工注入故障的超时（s）。
 INJECT_TIMEOUT_S = 30.0
+
+#: 离线演练注入的帧级系统错误码（非 0 且非 ``-3`` ⇒ 系统错误）。
+POWER_SUPPLY_DROP_ERR_CODE = 1
 
 
 @dataclass(frozen=True)
@@ -123,7 +131,7 @@ class FaultCase:
     manual_steps: Tuple[str, ...]
 
 
-#: 四类故障（顺序即 runbook 里的操作顺序）。
+#: 五类故障（顺序即 runbook 里的操作顺序）。
 FAULT_CASES: Tuple[FaultCase, ...] = (
     FaultCase(
         key="link_down",
@@ -173,6 +181,18 @@ FAULT_CASES: Tuple[FaultCase, ...] = (
             "按厂商流程清错后执行恢复流程。",
         ),
     ),
+    FaultCase(
+        key="power_supply_drop",
+        label="供电跌落（帧级系统错误码）",
+        expected_reason=REASON_POWER_SUPPLY_DROP,
+        expected_state=DeviceState.FAULT,
+        manual_steps=(
+            "确认急停手柄可用、周围无人、机械臂处于可控姿态。",
+            "按现场安全规程断开机械臂供电或制造欠压。",
+            "观察脚本是否检测到 power_supply_drop 并进入故障态。",
+            "恢复供电后按厂商顺序清错（rm_set_joint_clear_err → rm_clear_system_err）并执行恢复流程。",
+        ),
+    ),
 )
 
 
@@ -182,8 +202,13 @@ def _frame(
     *,
     enabled: bool = True,
     received_at: float = 0.0,
+    err_code: int = 0,
 ) -> StateFrame:
-    """构造一帧状态（默认：全零位、无错、全使能）。"""
+    """构造一帧状态（默认：全零位、无错、全使能）。
+
+    ``err_code`` 是**帧级系统错误码**：非 0 且非 ``-3`` ⇒ 系统错误
+    （本项目用它承载「供电跌落」）；``-3`` 是帧不完整标记。
+    """
     return StateFrame(
         joint_positions_rad=tuple(positions or [0.0] * 7),
         joint_currents_ma=(0.0,) * 7,
@@ -193,7 +218,7 @@ def _frame(
         gripper_online=True,
         arm_current_status=0,
         received_at=received_at,
-        err_code=0,
+        err_code=int(err_code),
     )
 
 
@@ -223,7 +248,7 @@ def _procedure(
 def _inject_offline(
     transport: ScriptedTransport, case: FaultCase, frame: StateFrame
 ) -> None:
-    """在替身上精确注入故障（**四类故障一一对应**）。"""
+    """在替身上精确注入故障（**五类故障一一对应**）。"""
     if case.key == "link_down":
         transport.drop_link()
     elif case.key == "object_dropped":
@@ -232,6 +257,11 @@ def _inject_offline(
         transport.set_gripper_position(GRIPPER_TARGET // 2)
     elif case.key == "joint_overlimit":
         transport.push_frame(_frame(err_codes=[7, 0, 0, 0, 0, 0, 0]))
+    elif case.key == "power_supply_drop":
+        # 帧级系统错误码承载「供电跌落」：必须**真的推帧**，
+        # 否则 read_state() 返回的仍是健康帧 ⇒ 故障检测不到。
+        transport.set_system_error(POWER_SUPPLY_DROP_ERR_CODE)
+        transport.push_frame(_frame(err_code=POWER_SUPPLY_DROP_ERR_CODE))
     else:  # pragma: no cover - 防御
         raise ValueError(f"未知故障类型：{case.key}")
 
@@ -253,6 +283,9 @@ def _fix_offline(
         transport.set_gripper_position(GRIPPER_TARGET)
     elif case.key == "joint_overlimit":
         pass  # 错误码由恢复流程的 clear_error 步骤清除
+    elif case.key == "power_supply_drop":
+        # 模拟「供电已恢复」：帧级系统错误码归零（恢复流程的 clear_error 会再清一次）。
+        transport.set_system_error(0)
     else:  # pragma: no cover - 防御
         raise ValueError(f"未知故障类型：{case.key}")
     transport.set_gripper_offline(False)
@@ -372,7 +405,7 @@ def run_hardware_case(
 def build_parser() -> argparse.ArgumentParser:
     """构造命令行解析器。"""
     parser = argparse.ArgumentParser(
-        description="四类故障注入的人工编排与恢复流程校验（真机不可达时 SKIP）"
+        description="五类故障注入的人工编排与恢复流程校验（真机不可达时 SKIP）"
     )
     add_common_arguments(parser)
     parser.add_argument(
@@ -384,7 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--only",
         default=None,
         choices=[case.key for case in FAULT_CASES],
-        help="只演练其中一类故障（默认全部四类）",
+        help="只演练其中一类故障（默认全部五类）",
     )
     parser.add_argument(
         "--inject-timeout-s",
