@@ -20,10 +20,26 @@ monkeypatch 的检查项集合里构造。
 import json
 import os
 
+import numpy as np
 import pytest
 
 from rmctl import cli
 from rmctl import doctor
+
+#: **恒在列**的既有检查项（与本机是否有厂商库 / 真机 / 模型物化无关）。
+ALWAYS_PRESENT_CHECKS = (
+    "workspace", "model:urdf", "model:srdf", "model:joint_limits",
+    "dep:nanobind", "model:load", "baselines:present", "limits:measured",
+    "hw:sdk", "hw:symbols", "hw:contract", "hw:limits_source", "hw:gripper",
+    # 新增的一等检查项
+    "network:plan", "zero:baseline", "power:supply", "controller:state",
+)
+
+#: **依赖模型加载成功**才产生的既有检查项（既有级联语义：model:load 失败
+#: → 这三条被**跳过**，不是「通过」；见 Q5 / MEM012 / MEM030）。
+MODEL_DEPENDENT_CHECKS = (
+    "fk:self_vs_tesseract", "collision:home", "limits:consistent",
+)
 
 
 def _run(capsys, argv):
@@ -213,19 +229,106 @@ def test_exit_codes_match_executor_contract():
 
 # --------------------------------------------------------- 既有检查项不回归
 def test_existing_check_names_still_present(capsys, repo_root):
-    """既有检查项一条不少（外加新增的 4 条一等检查项）。"""
+    """既有检查项一条不少（外加新增的 4 条一等检查项）。
+
+    **稳健断言**：FK / 碰撞 / 限值一致性三条依赖 ``model:load`` 成功才产生
+    （既有级联语义，见 Q5 / MEM012 / MEM030）——model 不可加载时它们被
+    **跳过**，此时覆盖矩阵里对应类别必须标 ``covered=false``（不是「通过」）。
+    """
     _, out = _run(capsys, ["--ws", repo_root, "doctor", "--json"])
-    names = {c["name"] for c in json.loads(out)["checks"]}
-    for expected in ("workspace", "model:urdf", "model:srdf",
-                     "model:joint_limits", "dep:nanobind", "model:load",
-                     "fk:self_vs_tesseract", "collision:home",
-                     "limits:consistent", "baselines:present",
-                     "limits:measured", "hw:sdk", "hw:symbols", "hw:contract",
-                     "hw:limits_source", "hw:gripper",
-                     # 新增一等检查项
-                     "network:plan", "zero:baseline", "power:supply",
-                     "controller:state"):
+    payload = json.loads(out)
+    names = {c["name"] for c in payload["checks"]}
+    for expected in ALWAYS_PRESENT_CHECKS:
         assert expected in names, (expected, sorted(names))
+    by_name = {c["name"]: c for c in payload["checks"]}
+    matrix = {e["category"]: e for e in payload["coverage_matrix"]}
+    if by_name["model:load"]["ok"]:
+        for expected in MODEL_DEPENDENT_CHECKS:
+            assert expected in names, (expected, sorted(names))
+    else:
+        # 级联跳过：不在列 + 覆盖矩阵显式标缺口（绝不标「通过」）
+        for expected in MODEL_DEPENDENT_CHECKS:
+            assert expected not in names, (expected, sorted(names))
+        for cat in ("fk", "collision", "limits"):
+            assert matrix[cat]["covered"] is False, matrix[cat]
+            assert matrix[cat]["gap"], matrix[cat]
+            assert matrix[cat]["next_action"], matrix[cat]
+
+
+class _FakeUrdf(object):
+    """最小 URDF 视图（只需 doctor 用到的三个属性）。"""
+
+    def __init__(self, names):
+        self.joints = [{"name": n, "upper": 3.0, "lower": -3.0} for n in names]
+        self.rev = [{"name": n} for n in names]
+
+    def collisions(self, q):
+        return []
+
+
+class _FakeModel(object):
+    """最小模型（让 FK / 碰撞 / 限值一致性三条检查项必然产生）。"""
+
+    def __init__(self, ws=None, group="rm75_arm"):
+        self.group = group
+        self.joint_names = ["joint%d" % i for i in range(1, 8)]
+        self.link_names = ["base_link"] + self.joint_names
+        self.urdf = _FakeUrdf(self.joint_names)
+
+    def limit(self, joint):
+        return {"lower": -3.0, "upper": 3.0}
+
+    def fk_self(self, q, tip=None):
+        return np.eye(4)
+
+    def fk_tesseract(self, q, tip=None):
+        return type("Pose", (), {"x": 0.0, "y": 0.0, "z": 0.0})()
+
+
+def test_model_dependent_checks_present_when_model_loads(monkeypatch, capsys,
+                                                         repo_root):
+    """模型可加载 → FK / 碰撞 / 限值一致性三条**必然在列**（既有项不回归）。
+
+    用假 Model 钉死这一分支，避免依赖本机是否物化了 ``build/model``。
+    """
+    monkeypatch.setattr(doctor, "Model", _FakeModel)
+    _, out = _run(capsys, ["--ws", repo_root, "doctor", "--json"])
+    payload = json.loads(out)
+    names = {c["name"] for c in payload["checks"]}
+    for expected in MODEL_DEPENDENT_CHECKS:
+        assert expected in names, (expected, sorted(names))
+    by_name = {c["name"]: c for c in payload["checks"]}
+    assert by_name["model:load"]["ok"] is True
+    matrix = {e["category"]: e for e in payload["coverage_matrix"]}
+    for cat in ("fk", "collision", "limits"):
+        assert matrix[cat]["covered"] is True, matrix[cat]
+
+
+def test_model_dependent_checks_skipped_when_model_unavailable(monkeypatch,
+                                                                capsys,
+                                                                repo_root):
+    """模型不可加载 → 三条被**跳过**（不在列），对应类别 covered=false。
+
+    负例（Q5）：厂商库 / 模型不可用时绝不能把 FK 这类标成「通过」。
+    """
+    def _boom(ws=None, group="rm75_arm"):
+        raise RuntimeError("厂商库不可导入（模拟）")
+
+    monkeypatch.setattr(doctor, "Model", _boom)
+    _, out = _run(capsys, ["--ws", repo_root, "doctor", "--json"])
+    payload = json.loads(out)
+    names = {c["name"] for c in payload["checks"]}
+    for expected in MODEL_DEPENDENT_CHECKS:
+        assert expected not in names, (expected, sorted(names))
+    by_name = {c["name"]: c for c in payload["checks"]}
+    assert by_name["model:load"]["ok"] is False
+    assert by_name["model:load"]["level"] == "NEEDS_HUMAN"
+    matrix = {e["category"]: e for e in payload["coverage_matrix"]}
+    for cat in ("fk", "collision", "limits"):
+        assert matrix[cat]["covered"] is False, matrix[cat]
+        assert matrix[cat]["status"] == "missing", matrix[cat]
+        assert matrix[cat]["gap"], matrix[cat]
+        assert matrix[cat]["next_action"], matrix[cat]
 
 
 def test_new_checks_carry_copyable_actions(capsys, repo_root):
