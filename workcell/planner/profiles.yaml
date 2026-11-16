@@ -1,0 +1,12 @@
+# 规划 profile 配置（**唯一来源**，Python 只读不改 —— D001）
+#
+# 消费方：rm_planner 服务（硬超时 / 校验参数 / 场景版本）与 rmctl 客户端
+# （请求缺省值来源）。单位：timeout_ms = 毫秒（ms）；其余时间 = 秒（s）；
+# 长度 = 米（m）；角度 = 弧度（rad）。
+version: 1
+timeout_ms: 20000               # 服务端硬超时（毫秒）：超时 → 服务端 SIGKILL worker
+max_time_scaling: 1.5           # 允许的最大时间缩放系数（constraints.time_scaling ≤ 本值）
+collision_margin_m: 0.005       # 碰撞裕度（米）
+verify:
+  continuous: true              # 是否做连续碰撞复检（四道校验之一）
+scene_version: 1                # 世界模型版本号（请求里的 scene_version 不符 → 拒绝）

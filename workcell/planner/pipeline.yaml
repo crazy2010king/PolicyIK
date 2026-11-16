@@ -1,0 +1,10 @@
+# 规划管线配置（**唯一来源**，Python 只读不改 —— D001）
+#
+# 消费方：rm_planner 服务启动时读取（T2 任务），据此构造 Task Composer 管线。
+# 单位：时间 = 秒（s）；长度 = 米（m）；角度 = 弧度（rad）。
+version: 1
+pipeline: FreespacePipeline     # 管线名（Tesseract Task Composer）
+num_planners: 2                 # 单次规划并行的规划器个数
+planning_time_s: 5.0            # 单次规划时间上限（秒）
+planner_range: 0.01             # 采样范围（m）
+deterministic: true             # 确定性开关（同 seed → 同结果）
