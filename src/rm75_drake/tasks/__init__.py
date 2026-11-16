@@ -14,8 +14,11 @@
   （:func:`~rm75_drake.tasks.solver.solve_task`：numpy 快路径）。
 * :mod:`rm75_drake.tasks.state_machine` —— **任务状态机**
   （单一主状态源 + 原子 goal_id 推进；零 pydrake 依赖）。
-* （后续切片）:mod:`rm75_drake.tasks.bimanual` / :mod:`rm75_drake.tasks.metrics`
-  —— 双臂搬运/交接与原语级指标口径。
+* :mod:`rm75_drake.tasks.bimanual` —— **双臂搬运 / 交接原语**（S06-T05）：
+  复用 :mod:`rm75_drake.coordinated` 的**常数 ``X_LR``**（角色互换用
+  ``inv(X_LR)``）⇒ **不新建第二套协调规划**；交接点的相对位姿残差
+  ≤ 1e-6 m / ≤ 1e-6 rad。
+* （后续切片）:mod:`rm75_drake.tasks.metrics` —— 原语级指标口径。
 
 目录语义（**同名易混，必须分清**）
 --------------------------------
@@ -76,6 +79,7 @@ __all__ = [
     "PrimitiveResult",
     "TaskResult",
     "state_machine",
+    "bimanual",
     "TaskState",
     "TERMINAL_STATES",
     "TASK_STAGES",
@@ -86,7 +90,14 @@ __all__ = [
 ]
 
 #: 惰性子模块（PEP 562）：import 本包不拉起任何重依赖。
-_LAZY_MODULES = ("schema", "goals", "primitives", "solver", "state_machine")
+_LAZY_MODULES = (
+    "schema",
+    "goals",
+    "primitives",
+    "solver",
+    "state_machine",
+    "bimanual",
+)
 
 #: 从 ``schema`` 子模块透出的符号。
 _SCHEMA_EXPORTS = (
