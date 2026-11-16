@@ -21,6 +21,7 @@ __all__ = [
     "package_dir",
     "calibration_dir",
     "calibration_files_dir",
+    "task_files_dir",
     "models_dir",
     "scenarios_dir",
     "devices_dir",
@@ -75,6 +76,13 @@ calibration_dir = package_dir / "calibration"
 #:   * ``calibration_files_dir`` = ``<repo root>/calibration/`` → 部署实例（标定产出、采样）。
 #: 场景文件里的 ``calibration.base_extrinsic.file`` 相对路径按本目录解析。
 calibration_files_dir = REPO_ROOT / "calibration"
+
+#: **任务（部署实例）文件**目录（S06）：仓库根 ``tasks/`` 下的 ``*.yaml`` 任务定义。
+#: 与 :data:`rm75_drake.paths.package_dir` 下的 **Python 包** ``rm75_drake/tasks/``
+#: **同名易混，必须分清**（分层约定同 ``calibration_dir`` / ``calibration_files_dir``）：
+#:   * ``src/rm75_drake/tasks/`` → 代码包（schema / goals / primitives / ...）；
+#:   * ``<repo root>/tasks/``      → 部署实例数据（任务 YAML 定义）。
+task_files_dir = REPO_ROOT / "tasks"
 
 #: 仓库内模型根目录（package:// 的默认来源）。
 models_dir = REPO_ROOT / "models"

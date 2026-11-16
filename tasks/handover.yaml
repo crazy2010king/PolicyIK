@@ -1,0 +1,94 @@
+# 双臂交接任务链（S06 示例部署实例数据）。
+#
+# 语义：单臂接近 → 抓取 → 抬起 → 双臂共同搬运（bimanual transit）→ 交接（handover）
+#       → 释放 → 撤离。
+# 双臂原语的 target 是**相对 target_object 位姿的偏移量**（m / rad）。
+schema_version: 1
+name: handover
+description: "双臂共同搬运 crate_a 并完成交接（leader → follower 角色切换）"
+robot: dual_arm
+scenario: dual_arm.yaml
+objects:
+  - name: crate_a
+    half_size: [0.05, 0.05, 0.05]
+    pose:
+      xyz: [0.50, 0.0, 0.05]
+      rpy: [0.0, 0.0, 0.0]
+thresholds:
+  position_m: 0.008
+  orientation_rad: 0.08
+primitives:
+  - name: approach
+    goal_id: left_approach
+    kind: motion
+    target:
+      xyz: [0.50, -0.10, 0.20]
+      rpy: [0.0, 0.0, 0.0]
+    tolerance:
+      position_m: 0.01
+      orientation_rad: 0.1
+  - name: pre_grasp
+    goal_id: left_pre_grasp
+    kind: motion
+    target:
+      xyz: [0.50, -0.10, 0.12]
+      rpy: [0.0, 0.0, 0.0]
+    tolerance:
+      position_m: 0.005
+      orientation_rad: 0.05
+  - name: close
+    goal_id: left_close
+    kind: gripper
+    action: close
+    target_object: crate_a
+    hold_seconds: 0.5
+  - name: verify
+    goal_id: left_verify
+    kind: gripper
+    action: close
+    target_object: crate_a
+    hold_seconds: 0.2
+  - name: lift
+    goal_id: left_lift
+    kind: motion
+    target:
+      xyz: [0.50, -0.10, 0.22]
+      rpy: [0.0, 0.0, 0.0]
+    tolerance:
+      position_m: 0.005
+      orientation_rad: 0.05
+  - name: transit
+    goal_id: bimanual_transit
+    kind: bimanual_motion
+    target:
+      xyz: [0.0, 0.12, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    target_object: crate_a
+    tolerance:
+      position_m: 0.008
+      orientation_rad: 0.08
+  - name: handover
+    goal_id: bimanual_handover
+    kind: bimanual_motion
+    target:
+      xyz: [0.0, 0.0, 0.0]
+      rpy: [0.0, 0.0, 0.0]
+    target_object: crate_a
+    tolerance:
+      position_m: 0.008
+      orientation_rad: 0.08
+  - name: open
+    goal_id: right_open
+    kind: gripper
+    action: open
+    target_object: crate_a
+    hold_seconds: 0.3
+  - name: retreat
+    goal_id: right_retreat
+    kind: motion
+    target:
+      xyz: [0.50, 0.12, 0.22]
+      rpy: [0.0, 0.0, 0.0]
+    tolerance:
+      position_m: 0.01
+      orientation_rad: 0.1
