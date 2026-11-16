@@ -6,7 +6,10 @@
 * ``--help`` 输出里三档（fast / medium / nightly）齐全，并说明耗时预期；
 * **fast 档在当前仓库可跑通**（退出码 0）——CI 必须是"能跑的检查"，
   而不是一份躺在仓库里的空壳脚本；
-* 未知档位必须以退出码 2 显式失败（参数错误不得被当成通过）。
+* 未知档位必须以退出码 2 显式失败（参数错误不得被当成通过）；
+* **fast 档常驻回归与资产/许可门禁**（S07-T06）：会话录制回归、上游资产与许可门禁、
+  上游获取与许可门禁测试三者必须恒跑（PASS）且失败即整体失败；
+* **nightly 档不再是 no-op**：golden-file 回归与长稳离线演练必须是真实项。
 
 负例同样重要：坏档位不得静默返回 0。
 """
@@ -195,3 +198,47 @@ def test_ci_usage_mentions_task_primitives_suite():
     result = run_ci("--help", timeout=60)
     assert result.returncode == 0
     assert "任务原语" in result.stdout
+
+
+def test_ci_fast_tier_contains_regression_and_asset_gate_items():
+    """fast 档必须常驻：会话录制回归 / 上游资产与许可门禁 / 上游获取与许可门禁测试。
+
+    三者都**零硬件、不需要归档实体**即可验证 ⇒ 必须恒跑（PASS），不得 SKIP。
+    """
+    result = run_ci("fast")
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    for name in ("tests/regression", "assets/lock", "tests/upstream"):
+        assert f"[PASS] {name}" in combined, f"fast 档常驻项 {name} 必须 PASS"
+        assert f"[SKIP] {name}" not in combined, f"{name} 不得降级为 SKIP"
+
+
+def test_ci_regression_and_asset_gate_checks_fail_the_build():
+    """新增的三项必须用 run_check（失败即整体失败），不得降级成 run_check_skippable。"""
+    text = CI_SCRIPT.read_text(encoding="utf-8")
+    for name in ("tests/regression", "assets/lock", "tests/upstream"):
+        assert f'run_check "{name}"' in text, f"{name} 必须用 run_check（失败即整体失败）"
+        assert (
+            f'run_check_skippable "{name}"' not in text
+        ), f"{name} 不得降级成 run_check_skippable"
+
+
+def test_ci_usage_mentions_regression_and_asset_gate():
+    """--help 必须说明 fast 档已含回归与资产/许可门禁（避免"以为没跑"）。"""
+    result = run_ci("--help", timeout=60)
+    assert result.returncode == 0
+    assert "回归" in result.stdout
+    assert "资产" in result.stdout
+
+
+def test_ci_nightly_tier_runs_golden_and_soak_for_real():
+    """nightly 档的长稳/golden 必须是**真实项**，不再是 no-op 占位（S07-T06）。"""
+    text = CI_SCRIPT.read_text(encoding="utf-8")
+    nightly = text.split("# nightly 档")[-1]
+    assert "scripts/gen_golden.py" in nightly, "nightly 段必须调用 scripts/gen_golden.py --check"
+    assert "scripts/long_run.py" in nightly, "nightly 段必须调用 scripts/long_run.py（长稳离线演练）"
+    assert 'run_check "nightly/golden"' in text, "golden 回归必须用 run_check（失败即整体失败）"
+    assert 'run_check "nightly/soak"' in text, "长稳离线演练必须用 run_check（失败即整体失败）"
+    assert 'run_check_skippable "nightly/soak"' not in text
+    assert "长稳占位" not in text, "脚本全文不得再含「长稳占位」这类 no-op 表述"
+    assert "占位" not in text, "脚本全文不得再含「占位」这类 no-op 表述"

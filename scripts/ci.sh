@@ -4,7 +4,7 @@
 #
 #   bash scripts/ci.sh fast      # 目标 < 10 min：lint + 骨架单测 + 锁一致性 + 禁用接口扫描
 #   bash scripts/ci.sh medium    # fast + 依赖锁一致性 + package:// 解析 + wheel 归档校验
-#   bash scripts/ci.sh nightly   # medium + 规划统计与长稳占位（当前为明确标注的 no-op）
+#   bash scripts/ci.sh nightly   # medium + 规划统计 + golden-file 回归 + 长稳离线演练
 #
 # 设计约定
 # --------
@@ -53,13 +53,21 @@ usage() {
             恒跑——零硬件也能回归）、
             **任务原语与感知回归**（任务 schema / 10 个原语 / 任务状态机 /
             双臂搬运与交接 / 感知适配 / 原语级指标口径 / task CLI，
+            恒跑——零硬件也能回归）、
+            **会话录制回归**（session v1 产物 schema 与 golden-file 逐点一致比较，
+            恒跑——零硬件也能回归）、
+            **上游资产与许可门禁**（verify_env --upstream --licenses 三方交叉校验
+            + NOTICE 与许可登记表逐字一致，恒跑——不需要归档实体）、
+            **上游获取与许可门禁测试**（fetch_upstream / asset_license_gate，
             恒跑——零硬件也能回归）。
   medium    在 fast 之上追加：constraints ↔ versions.lock 依赖锁一致性、
             package:// 解析测试、wheel 离线归档 sha256 校验（归档缺失时 SKIP）。
   nightly   在 medium 之上追加：**规划统计真实调用**（scripts/plan_stats.py，
             默认 100 组随机起终点，规模/预算可用环境变量覆盖；
             超时按失败处理但打印实测值）、规划链路自检（verify_env --plan）、
-            长稳占位（golden-file 回归，属 S07）。
+            **golden-file 回归**（scripts/gen_golden.py --check，逐点一致基线，
+            失败即整体失败）、**长稳离线演练**（scripts/long_run.py --dry-run，
+            离线演练不等于真机长稳达标，真机 8 h 长稳需真机证据另行登记）。
 
 退出码
   0  全部检查通过（SKIP 项不算失败）
@@ -303,6 +311,37 @@ TASK_TESTS=(
 run_check "tests/tasks" "任务原语与感知回归（零硬件：schema / 原语 / 状态机 / 双臂 / 感知 / 指标 / CLI）" -- \
     "$PYTHON" -m pytest -q "${TASK_TESTS[@]}"
 
+# 13) **会话录制回归（零硬件）**（S07-T06 接入）。
+#     session v1 产物（独立 schema、顶层校验和、只读消费既有 recording/run_log）
+#     + golden-file 逐点一致离线回放比较器。
+#     全部可在**无真机、无归档实体**的环境里被真实验证 ⇒ **恒跑**，不得 SKIP。
+#     新增项失败即整体失败（run_check 的语义，绝不降级成 run_check_skippable）。
+REGRESSION_TESTS=(
+    tests/test_regression_session.py
+    tests/test_regression_golden.py
+)
+run_check "tests/regression" "会话录制回归（零硬件：session 产物 / golden 逐点一致）" -- \
+    "$PYTHON" -m pytest -q "${REGRESSION_TESTS[@]}"
+
+# 14) **上游资产与许可门禁**（S07-T06 接入）。
+#     verify_env --upstream --licenses：MANIFEST ↔ versions.lock:upstream ↔ registry
+#     三方交叉校验 + 许可门禁（包集覆盖 / 必填字段 / 上游 commit 声明）；
+#     gen_notice --check：仓库根 NOTICE 与 licenses/registry.yaml 逐字一致。
+#     两项都**不需要归档实体**（归档缺失只报告、不判不一致）⇒ **恒跑**，不得 SKIP。
+run_check "assets/lock" "上游资产三方交叉校验 + 许可门禁 + NOTICE 一致性（verify_env --upstream --licenses；gen_notice --check）" -- \
+    bash -c '"$1" tools/verify_env.py --upstream --licenses && "$1" tools/gen_notice.py --check' _ "$PYTHON"
+
+# 15) **上游获取与许可门禁测试**（S07-T06 接入）。
+#     fetch_upstream（上游拉取 / 解包 sha256 校验）与 asset_license_gate
+#     （许可登记 / NOTICE 门禁）此前不在任何 CI 清单里 ⇒ 本次纳入常驻项。
+#     两者均**零硬件**可验证 ⇒ **恒跑**，不得 SKIP。
+UPSTREAM_TESTS=(
+    tests/test_fetch_upstream.py
+    tests/test_asset_license_gate.py
+)
+run_check "tests/upstream" "上游获取与许可门禁回归（零硬件：fetch_upstream / asset_license_gate）" -- \
+    "$PYTHON" -m pytest -q "${UPSTREAM_TESTS[@]}"
+
 
 # --------------------------------------------------------------------------- #
 # medium 档
@@ -350,8 +389,16 @@ if [ "$TIER" = "nightly" ]; then
         record_skip "nightly/plan-verify" "Drake（pydrake）不可用：规划链路自检跳过（环境未就绪）"
     fi
 
-    # 13) 长稳测试占位：S07 golden-file 回归后填充（当前 no-op）。
-    record_skip "nightly/soak" "长稳测试占位：S07 golden-file 回归后填充（当前 no-op）"
+    # 13) golden-file 回归（S07-T06 填充）：把当前代码产出与基线逐点比对，
+    #     不一致即失败（run_check 语义，绝不降级）。
+    run_check "nightly/golden" "golden-file 回归（gen_golden --check，逐点一致）" -- \
+        "$PYTHON" scripts/gen_golden.py --check
+
+    # 14) 长稳载体离线演练（S07-T06 填充）：8 h 长稳的**离线演练**版本
+    #     （虚拟时钟 + 替身传输层，60 s）。**这不是真机长稳达标**——
+    #     真机 8 h 长稳的未验证指标由 long_run.py 登记进唯一真相源。
+    run_check "nightly/soak" "长稳离线演练（long_run --dry-run --duration-s 60 --json；非真机长稳结论）" -- \
+        "$PYTHON" scripts/long_run.py --dry-run --duration-s 60 --json
 fi
 
 # --------------------------------------------------------------------------- #
