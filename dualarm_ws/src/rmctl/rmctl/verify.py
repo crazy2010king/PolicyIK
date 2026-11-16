@@ -50,7 +50,9 @@ def check_limits(model, points, times):
             if vmax and vel[:, i].max() > vmax * 1.001:
                 issues.append("关节 %s 速度超限：%.4f > %.4f rad/s" % (jn, vel[:, i].max(), vmax))
             amax = lim.get("acceleration")
-            if amax and acc[:, i].max() > amax * 1.001:
+            # 两点轨迹（n == 2）时 acc 为空：必须判空，否则 numpy 报
+            # "zero-size array to reduction operation"（规划服务会直接崩）。
+            if amax and acc.size and acc[:, i].max() > amax * 1.001:
                 issues.append("关节 %s 加速度超限：%.4f > %.4f rad/s²" % (jn, acc[:, i].max(), amax))
             jmax = lim.get("jerk")
             if jmax and jerk is not None and jerk[:, i].max() > jmax * 1.001:
