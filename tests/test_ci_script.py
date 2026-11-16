@@ -121,3 +121,32 @@ def test_ci_usage_mentions_device_suite():
     result = run_ci("--help", timeout=60)
     assert result.returncode == 0
     assert "设备层" in result.stdout
+
+
+def test_ci_fast_tier_runs_bimanual_coordination_suite():
+    """fast 档必须纳入「双臂紧协调」回归项（S05-T07）。
+
+    解析 IK / 双臂限位 / 共享时间轴 / 最小坐标参数化 / 凸区域 / 协调规划 /
+    指标脚本 / 协调 CLI 全部**零硬件即可验证** ⇒ 必须**恒跑**，不得 SKIP。
+    """
+    result = run_ci("fast")
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0, combined
+    assert "tests/bimanual-coordination" in combined
+    assert "[SKIP] tests/bimanual-coordination" not in combined
+
+
+def test_ci_bimanual_coordination_check_fails_the_build():
+    """新增的紧协调回归项失败即整体失败（不得被降级成 SKIP）。"""
+    text = CI_SCRIPT.read_text(encoding="utf-8")
+    assert (
+        'run_check "tests/bimanual-coordination"' in text
+    ), "紧协调回归项必须用 run_check（失败即整体失败）"
+    assert 'run_check_skippable "tests/bimanual-coordination"' not in text
+
+
+def test_ci_usage_mentions_bimanual_coordination():
+    """--help 必须说明 fast 档已含双臂紧协调回归（避免"以为没跑"）。"""
+    result = run_ci("--help", timeout=60)
+    assert result.returncode == 0
+    assert "紧协调" in result.stdout

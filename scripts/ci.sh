@@ -47,6 +47,9 @@ usage() {
             全链路运行日志 / 硬件门控脚本，恒跑——零硬件也能回归）、
             **双臂几何与标定回归（零硬件）**（模型变体 / 双臂单 plant 装配 /
             碰撞过滤矩阵 / 共同点一致性 / 同步执行器 / 标定内核 / 标定 CLI，
+            恒跑——零硬件也能回归）、
+            **双臂紧协调回归**（RM75 解析 IK / 双臂 14 维限位 / 共享时间轴双轨迹 /
+            最小坐标参数化 / 最小坐标凸区域 / 协调规划 / 协调指标脚本 / 协调 CLI，
             恒跑——零硬件也能回归）。
   medium    在 fast 之上追加：constraints ↔ versions.lock 依赖锁一致性、
             package:// 解析测试、wheel 离线归档 sha256 校验（归档缺失时 SKIP）。
@@ -258,6 +261,26 @@ BIMANUAL_CALIBRATION_TESTS=(
 )
 run_check "tests/bimanual-calibration" "双臂几何与标定回归（零硬件：变体 / 单 plant / 碰撞过滤 / 一致性 / 同步执行 / 标定内核 / 标定 CLI）" -- \
     "$PYTHON" -m pytest -q "${BIMANUAL_CALIBRATION_TESTS[@]}"
+
+# 11) **双臂紧协调回归（零硬件）**（S05-T07 接入）。
+#     RM75 解析 IK（numpy-only）/ 双臂 14 维限位 / 共享时间轴双轨迹 /
+#     最小坐标参数化（相对位姿构造性满足）/ 最小坐标凸区域生成 + 缓存 /
+#     协调规划（参数化 → 区域图 → GCS → 14 维重定时 → 零逃逸复检）/
+#     协调指标脚本 / 协调 CLI。
+#     全部可在**无真机、无实测数据**的环境里被真实验证 ⇒ **恒跑**，不得 SKIP。
+#     新增项失败即整体失败（run_check 的语义，绝不降级成 run_check_skippable）。
+BIMANUAL_COORDINATION_TESTS=(
+    tests/test_analytic_ik.py
+    tests/test_coordinated_limits.py
+    tests/test_coordinated_trajectory.py
+    tests/test_coordinated_parameterization.py
+    tests/test_coordinated_regions.py
+    tests/test_coordinated_planner.py
+    tests/test_coordinated_stats.py
+    tests/test_coordinated_cli.py
+)
+run_check "tests/bimanual-coordination" "双臂紧协调回归（零硬件：解析 IK / 双臂限位 / 共享时间轴 / 最小坐标参数化 / 凸区域 / 协调规划 / 指标脚本 / 协调 CLI）" -- \
+    "$PYTHON" -m pytest -q "${BIMANUAL_COORDINATION_TESTS[@]}"
 
 # --------------------------------------------------------------------------- #
 # medium 档
