@@ -241,7 +241,13 @@ stdout 打印「限值 diff（当前值 → 目标值，含单位）」，结果
 
 ## 6. doctor 的 5 条硬件面检查项（`hw:*`）
 
-`python3 -m rmctl doctor` 现在共 **21 条**检查项，其中 5 条是硬件适配层：
+`python3 -m rmctl doctor` 的检查项共 **21 条**（模型可用时），其中 5 条是硬件适配层：
+
+> **条数口径（会随环境变化，别当常量）**：模型可用（已 `rmctl init` 物化
+> `build/model` 且厂商库可导入）时 **21 条**；模型不可用时 `model:load` 失败，
+> `fk:self_vs_tesseract` / `collision:home` / `limits:consistent` /
+> `hardware:connected` 这 **4 条被级联跳过** → 体检只剩 **17 条**。
+> 17 条是「恒在列」的那批（其余 4 条按 `model:load.ok` 分支出现）。
 
 | 检查项 | 判定 | 分级 | 修复动作（可粘贴） |
 |---|---|---|---|
@@ -264,13 +270,20 @@ python3 -m rmctl doctor --json --report build/reports/s09_doctor.json
 
 JSON 顶层含 `status` / `verdict` / `exit_code` / `reason` / `next_action` /
 `summary` / `checks[]` / `coverage_matrix[]`；`--report` 落盘内容与 `--json`
-的 stdout **等价**。退出码与全项目一致：
+的 stdout **等价**。退出码与全项目一致（**0 / 3 / 4**，与
+`rm_executor.contract.EXIT_CODES` 同值；**不再使用旧口径的 1**）：
 
 | 退出码 | 含义 |
 |---|---|
 | 0 | 全部检查项 PASS（INFO 级未通过**不算**失败） |
 | 3 | 存在需人工 / 外部条件的项（RECOVERABLE / NEEDS_HUMAN / BLOCKED） |
 | 4 | 存在硬红线项（FAIL：黑名单调用、SDK 核心符号缺失、夹爪配置非法） |
+
+> **与一键回归的关系**：`python3 scripts/rm_regression.py` 的 `doctor` 段
+> 子进程调用本命令并读它的 JSON 报告。doctor **执行成功**（退出码 0 或 3）
+> → 该段判定为 **pass**（退出码 3 只表示"有需人工 / 外部条件的项"，
+> 是真机窗口还没到，**不是**代码回归）；doctor 退出码 **4**（硬红线）
+> → 该段 **fail**。详见 `docs/rm_regression体验基准与一键回归说明.md` §1。
 
 `coverage_matrix[]` 是**自检覆盖矩阵**（设计 §6.2「自检覆盖 ≥ 8 类」）：
 网络 / 供电 / 夹爪 / 零位 / FK / 限值 / 控制器状态 / 依赖与模型 / 碰撞 /
