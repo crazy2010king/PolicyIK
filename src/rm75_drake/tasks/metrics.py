@@ -41,6 +41,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 __all__ = [
     "UNVERIFIED_TASK_METRICS",
+    "UNVERIFIED_TASK_METRIC_LONG_RUN_8H",
     "DEFAULT_PRIMITIVE_SUCCESS_RATE_THRESHOLD",
     "DEFAULT_PRIMITIVE_POSITION_ERROR_P95_M",
     "DEFAULT_PRIMITIVE_ORIENTATION_ERROR_P95_RAD",
@@ -50,6 +51,21 @@ __all__ = [
     "percentile",
     "build_task_metrics_report",
 ]
+
+
+#: **真机 8 h 任务级长稳**条目（:data:`UNVERIFIED_TASK_METRICS` 的其中一条）。
+#:
+#: 单独起一个**具名常量**，是为了让载体脚本（:mod:`scripts.long_run`）与测试
+#: 能**引用同一条**（禁止复制第二份文本）。
+#:
+#: 归属纪律：**任务级**指标登记在**本模块**（任务级唯一真相源），
+#: **不得**同时登记到
+#: :data:`rm75_drake.device.hardware_gate.UNVERIFIED_HARDWARE_METRICS`
+#: （那是**硬件/传输级**清单）——**二选一，禁止双写**。
+UNVERIFIED_TASK_METRIC_LONG_RUN_8H = (
+    "真实（真机）8 h 连续 pick-place 长稳（任务级循环成功率 ≥ 95% 且无异常停机，"
+    "未验证；解锁条件：真机连续运行 8 h 且任务成功率 ≥ 95%、无异常停机）"
+)
 
 
 #: 真机 / 物理指标清单（**唯一真相源**，canonical tuple）。
@@ -72,6 +88,7 @@ UNVERIFIED_TASK_METRICS: Tuple[str, ...] = (
     "解锁条件：真机标定力曲线并统计空夹误判率）",
     "真实（真机）长稳节拍（连续运行的成功率与节拍，未验证；"
     "解锁条件：真机连续运行 ≥ 2 h 且任务成功率 ≥ 95%）",
+    UNVERIFIED_TASK_METRIC_LONG_RUN_8H,
 )
 
 

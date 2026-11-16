@@ -103,6 +103,7 @@ __all__ = [
     "TaskStateMachine",
     "metrics",
     "UNVERIFIED_TASK_METRICS",
+    "UNVERIFIED_TASK_METRIC_LONG_RUN_8H",
     "PrimitiveMetric",
     "TaskMetricsReport",
     "build_task_metrics_report",
@@ -190,6 +191,7 @@ _PERCEPTION_EXPORTS = (
 #: 从 ``metrics`` 子模块透出的符号。
 _METRICS_EXPORTS = (
     "UNVERIFIED_TASK_METRICS",
+    "UNVERIFIED_TASK_METRIC_LONG_RUN_8H",
     "PrimitiveMetric",
     "TaskMetricsReport",
     "build_task_metrics_report",
