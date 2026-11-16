@@ -6,6 +6,8 @@
   ``PlanResponse``）、字段级校验、轨迹摘要（确定性验收用）。
 * :mod:`rmctl.planner_service.config` —— 声明式配置的**只读**加载器
   （``workcell/planner/pipeline.yaml`` 与 ``workcell/planner/profiles.yaml``）。
+* :mod:`rmctl.planner_service.client` —— 规划服务的**薄客户端**
+  （Unix socket 控制面；失败一律结构化，不抛裸异常）。
 
 **唯一来源纪律（D001）**：管线 / profile / 场景参数只由 ``workcell/planner/*.yaml``
 决定；Python 只读不改，**绝不内嵌第二份默认值**。
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 __all__ = [
     "PROCESS_ROLE",
+    "client",
     "config",
     "contract",
 ]
