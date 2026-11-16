@@ -62,6 +62,19 @@ def die(msg: str, code: int = EXIT_ENV) -> "NoReturn":  # type: ignore[name-defi
     raise SystemExit(code)
 
 
+def rel_to_repo(path: Path) -> str:
+    """把路径渲染成「相对仓库根」的短字符串。
+
+    仓库内路径 → ``third_party/MANIFEST.yaml``；
+    仓库外路径（如 ``--manifest /tmp/xxx.yaml``）→ ``../tmp/xxx.yaml`` 形式的相对路径，
+    **不得**因为 ``Path.relative_to`` 抛 ValueError 而让整条命令失败。
+    """
+    try:
+        return str(Path(path).resolve().relative_to(REPO_ROOT))
+    except ValueError:
+        return os.path.relpath(str(Path(path).resolve()), str(REPO_ROOT))
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:
@@ -526,11 +539,11 @@ def cmd_fetch(args) -> int:
         "assets": results,
     }
     dump_yaml(manifest_path, manifest)
-    log(f"已写清单 {manifest_path.relative_to(REPO_ROOT)}")
+    log(f"已写清单 {rel_to_repo(manifest_path)}")
 
     if not args.no_lock_update:
         update_lock(lock_path, results)
-        log(f"已回写 {lock_path.relative_to(REPO_ROOT)}:upstream.*.archive")
+        log(f"已回写 {rel_to_repo(lock_path)}:upstream.*.archive")
 
     # 立即自校验
     ok = verify(manifest_path, archive_dir, lock_path, quiet=False)

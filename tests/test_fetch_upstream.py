@@ -176,6 +176,83 @@ def test_verify_fails_on_malformed_manifest_entry(tmp_path):
     assert "缺少 sha256" in (proc.stdout + proc.stderr)
 
 
+def test_fetch_with_manifest_outside_repo_does_not_raise(tmp_path):
+    """回归：``--manifest`` 指向仓库外路径时不得抛 ValueError。
+
+    旧实现用 ``manifest_path.relative_to(REPO_ROOT)`` 渲染日志，仓库外路径会抛
+    ``ValueError: '...' is not in the subpath of ...``，把一次成功的抓取变成失败。
+    本用例用**本地 git 仓库**当上游（commit 直接写成 40 位 hex ⇒ 不触网），
+    完整跑一遍 fetch 路径，断言退出码 0 且清单被写到仓库外。
+    """
+    src = tmp_path / "src"
+    (src / "sub").mkdir(parents=True)
+    (src / "sub" / "a.txt").write_bytes(b"hello upstream\n")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=str(src),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+        )
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    commit = git("rev-parse", "HEAD").stdout.strip()
+    assert HEX40.match(commit)
+
+    lock = tmp_path / "versions.lock"
+    lock.write_text(
+        "schema_version: 1\n"
+        "upstream:\n"
+        "  local_asset:\n"
+        f'    repo: "{src}"\n'
+        f"    ref: {commit}\n"
+        f'    commit: "{commit}"\n'
+        "    subset: sub/\n",
+        encoding="utf-8",
+    )
+
+    outside_manifest = tmp_path / "outside" / "MANIFEST.yaml"
+    outside_manifest.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(TOOL),
+            "--lock",
+            str(lock),
+            "--manifest",
+            str(outside_manifest),
+            "--archive-dir",
+            str(tmp_path / "archives"),
+            "--workdir",
+            str(tmp_path / "work"),
+        ],
+        cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=300,
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, f"仓库外 --manifest 抓取失败:\n{combined}"
+    assert "not in the subpath of" not in combined, f"仍抛 relative_to 的 ValueError:\n{combined}"
+    assert outside_manifest.exists(), "仓库外清单未被写出"
+    assert "已写清单" in combined
+
+
+def test_rel_to_repo_handles_outside_path():
+    """rel_to_repo：仓库内路径 → 仓库相对；仓库外路径 → 不抛异常的相对形式。"""
+    fu = _load_tool_module()
+    inside = fu.rel_to_repo(REPO_ROOT / "third_party" / "MANIFEST.yaml")
+    assert "third_party" in inside and not inside.startswith("..")
+    outside = fu.rel_to_repo(Path("/tmp/does-not-exist-in-repo/OUT.yaml"))
+    assert outside.startswith(".."), f"仓库外路径应渲染为 ../ 形式: {outside}"
+
+
 # ── 工具自身约束 ─────────────────────────────────────────────────────────
 def test_tool_does_not_hardcode_commits():
     """commit / repo / subset 的唯一真相源是 versions.lock，脚本里不得出现第二份。"""
