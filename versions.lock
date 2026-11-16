@@ -144,17 +144,25 @@ platform:
     - cp310
 
 forbidden_apis:
+  # ── 厂商运动/轨迹下发接口（主链路一律不走，自研 5 ms 透传）────────────
   - rm_movej
   - rm_movep
   - rm_movec
   - rm_moves
   - rm_movej_follow
   - rm_movep_canfd
+  # ── 厂商解算接口（IK / FK / 轨迹跟踪）──────────────────────────────
   - rm_algo_inverse_kinematics
+  - rm_algo_forward_kinematics
   - rm_algo_set_7dof_q3_track_angle
   - rm_algo_enable_q3_tracker
   - rm_algo_set_dq_weight
   - rm_algo_set_joint_limit_angle
+  # ── 变体名（**必须**显式登记）────────────────────────────────────────
+  # 静态扫描器按「精确名 + 左括号」匹配 ⇒ 未登记的变体名（如 …_new）不会被
+  # 静态命中。运行时审计另有「变体名」规则兜底，但静态那一证同样不得漏 ⇒
+  # 变体名在此登记（S07-T03）。
+  - rm_algo_inverse_kinematics_new
 
 allowed_apis:
   - rm_movej_canfd

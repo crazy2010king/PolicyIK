@@ -30,6 +30,9 @@ LOCK_PATH = REPO_ROOT / "versions.lock"
 FORBIDDEN_CALL = "rm_movej("
 #: 白名单接口的调用写法（必须在锁文件的 allowed_apis 里）。
 ALLOWED_CALL = "rm_movej_canfd("
+#: **变体名**调用写法（S07-T03）：静态扫描器按「精确名 + 左括号」匹配 ⇒
+#: 变体名必须在锁文件里显式登记，否则静态这一证会漏检。
+VARIANT_CALL = "rm_algo_inverse_kinematics_new("
 
 
 def run_scanner(*args: str) -> subprocess.CompletedProcess:
@@ -162,6 +165,23 @@ def test_missing_lock_exits_two(tmp_path):
     result = run_scanner("--lock", str(tmp_path / "nope.lock"), "src")
     assert result.returncode == 2
     assert "锁文件" in (result.stdout + result.stderr)
+
+
+# --------------------------------------------------------------------------- #
+# 负例 / 正例：变体名必须显式登记（否则静态扫描漏检）
+# --------------------------------------------------------------------------- #
+def test_variant_names_are_registered_in_lock(lock):
+    """变体名必须在 forbidden_apis 里显式登记。"""
+    assert VARIANT_CALL.rstrip("(") in lock["forbidden_apis"]
+
+
+def test_registered_variant_call_is_reported(tmp_path):
+    """负例：已登记的变体名调用必须被命中（静态这一证不漏检）。"""
+    bad = tmp_path / "variant_usage.py"
+    bad.write_text(f"value = {VARIANT_CALL}arg)\n", encoding="utf-8")
+    result = run_scanner(str(tmp_path))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert str(bad) in result.stdout
 
 
 def test_lock_without_forbidden_apis_exits_two(tmp_path):

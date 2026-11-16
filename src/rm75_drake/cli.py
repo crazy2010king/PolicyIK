@@ -1728,14 +1728,19 @@ def _exec_run_driver(
     from .device.exec_loop import SystemClock, VirtualClock
     from .device.run_log import RunLogBuilder, metric_payload
     from .device.safety import safety_limits_from_sources
-    from .device.transport import ScriptedTransport, SdkTransport
+    from .device.sdk import SdkAudit, audit_snapshot
     from .drivers.base import DriverError
     from .drivers.rm_device import RmDeviceDriver, RmDeviceDriverConfig
     from .limits import load_joint_limits
 
     limits = safety_limits_from_sources(load_joint_limits(), device_config)
     dry_run = bool(args.dry_run)
-    transport = ScriptedTransport() if dry_run else SdkTransport(device_config)
+    # 运行时调用审计（R008 的运行时那半）：**显式**构造并注入传输层，
+    # 否则传输层自建的 audit 会被丢弃（计数无人读 = 没有证据）。
+    audit = SdkAudit()
+    transport = _build_exec_transport(
+        dry_run=dry_run, device_config=device_config, audit=audit
+    )
     clock = VirtualClock() if dry_run else SystemClock()
     driver = RmDeviceDriver(
         transport,
@@ -1854,7 +1859,27 @@ def _exec_run_driver(
         "jitter": jitter,
         "run_log": builder,
         "phase": final_phase,
+        "sdk_audit": audit_snapshot(audit),
     }
+
+
+def _build_exec_transport(
+    *, dry_run: bool, device_config: Any, audit: Any
+) -> Any:
+    """构造 ``exec`` 用的传输层。
+
+    * ``--dry-run`` ⇒ :class:`ScriptedTransport`（零硬件、确定性）；
+    * 真机 ⇒ :class:`SdkTransport` + **注入**审计计数器
+      （不注入的话传输层自建的 audit 会被丢弃，运行时证据就丢了）。
+
+    单独成函数是为了给「负例注入」留一个**可测的接缝**（测试里替换本函数，
+    往审计里塞一次禁用调用 ⇒ CLI 必须以退出码 1 失败）。
+    """
+    from .device.transport import ScriptedTransport, SdkTransport
+
+    if dry_run:
+        return ScriptedTransport()
+    return SdkTransport(device_config, audit=audit)
 
 
 def _emit_exec_skipped(
@@ -1904,6 +1929,13 @@ def _emit_exec_skipped(
         "detail": probe["detail"],
         "unverified_metrics": list(UNVERIFIED_HARDWARE_METRICS),
         "run_log_path": log_path,
+        # 未进入执行环 ⇒ 没有 SDK 调用可审（计数恒为 0，不是「已验证通过」）。
+        "sdk_audit": {
+            "total_call_count": 0,
+            "non_whitelist_call_count": 0,
+            "forbidden_call_count": 0,
+            "forbidden_calls": [],
+        },
     }
     if getattr(args, "json", False):
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
@@ -1931,7 +1963,14 @@ def _write_exec_run_log(args: argparse.Namespace, run_log: Any) -> Optional[str]
 def _emit_exec_result(
     args: argparse.Namespace, device_config: Any, result: Dict[str, Any]
 ) -> int:
-    """打印 exec 结果摘要（JSON 或人类可读），返回退出码。"""
+    """打印 exec 结果摘要（JSON 或人类可读），返回退出码。
+
+    退出码
+    ------
+    * ``0``：执行成功；
+    * ``1``：业务失败（执行失败 **或** 运行时审计命中禁用接口）；
+    * ``2``：用法错误（在参数校验阶段就返回，走不到这里）。
+    """
     builder = result["run_log"]
     run_log = builder.build(
         meta={
@@ -1958,6 +1997,13 @@ def _emit_exec_result(
     )
     log_path = _write_exec_run_log(args, run_log)
 
+    audit_info = dict(result.get("sdk_audit") or {})
+    audit_info.setdefault("total_call_count", 0)
+    audit_info.setdefault("non_whitelist_call_count", 0)
+    audit_info.setdefault("forbidden_call_count", 0)
+    audit_info.setdefault("forbidden_calls", [])
+    forbidden_count = int(audit_info.get("forbidden_call_count") or 0)
+
     payload = {
         "command": "exec",
         "status": result["status"],
@@ -1976,6 +2022,8 @@ def _emit_exec_result(
         "run_log_path": log_path,
         "run_log_events": len(run_log.events),
         "dropped_events": int(run_log.summary.get("dropped_events") or 0),
+        # 运行时调用审计（R008 运行时那半）：**必须**能被机器读到。
+        "sdk_audit": audit_info,
     }
     if getattr(args, "json", False):
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
@@ -1986,6 +2034,12 @@ def _emit_exec_result(
             f"（相位：{result['phase']}）"
         )
         print(f"[exec] 安全违规数：{len(result['violations'])}")
+        print(
+            "[exec] SDK 调用审计："
+            f"总调用 {audit_info['total_call_count']}、"
+            f"非白名单 {audit_info['non_whitelist_call_count']}、"
+            f"命中禁用名单 {forbidden_count}"
+        )
         dropped = int(run_log.summary.get("dropped_events") or 0)
         if dropped:
             print(
@@ -2003,6 +2057,15 @@ def _emit_exec_result(
         if log_path:
             print(f"[exec] 运行日志：{log_path}")
     if result["status"] != "ok":
+        return EXIT_FAILURE
+    if forbidden_count > 0:
+        # 命中禁用名单 = 主链路调了厂商解算接口 ⇒ 业务失败（退出码 1），
+        # 不得因为「轨迹跑完了」就当成功。
+        print(
+            f"[exec] 失败：运行时审计命中禁用接口 {forbidden_count} 次"
+            f"（{audit_info.get('forbidden_calls')}）",
+            file=sys.stderr,
+        )
         return EXIT_FAILURE
     return EXIT_OK
 

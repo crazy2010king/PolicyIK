@@ -183,6 +183,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         joint_rad = default_hold_pose(limits)
 
     # ── 长稳 ────────────────────────────────────────────────────────
+    from rm75_drake.device.sdk import audit_snapshot
     from rm75_drake.device.transport import ScriptedTransport, SdkTransport
 
     transport = ScriptedTransport() if dry_run else SdkTransport(device_config)
@@ -209,6 +210,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     summary["requested_duration_s"] = duration_s
     summary["hz"] = hz
     summary["device"] = device_config.to_dict()
+    # 运行时调用审计（R008 运行时那半）：真机路径的 SDK 调用计数必须可读。
+    summary["sdk_audit"] = audit_snapshot(getattr(transport, "audit", None))
 
     jitter = summary["jitter_ms"]
     p999 = jitter.get("p999")

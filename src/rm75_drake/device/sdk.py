@@ -23,6 +23,14 @@ SDK 全线用**度**（``rm_movej_canfd`` 的关节角、``rm_joint_status_t.joi
 :func:`load_sdk` 返回的 SDK 命名空间被 :class:`SdkProxy` 包装：每次调用都会记进
 :class:`SdkAudit`，**非白名单符号**的调用次数可被断言为 0
 （静态扫描器 :mod:`scripts.scan_forbidden_apis` 是另一半证据）。
+
+禁用名单（厂商解算接口）
+----------------------
+:func:`load_forbidden_apis` 把 ``versions.lock:forbidden_apis`` 读进运行时
+（**唯一真相源**；模块级缓存，不把文件 I/O 放进 5 ms 热路径）。
+:class:`SdkAudit` 因此多出 :attr:`SdkAudit.forbidden_calls` /
+:attr:`SdkAudit.forbidden_call_count` 两个计数——**命中禁用名单（含变体名）
+的调用数必须为 0**，这正是「静态检查 + 运行时审计」双证里的运行时那一证。
 """
 
 from __future__ import annotations
@@ -52,6 +60,11 @@ __all__ = [
     "probe_capabilities",
     "SdkAudit",
     "SdkProxy",
+    "ForbiddenApisError",
+    "load_forbidden_apis",
+    "clear_forbidden_apis_cache",
+    "is_forbidden_api_name",
+    "audit_snapshot",
     "assert_single_conversion_point",
 ]
 
@@ -320,6 +333,123 @@ def probe_capabilities(arm: Any = None) -> SdkCapabilities:
     )
 
 
+# ── 禁用名单（厂商解算接口）──────────────────────────────────────────────
+class ForbiddenApisError(RuntimeError):
+    """禁用名单读取失败（锁文件缺失 / 解析失败 / 段落非法）。"""
+
+
+#: 禁用名单缓存：键 = (锁文件绝对路径, mtime_ns, size)，值 = 冻结名单。
+#: 模块级缓存 ⇒ **不把文件 I/O 放进 5 ms 热路径**；键里带 mtime/size ⇒ 锁文件
+#: 改动后自动失效（不会拿旧名单当新名单用）。
+_FORBIDDEN_APIS_CACHE: Dict[Tuple[str, int, int], frozenset] = {}
+
+
+def load_forbidden_apis(lock_path: Optional[Path] = None) -> frozenset:
+    """读取 ``versions.lock:forbidden_apis``（厂商解算接口禁用名单）。
+
+    参数
+    ----
+    lock_path:
+        锁文件路径；``None`` → :data:`rm75_drake.paths.versions_lock_path`
+        （**唯一真相源**：任何模块都不得另立一份名单）。
+
+    返回
+    ----
+    ``frozenset``：禁用接口名（与锁文件 ``forbidden_apis`` 段逐项一致）。
+
+    异常
+    ----
+    ForbiddenApisError
+        锁文件不存在 / 不可读 / 解析失败 / ``forbidden_apis`` 段缺失或为空
+        （**绝不**静默返回空名单——那会让运行时审计变成假绿灯）。
+    """
+    from ..paths import versions_lock_path
+
+    path = Path(lock_path) if lock_path is not None else Path(versions_lock_path)
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ForbiddenApisError(
+            f"读取禁用名单失败（锁文件不可读）：{path}（{exc}）"
+        ) from exc
+    key = (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
+    cached = _FORBIDDEN_APIS_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - 环境缺依赖
+        raise ForbiddenApisError(
+            "读取禁用名单需要 PyYAML（pip install pyyaml）"
+        ) from exc
+    try:
+        data: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ForbiddenApisError(f"锁文件解析失败：{path}（{exc}）") from exc
+    if not isinstance(data, dict):
+        raise ForbiddenApisError(f"锁文件结构非法（应为映射）：{path}")
+    names = data.get("forbidden_apis")
+    if not isinstance(names, list):
+        raise ForbiddenApisError(f"{path}:forbidden_apis 缺失或为空")
+    frozen = frozenset(str(name).strip() for name in names if str(name).strip())
+    if not frozen:
+        raise ForbiddenApisError(f"{path}:forbidden_apis 缺失或为空")
+    _FORBIDDEN_APIS_CACHE[key] = frozen
+    return frozen
+
+
+def clear_forbidden_apis_cache() -> None:
+    """清空禁用名单缓存（测试用：改过锁文件后强制重读）。"""
+    _FORBIDDEN_APIS_CACHE.clear()
+
+
+#: 变体名后缀的形态：只允许标识符字符（字母 / 数字 / 下划线）。
+_VARIANT_SUFFIX_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def is_forbidden_api_name(
+    name: str,
+    *,
+    forbidden: Optional[frozenset] = None,
+    whitelist: Optional[frozenset] = None,
+) -> bool:
+    """判断一个 SDK 符号名是否命中禁用名单（含**变体名**）。
+
+    判定规则
+    --------
+    1. **精确命中**禁用名单 ⇒ 命中；
+    2. **变体名**：以某个禁用名为前缀、后接只含标识符字符的后缀
+       （例如 ``rm_algo_inverse_kinematics_v2``）⇒ 命中
+       —— 名单未列变体时**也不漏检**；
+    3. **白名单优先**：白名单里的名字一律不命中
+       （``rm_movej_canfd`` 与禁用名 ``rm_movej`` 前缀相近，但它是允许的
+       透传接口 ⇒ 不得前缀误伤）。
+
+    参数
+    ----
+    name:
+        待判定的符号名。
+    forbidden:
+        禁用名单；``None`` → :func:`load_forbidden_apis`（锁文件唯一真相源）。
+    whitelist:
+        白名单；``None`` → :data:`SDK_CALL_WHITELIST`。
+    """
+    forbidden_set = forbidden if forbidden is not None else load_forbidden_apis()
+    allowed = whitelist if whitelist is not None else SDK_CALL_WHITELIST
+    if name in allowed:
+        return False
+    if name in forbidden_set:
+        return True
+    for base in forbidden_set:
+        if not name.startswith(base):
+            continue
+        suffix = name[len(base) :]
+        if suffix and _VARIANT_SUFFIX_PATTERN.match(suffix):
+            return True
+    return False
+
+
 # ── 运行时调用审计 ──────────────────────────────────────────────────────
 @dataclass
 class SdkAudit:
@@ -333,17 +463,31 @@ class SdkAudit:
         全部调用记录（``(符号名, 参数摘要)`` 顺序）。
     non_whitelist_calls:
         **非白名单**调用记录（必须为空 —— 否则说明设备层越界调用了厂商接口）。
+    forbidden:
+        **禁用名单**（厂商解算接口；默认来自 ``versions.lock:forbidden_apis``）。
+    forbidden_calls:
+        **命中禁用名单**的调用记录（必须为空 —— 否则说明主链路调用了厂商解算接口）。
     """
 
     whitelist: frozenset = field(default_factory=lambda: SDK_CALL_WHITELIST)
     calls: List[Tuple[str, str]] = field(default_factory=list)
     non_whitelist_calls: List[Tuple[str, str]] = field(default_factory=list)
+    forbidden: frozenset = field(default_factory=load_forbidden_apis)
+    forbidden_calls: List[Tuple[str, str]] = field(default_factory=list)
 
     def record(self, name: str, args_repr: str = "") -> None:
-        """记录一次调用（内部使用）。"""
+        """记录一次调用（内部使用）。
+
+        既有的 ``calls`` / ``non_whitelist_calls`` 语义**一字不改**；
+        额外追加**禁用名单命中**记录（含变体名）。
+        """
         self.calls.append((name, args_repr))
         if name not in self.whitelist:
             self.non_whitelist_calls.append((name, args_repr))
+        if is_forbidden_api_name(
+            name, forbidden=self.forbidden, whitelist=self.whitelist
+        ):
+            self.forbidden_calls.append((name, args_repr))
 
     @property
     def total_call_count(self) -> int:
@@ -355,6 +499,11 @@ class SdkAudit:
         """非白名单调用次数（**必须为 0**）。"""
         return len(self.non_whitelist_calls)
 
+    @property
+    def forbidden_call_count(self) -> int:
+        """命中禁用名单的调用次数（**必须为 0**）。"""
+        return len(self.forbidden_calls)
+
     def called(self, name: str) -> int:
         """返回某个符号被调用的次数。"""
         return sum(1 for call, _ in self.calls if call == name)
@@ -363,6 +512,34 @@ class SdkAudit:
         """清空计数（用于分段统计）。"""
         self.calls.clear()
         self.non_whitelist_calls.clear()
+        self.forbidden_calls.clear()
+
+
+def audit_snapshot(audit: Optional[SdkAudit] = None) -> Dict[str, Any]:
+    """把审计计数器压成**可 JSON 序列化**的字典（CLI / 脚本输出用）。
+
+    参数
+    ----
+    audit:
+        审计计数器；``None``（例如离线替身传输层，没有 SDK 调用可审）
+        ⇒ 计数全为 0。
+
+    字段：``total_call_count`` / ``non_whitelist_call_count`` /
+    ``forbidden_call_count`` / ``forbidden_calls``。
+    """
+    if audit is None:
+        return {
+            "total_call_count": 0,
+            "non_whitelist_call_count": 0,
+            "forbidden_call_count": 0,
+            "forbidden_calls": [],
+        }
+    return {
+        "total_call_count": audit.total_call_count,
+        "non_whitelist_call_count": audit.non_whitelist_call_count,
+        "forbidden_call_count": audit.forbidden_call_count,
+        "forbidden_calls": [[name, args] for name, args in audit.forbidden_calls],
+    }
 
 
 class SdkProxy:
@@ -380,11 +557,28 @@ class SdkProxy:
     def __init__(self, target: Any, audit: Optional[SdkAudit] = None) -> None:
         self._target = target
         self.audit = audit if audit is not None else SdkAudit()
+        #: 取子模块的记录（属性访问；**不**计入 calls / 非白名单 / 禁用计数）。
+        self.submodule_accesses: List[str] = []
 
     @property
     def target(self) -> Any:
         """被代理的原始对象。"""
         return self._target
+
+    def get_submodule(self, name: str) -> Any:
+        """取**真实子模块**（例如 ``rm_robot_interface``）。
+
+        为什么单独开这个口子
+        ------------------
+        SDK 的子模块不是「函数调用」，只是一次属性访问；把它塞进
+        :meth:`__getattr__` 会被当成一次 SDK 调用记账（虚增计数）。
+        ⇒ 这里记录一次**属性访问**（:attr:`submodule_accesses`），
+        **不**计入 ``calls`` / 非白名单 / 禁用名单计数。
+        """
+        if name.startswith("_"):
+            raise AttributeError(name)
+        self.submodule_accesses.append(name)
+        return getattr(self._target, name)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):

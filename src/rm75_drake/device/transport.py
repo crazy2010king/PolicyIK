@@ -378,9 +378,17 @@ class SdkTransport(ArmTransport):
         """初始化三线程模式下的 ``RoboticArm`` 实例。
 
         三线程模式是 UDP 主动上报的前提（研究 F4）。
+
+        约定（**不得**破坏）
+        ------------------
+        ``self._arm`` **不用于任何 SDK 调用**——它只是「已初始化的机械臂对象」，
+        所有 SDK 函数调用一律经 :class:`~rm75_drake.device.sdk.SdkProxy` 代理
+        （否则调用审计会漏记，运行时那半证据就成了假绿灯）。
+        取子模块本身走 :meth:`SdkProxy.get_submodule`（属性访问，不计调用）。
         """
+        proxy = self._require_proxy()
         try:
-            interface = self._sdk.rm_robot_interface  # type: ignore[union-attr]
+            interface = proxy.get_submodule("rm_robot_interface")
             arm_cls = getattr(interface, "RoboticArm")
         except AttributeError as exc:
             raise TransportError(

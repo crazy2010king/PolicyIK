@@ -76,6 +76,7 @@ from rm75_drake.device.recovery import (  # noqa: E402
     classify_fault,
     enter_safe_state,
 )
+from rm75_drake.device.sdk import audit_snapshot  # noqa: E402
 from rm75_drake.device.state_machine import DeviceState, DeviceStateMachine  # noqa: E402
 from rm75_drake.device.transport import (  # noqa: E402
     ScriptedTransport,
@@ -424,6 +425,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(format_skip(probe))
 
     results: List[Dict[str, Any]] = []
+    transport = None
     if hardware_mode and reachable:
         transport = SdkTransport(device_config)
         try:
@@ -456,6 +458,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "skip_detail": skip_detail,
         "cases": results,
         "failed": [item["key"] for item in failed],
+        # 运行时调用审计（R008 运行时那半）：真机路径的 SDK 调用计数必须可读。
+        "sdk_audit": audit_snapshot(getattr(transport, "audit", None)),
         "unverified_metrics": (
             [m for m in UNVERIFIED_HARDWARE_METRICS if m != COVERED_METRIC]
             if hardware_mode and reachable

@@ -31,10 +31,14 @@ REQUIRED_FORBIDDEN_APIS = [
     "rm_movej_follow",
     "rm_movep_canfd",
     "rm_algo_inverse_kinematics",
+    "rm_algo_forward_kinematics",
     "rm_algo_set_7dof_q3_track_angle",
     "rm_algo_enable_q3_tracker",
     "rm_algo_set_dq_weight",
     "rm_algo_set_joint_limit_angle",
+    # 变体名（S07-T03）：静态扫描器按「精确名 + 左括号」匹配 ⇒ 变体名必须
+    # **显式登记**，否则静态那一证会漏检。
+    "rm_algo_inverse_kinematics_new",
 ]
 REQUIRED_ALLOWED_APIS = ["rm_movej_canfd", "rm_get_current_joint_current"]
 
