@@ -593,3 +593,27 @@ register_runner(
     mode="offline",
     report_name="s09_segment_perf_baseline.json",
 )
+
+
+def _run_experience(ctx: SegmentContext) -> Dict[str, Any]:
+    """``experience`` 段的 runner（E1–E4 体验基准实测）。
+
+    段级判定在 :mod:`rmctl.regression.experience` 内部完成（口径唯一）：
+    目标未达标 → ``fail``；数据源缺失 → ``blocked``；全部达标 → ``pass``。
+    """
+    from rmctl.regression import experience as _exp
+
+    return _exp.run_experience(
+        repo_root=ctx.repo_root,
+        ws=ctx.ws,
+        reports_dir=ctx.reports_dir,
+        env=ctx.env,
+    )
+
+
+register_runner(
+    seg_id="experience",
+    runner=_run_experience,
+    mode="offline",
+    report_name="s09_segment_experience.json",
+)

@@ -1,0 +1,170 @@
+# S09/T5 体验基准场景声明（E1–E4）—— **唯一来源**（声明式、可版本化、可 diff）
+#
+# 依据：设计文档 §6.9「体验与性能基准（怎么证明"更好用"）」的体验场景集
+#       E1–E4 权威定义 + §6.2「体验指标（可测、带目标值）」的目标值。
+#
+# 纪律：
+#   * 本文件是 E1–E4 的**唯一**声明处；Python 侧（rmctl.regression.experience）
+#     **只读**本文件，禁止在代码里另写一份指标表 / 目标值；
+#   * 每个指标必须写 `mode`：
+#       offline        —— 离线实测（有真实计算 / 真实规划，无真机）
+#       human_pending  —— **只能人工测**的字段：value 必须为 null + status=pending
+#     本文件**不出现** mode=live 的数字（真机口径本切片未实证，绝不冒充）；
+#   * `target` 只能引自设计 §6.2；设计没给数值目标的指标写 `target: null`
+#     并在 `note` 里说明（**不编造目标值**）；
+#   * 指标 `unit` 必须写清楚（秒 / 条 / 行 / 比率 / 布尔）。
+version: 1
+source: "设计文档 §6.9 体验场景集 E1–E4 + §6.2 体验指标目标值"
+design_refs:
+  - "§6.2 体验指标（可测、带目标值）"
+  - "§6.9 体验与性能基准"
+
+scenarios:
+  # ---------------------------------------------------------------- E1
+  - id: E1
+    name: 接入一款新机型（换 URDF）
+    measures: 上手成本
+    # 「新机型」代理 = 仓库已有的第二个 URDF 变体（相对 rm75_clean.urdf）
+    variant_urdf: dualarm_ws/src/rm_description/urdf/rm_75_official.urdf
+    # 规划目标（**弧度**；rmctl plan 的 --goal 口径 = 弧度）
+    plan_goal_rad: "0,0.3490658503988659,0.5235987755982988,0,0,0,0"
+    metrics:
+      - id: t2fm_s
+        name: T2FM（拿到 URDF → 第一次成功规划）
+        unit: s
+        target: 1800.0
+        target_op: "<="
+        mode: offline
+        source: "临时工作区内 prepare→init→doctor→plan 全链路墙钟（不含测量脚手架自身的拷贝开销）"
+      - id: command_count
+        name: 接入命令条数
+        unit: 条
+        target: null
+        target_op: null
+        mode: offline
+        source: "剧本里实际执行的命令条数"
+        note: "设计 §6.2 只给「≤ 1 人日 / 改码 0 行」目标，未给命令条数目标 → 不编造目标值"
+      - id: config_lines_changed
+        name: 需改配置行数（新机型关节限值 vs joint_limits.yaml）
+        unit: 行
+        target: 0
+        target_op: "<="
+        mode: offline
+        source: "变体 URDF 的 <limit> vs rm_description/config/joint_limits.yaml（容差 1e-4，与 doctor 的 limits:consistent 同口径）"
+      - id: code_lines_changed
+        name: 需改代码行数
+        unit: 行
+        target: 0
+        target_op: "<="
+        mode: offline
+        source: "临时工作区与仓库的 .py 文件逐行差异（新增 + 删除行数）"
+      - id: error_count
+        name: 遇到的报错次数（doctor 需处理项）
+        unit: 次
+        target: 0
+        target_op: "<="
+        mode: offline
+        source: "rmctl doctor 输出里非 PASS 且非 INFO 的检查项条数"
+        note: "INFO 是声明性提示（如「未检测到真机连接」），doctor 自己也不把它们算「需处理」项"
+      - id: doctor_check_count
+        name: doctor 检查项条数
+        unit: 条
+        target: 8
+        target_op: ">="
+        mode: offline
+        source: "rmctl doctor 输出的检查项条数"
+        note: "设计 §6.2 的目标是「自检覆盖 ≥ 8 类」；当前 doctor **没有**类别矩阵，本指标只统计条数，**不得**据此宣称已覆盖 ≥ 8 类"
+
+  # ---------------------------------------------------------------- E2
+  - id: E2
+    name: 交付一条新工艺（新任务模板）
+    measures: 编排成本
+    # 首次成功率的重复圈数（可配置）
+    first_success_runs: 3
+    metrics:
+      - id: template_lines
+        name: 新工艺模板行数
+        unit: 行
+        target: null
+        target_op: null
+        mode: offline
+        source: "临时目录里写出的最小新任务 YAML 的非空行数"
+        note: "设计 §6.2 未给模板行数目标（只给命令条数与首次成功率）→ 不编造目标值"
+      - id: command_count
+        name: 交付命令条数
+        unit: 条
+        target: 1
+        target_op: "<="
+        mode: offline
+        source: "rmctl run pick_place --task-file <新任务> --count 1（一条命令）"
+      - id: first_success_rate
+        name: 首次成功率（离线 rmctl run pick_place 连跑 N 次）
+        unit: 比率
+        target: 0.95
+        target_op: ">="
+        mode: offline
+        source: "rmctl run pick_place --count 1 连跑 N 次的退出码统计（成功次数 / 总次数）"
+      - id: new_task_first_run_ok
+        name: 新工艺首跑成功
+        unit: bool
+        target: true
+        target_op: "=="
+        mode: offline
+        source: "rmctl run pick_place --task-file <新任务> --count 1 的退出码"
+
+  # ---------------------------------------------------------------- E3
+  - id: E3
+    name: 现场故障恢复
+    measures: 恢复能力
+    metrics:
+      - id: mttr_proxy_s
+        name: MTTR_proxy（失败事件 → 机器给出下一步的机器耗时）
+        unit: s
+        target: null
+        target_op: null
+        mode: offline
+        source: "S06 离线证据链的 trace JSONL（build/run/*.jsonl）派生"
+        note: "proxy 是**机器侧下界**，不是人的恢复时间；设计 §6.2 的 MTTR ≤ 2 min 目标属于**人工**字段 mttr_human_s"
+      - id: mttr_human_s
+        name: MTTR（人工恢复耗时）
+        unit: s
+        target: 120.0
+        target_op: "<="
+        mode: human_pending
+        source: "人工在真机窗口测量后回填（本切片未实证）"
+        note: "**禁止**用 proxy 或 0 顶替；未回填前 value 必须为 null 且 status=pending"
+      - id: diagnosability_rate
+        name: 报错可诊断率（失败事件带非空 next_action 的比例）
+        unit: 比率
+        target: 1.0
+        target_op: ">="
+        mode: offline
+        source: "S06 trace 的失败事件统计"
+      - id: restart_required
+        name: 是否需要重启
+        unit: bool
+        target: false
+        target_op: "=="
+        mode: offline
+        source: "trace 中出现 FATAL 事件即判需要重启（无 FATAL → 不需要重启）"
+
+  # ---------------------------------------------------------------- E4
+  - id: E4
+    name: 日常操作（改一个参数、跑一次、复现一次）
+    measures: 操作效率
+    metrics:
+      - id: command_count
+        name: 日常操作命令条数
+        unit: 条
+        target: 3
+        target_op: "<="
+        mode: offline
+        source: "剧本实际执行的命令条数（run 一次 + replay 复现一次）"
+      - id: operation_duration_s
+        name: 单次操作耗时
+        unit: s
+        target: null
+        target_op: null
+        mode: offline
+        source: "run 命令的墙钟"
+        note: "设计 §6.2 未给单次操作耗时的数值目标（只给命令条数 ≤ 3）→ 不编造目标值"
