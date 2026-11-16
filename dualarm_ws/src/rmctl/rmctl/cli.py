@@ -822,6 +822,8 @@ def cmd_run(args):
         # 诚实降级 —— 退出码 3 + reason + 可粘贴 next_action，
         # 绝不抛裸异常、绝不伪造回放统计。
         print("【legacy】无法加载模型：%s" % exc)
+        print("        下一步：python3 -m rmctl init   "
+              "# 物化 build/model 绝对路径模型（mesh 相对路径解析失败时）")
         print("        下一步：source scripts/rmenv.sh   "
               "# 提供 GLIBCXX_3.4.31+ 的 libstdc++ 后重试")
         return 3

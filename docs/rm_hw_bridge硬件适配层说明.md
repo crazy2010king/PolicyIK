@@ -17,6 +17,8 @@
 | 连真机看状态快照（R004 全字段） | `python3 -m rmctl connect --arm left --ip <ip> --json` |
 | 探夹爪（协议/波特率/ID/寄存器基数/供电/代际） | `python3 -m rmctl gripper probe --arm left --json` |
 | 夹爪开合自检 + 六类判定自检（离线代理） | `python3 -m rmctl gripper cycle --count 100 --json` / `python3 -m rmctl gripper judge --fault each --count 10 --json` |
+| 看夹爪接入手册（接线 / 协议 / 寄存器表 / 判定表 / 恢复阶梯 / 互锁 / 真机回填） | `docs/rm_gripper接入与状态判定.md` |
+| 跑夹爪离线证据链（三段断言，mode=fake） | `python3 scripts/gripper_offline_evidence.py --out build/reports/s05_offline_gripper.json` |
 | 复核白/黑名单静态审计 | `python3 -m rm_hw_bridge.audit --repo`（退出码 0 = 零违规，3 = 有违规） |
 | 看 ABI 唯一真值 | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/abi_spec.yaml` |
 | 看符号契约唯一真值（22 核心 + 21 支持 + 黑名单） | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml` |

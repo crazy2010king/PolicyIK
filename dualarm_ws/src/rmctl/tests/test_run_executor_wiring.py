@@ -70,6 +70,30 @@ def test_run_default_is_marked_legacy(traj_file, capsys):
         assert "scripts/rmenv.sh" in out
 
 
+def test_run_legacy_model_load_failure_degrades_to_exit_3(traj_file, capsys, monkeypatch):
+    """模型加载失败（如未跑 ``rmctl init`` 物化绝对路径 URDF）→ **诚实降级**。
+
+    绝不能抛裸异常（那会让调用方拿到 traceback 而不是可执行的下一步），
+    也绝不能伪造回放统计：必须退出码 3 + reason + 可粘贴 next_action。
+    """
+    from rmctl import vendor_env
+
+    def _boom(_args):
+        raise vendor_env.VendorUnavailable(
+            "厂商规划内核加载模型失败：mesh 相对路径解析失败")
+
+    monkeypatch.setattr(rmctl_cli, "_load_model", _boom)
+    rc = rmctl_cli.main(["run", "--traj", traj_file, "--fast"])
+    out = capsys.readouterr().out
+    assert rc == 3, out
+    assert "legacy" in out
+    assert "不作验收证据" in out
+    assert "无法加载模型" in out
+    # 可粘贴的下一步：既指向物化模型，也保留 rmenv 兜底
+    assert "rmctl init" in out
+    assert "scripts/rmenv.sh" in out
+
+
 def test_run_live_unreachable_controller_is_error(traj_file, tmp_path, capsys):
     """--live 且控制器不可达 → 退出码 4 + reason 明确 + 无伪造数值。"""
     out = str(tmp_path / "live_report.json")
