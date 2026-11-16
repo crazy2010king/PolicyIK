@@ -14,6 +14,10 @@
   （:func:`~rm75_drake.tasks.solver.solve_task`：numpy 快路径）。
 * :mod:`rm75_drake.tasks.state_machine` —— **任务状态机**
   （单一主状态源 + 原子 goal_id 推进；零 pydrake 依赖）。
+* :mod:`rm75_drake.tasks.perception` —— **感知适配接口**（S06-T06）：
+  非阻塞离散事件（回调 + 有界队列 + ``poll``）+ 保守场景表示
+  （包围盒按 ``base_margin + 速率 × 延迟`` 膨胀）+ **重建碰撞检查器**
+  （旧 checker 看不见新注册的几何 ⇒ 不重建等于保守场景静默失效）。
 * :mod:`rm75_drake.tasks.bimanual` —— **双臂搬运 / 交接原语**（S06-T05）：
   复用 :mod:`rm75_drake.coordinated` 的**常数 ``X_LR``**（角色互换用
   ``inv(X_LR)``）⇒ **不新建第二套协调规划**；交接点的相对位姿残差
@@ -80,6 +84,14 @@ __all__ = [
     "TaskResult",
     "state_machine",
     "bimanual",
+    "perception",
+    "PerceptionError",
+    "PerceptionObservation",
+    "PerceptionPolicy",
+    "PerceptionSnapshot",
+    "PerceptionBus",
+    "PerceptionSceneResult",
+    "apply_perception_scene",
     "TaskState",
     "TERMINAL_STATES",
     "TASK_STAGES",
@@ -97,6 +109,7 @@ _LAZY_MODULES = (
     "solver",
     "state_machine",
     "bimanual",
+    "perception",
 )
 
 #: 从 ``schema`` 子模块透出的符号。
@@ -155,6 +168,17 @@ _STATE_MACHINE_EXPORTS = (
     "TaskStateMachine",
 )
 
+#: 从 ``perception`` 子模块透出的符号。
+_PERCEPTION_EXPORTS = (
+    "PerceptionError",
+    "PerceptionObservation",
+    "PerceptionPolicy",
+    "PerceptionSnapshot",
+    "PerceptionBus",
+    "PerceptionSceneResult",
+    "apply_perception_scene",
+)
+
 #: 从 ``goals`` 子模块透出的符号。
 _GOALS_EXPORTS = (
     "GOAL_KINDS",
@@ -175,6 +199,11 @@ def __getattr__(name: str) -> Any:
         return module
     if name in _SCHEMA_EXPORTS:
         module = importlib.import_module(f"{__name__}.schema")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name in _PERCEPTION_EXPORTS:
+        module = importlib.import_module(f"{__name__}.perception")
         value = getattr(module, name)
         globals()[name] = value
         return value
