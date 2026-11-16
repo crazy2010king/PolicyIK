@@ -703,6 +703,31 @@ def cmd_ik(args):
 
 
 def cmd_plan(args):
+    """``rmctl plan``：规划并做四道校验。
+
+    **两种模式**（默认行为逐字不变）：
+
+    * **进程内直调**（默认）：规划与四道校验都在 rmctl 进程里完成
+      （离线对照 / 回退用），不需要先起任何服务。
+    * **规划服务**（``--via-service``）：规划交给独立的 ``rm_planner`` 服务
+      （Unix socket 控制面 + 每请求独占 worker 子进程），规划进程可以
+      独立崩溃 / 重启。**前置条件**：先起服务
+      ``rm-planner --ws <仓库根> --socket <ws>/build/run/rm_planner.sock``。
+
+    两种模式输出**同构**（管线 / 成功与否 / 耗时 / 点数 / 四道校验逐项
+    PASS-FAIL / 失败原因）；服务模式额外打印服务端返回的 per-node 指标。
+
+    **退出码**（两种模式一致）：
+
+    * ``0`` —— 成功（四道校验全过）
+    * ``1`` —— 规划失败
+    * ``2`` —— 参数错误
+    * ``3`` —— 四道校验未通过
+    * ``4`` —— 规划超时（**服务端强制中断** worker，属于"需要人看"的类别，
+      与 ``3``（校验未过）区分开）
+    """
+    if getattr(args, "via_service", False):
+        return _cmd_plan_via_service(args)
     from .planner import plan_joint, plan_pose, freespace_profiles
     from .verify import verify
     model = _load_model(args)
@@ -745,6 +770,214 @@ def cmd_plan(args):
         _save_traj(args.out, out, model, {"verify": report})
         print("\n轨迹已保存: %s" % args.out)
     return 0 if (report is None or report["ok"]) else 3
+
+
+# --------------------------------------------------------------------------
+# `rmctl plan --via-service`：走 rm_planner 规划服务（薄客户端）
+# --------------------------------------------------------------------------
+#
+# 两种模式的输出**同构**：管线 / 成功与否 / 耗时 / 点数 / 四道校验逐项
+# PASS-FAIL / 失败原因 —— 服务模式额外打印服务端返回的 per-node 指标
+# （各节点 name + 耗时），便于运维诊断。
+#
+# 退出码沿用既有约定：SUCCESS=0、FAILED=1、参数错误=2、校验未过=3、
+# TIMEOUT=4（超时是"需要人看"的类别，与校验未过的 3 区分开）。
+
+#: 服务模式下四道校验的**逐项**结论（与进程内模式的 ``report["checks"]``
+#: 键名一致 → 输出同构）。
+_PLAN_CHECK_NAMES = ("limits", "discrete_collision", "continuous_collision")
+
+
+def _service_goal(args):
+    """把 CLI 目标参数翻译成契约层的 ``goal`` 字典。
+
+    :return: ``{"type": ..., "values": [...]}``；缺目标 → ``None``
+    """
+    if getattr(args, "goal_pose", None):
+        vals = _parse_floats(args.goal_pose)
+        if vals is None or len(vals) not in (6, 7):
+            return None
+        return {"type": "pose", "values": [float(v) for v in vals]}
+    goal = _parse_floats(args.goal)
+    if goal is None:
+        return None
+    return {"type": "joint", "values": [float(v) for v in goal]}
+
+
+def _service_exit_code(response):
+    """服务模式响应 → 退出码（见 ``cmd_plan`` 的 docstring）。"""
+    status = str(response.get("status") or "")
+    if status == "SUCCESS":
+        return 0
+    if status == "INVALID_REQUEST":
+        return 2
+    if status == "TIMEOUT":
+        return 4
+    if status == "CANCELLED":
+        return 1
+    verification = response.get("verification")
+    verification = verification if isinstance(verification, dict) else {}
+    issues = list(verification.get("issues") or [])
+    reason = str(response.get("failure_reason") or "")
+    if issues or reason.startswith("四道校验未通过"):
+        return 3
+    return 1
+
+
+def _print_service_nodes(metrics):
+    """打印服务端返回的 per-node 指标（name + 耗时 + 状态）。"""
+    nodes = metrics.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return
+    print("\n节点耗时:")
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        name = str(node.get("name") or "")
+        elapsed = float(node.get("elapsed_s") or 0.0)
+        status = str(node.get("status") or "")
+        message = str(node.get("message") or "")
+        print("  %-34s %8.3fs  %s" % (name, elapsed, status))
+        if message and status != "SUCCESS":
+            print("        %s" % message)
+
+
+def _cmd_plan_via_service(args):
+    """``rmctl plan --via-service``：把规划交给 rm_planner 服务。
+
+    客户端只做三件事：**翻译请求**（CLI 参数 → 契约层字典）、**发一行 JSON**、
+    **渲染响应**。规划本身在服务端进程里跑（可独立崩溃 / 重启）。
+    """
+    from .planner_service.client import PlannerClient
+    from .planner_service.contract import JOINT_COUNT
+    from .planner_service.config import load_profiles_config
+
+    ws = getattr(args, "ws", None)
+    goal = _service_goal(args)
+    if goal is None:
+        print("需要 --goal（关节角，逗号分隔）或 --goal-pose")
+        return 2
+    start = _parse_floats(getattr(args, "start", None))
+    if start is None:
+        # 缺省起始位形 = 零位（与进程内模式的 model.home_state() 一致；
+        # 关节数取契约层 JOINT_COUNT → 客户端**不需要**加载厂商内核）。
+        start = [0.0] * JOINT_COUNT
+
+    # timeout_ms / scene_version 的**唯一来源**：profiles.yaml。
+    profiles = load_profiles_config(ws)
+    spec = profiles.get("spec") or {}
+    timeout_ms = getattr(args, "timeout_ms", None) or spec.get("timeout_ms")
+    if not timeout_ms:
+        print("规划服务请求缺少 timeout_ms（profiles.yaml 不可用: %s）"
+              % (profiles.get("reason") or "未知"))
+        return 2
+    scene_version = spec.get("scene_version", 1)
+
+    client = PlannerClient(
+        socket_path=getattr(args, "socket", None),
+        ws=ws,
+        timeout_ms=int(timeout_ms),
+    )
+    request = {
+        "profile": "FREESPACE",
+        "group": getattr(args, "group", None) or "rm75_arm",
+        "start_state": [float(v) for v in start],
+        "goal": goal,
+        "constraints": {},
+        "seed": int(getattr(args, "seed", 0) or 0),
+        "timeout_ms": int(timeout_ms),
+        "scene_version": int(scene_version),
+        "deterministic": True,
+    }
+    response = client.plan(request)
+    return _render_service_plan(response, args)
+
+
+def _render_service_plan(response, args):
+    """渲染服务响应（输出与进程内模式同构）+ 返回退出码。"""
+    metrics = response.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    verification = response.get("verification")
+    verification = verification if isinstance(verification, dict) else {}
+    trajectory = response.get("trajectory")
+    trajectory = trajectory if isinstance(trajectory, dict) else {}
+    status = str(response.get("status") or "")
+    ok = status == "SUCCESS"
+    pipeline = str(metrics.get("pipeline") or "")
+    elapsed = float(metrics.get("elapsed_total_s") or 0.0)
+    points = trajectory.get("points") or []
+
+    print("管线 %s | 成功=%s | 耗时 %.3fs | 点数 %d"
+          % (pipeline, ok, elapsed, len(points)))
+    if not ok:
+        print("失败原因: %s" % (response.get("failure_reason") or "未知"))
+
+    scale = metrics.get("retimed_scale")
+    if scale:
+        print("\n自动降速重定时 ×%.3f（路径不变）→ 四道校验全部通过" % float(scale))
+
+    issues = list(verification.get("issues") or [])
+    has_verification = bool(verification.get("ok")) or bool(issues)
+    if has_verification:
+        print("\n四道校验: %s" % ("全部通过" if verification.get("ok") else "未通过"))
+        for name in _PLAN_CHECK_NAMES:
+            res = verification.get(name)
+            res = res if isinstance(res, dict) else {}
+            print("  [%s] %s" % ("PASS" if res.get("ok") else "FAIL", name))
+            for issue in (res.get("issues") or [])[:5]:
+                print("        %s" % issue)
+
+    _print_service_nodes(metrics)
+
+    next_action = str(metrics.get("next_action") or "")
+    if next_action:
+        print("\n下一步: %s" % next_action)
+
+    if ok and getattr(args, "out", None):
+        _save_service_traj(args.out, response, metrics)
+        print("\n轨迹已保存: %s" % args.out)
+
+    return _service_exit_code(response)
+
+
+def _save_service_traj(path, response, metrics):
+    """把服务返回的轨迹落盘（形状与进程内模式的 ``--out`` 一致）。"""
+    from .planner import PlanOutcome
+
+    trajectory = response.get("trajectory") or {}
+    raw_points = trajectory.get("points") or []
+    times = [float(t) for t in (trajectory.get("times") or [])]
+    points = []
+    for index, item in enumerate(raw_points):
+        if isinstance(item, dict):
+            positions = item.get("positions") or item.get("q") or []
+            if index < len(times):
+                times[index] = float(item.get("t", times[index]))
+        else:
+            positions = item
+        points.append([float(v) for v in positions])
+
+    class _TrajModel(object):
+        """最小模型替身（服务模式不需要加载厂商内核）。"""
+
+        def __init__(self, group, joint_names):
+            self.group = group
+            self.joint_names = list(joint_names)
+
+    model = _TrajModel(
+        str(metrics.get("group") or "rm75_arm"),
+        trajectory.get("joint_names") or [],
+    )
+    outcome = PlanOutcome(
+        True,
+        "",
+        times,
+        points,
+        float(metrics.get("elapsed_total_s") or 0.0),
+        str(metrics.get("pipeline") or ""),
+    )
+    _save_traj(path, outcome, model, {"verify": response.get("verification")})
+    return path
 
 
 def cmd_check(args):
@@ -2501,7 +2734,39 @@ def build_parser():
     s.add_argument("--seed", default=None)
     s.set_defaults(func=cmd_ik)
 
-    s = sub.add_parser("plan", help="规划并校验")
+    s = sub.add_parser(
+        "plan",
+        help="规划并校验",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "规划并做四道校验。\n"
+            "\n"
+            "两种模式（默认行为逐字不变）：\n"
+            "  1) 进程内直调（默认）：规划与四道校验都在 rmctl 进程内完成，\n"
+            "     适合离线对照与回退；**不需要**先起任何服务。\n"
+            "  2) 规划服务（--via-service）：规划交给独立的 rm_planner 服务\n"
+            "     （Unix socket + 每请求独占 worker 子进程），规划进程可以\n"
+            "     独立崩溃 / 重启。\n"
+            "     前置条件：先启动服务 ——\n"
+            "       rm-planner --ws <仓库根> --socket <仓库根>/build/run/rm_planner.sock\n"
+            "\n"
+            "两种模式输出同构：管线 / 成功与否 / 耗时 / 点数 / 四道校验逐项\n"
+            "PASS-FAIL / 失败原因；服务模式额外打印服务端 per-node 指标\n"
+            "（各节点 name + 耗时）。\n"
+            "\n"
+            "退出码（两种模式一致）：\n"
+            "  0 成功（四道校验全过）\n"
+            "  1 规划失败\n"
+            "  2 参数错误\n"
+            "  3 四道校验未通过\n"
+            "  4 规划超时（服务端强制中断 worker，属于“需要人看”的类别，\n"
+            "    与 3（校验未过）区分开）\n"
+            "\n"
+            "注：--pipeline / --num-planners / --planning-time / --no-verify /\n"
+            "--no-continuous / --no-retime 只作用于进程内模式；服务模式的管线与\n"
+            "校验参数由服务端的 workcell/planner/*.yaml 决定（唯一来源）。\n"
+        ),
+    )
     s.add_argument("--start", default=None)
     s.add_argument("--goal", default=None, help="目标关节角")
     s.add_argument("--goal-pose", dest="goal_pose", default=None)
@@ -2512,6 +2777,16 @@ def build_parser():
     s.add_argument("--no-verify", action="store_true")
     s.add_argument("--no-continuous", action="store_true")
     s.add_argument("--no-retime", action="store_true", help="禁止自动降速重定时")
+    s.add_argument("--via-service", dest="via_service", action="store_true",
+                   help="走 rm_planner 规划服务（默认：进程内直调）")
+    s.add_argument("--socket", default=None,
+                   help="[--via-service] 规划服务 socket 路径"
+                        "（默认 <ws>/build/run/rm_planner.sock）")
+    s.add_argument("--seed", dest="seed", type=int, default=0,
+                   help="[--via-service] 规划种子（同种子 → 同结果，默认 0）")
+    s.add_argument("--timeout-ms", dest="timeout_ms", type=int, default=None,
+                   help="[--via-service] 服务端硬超时（毫秒，"
+                        "默认取 workcell/planner/profiles.yaml）")
     s.set_defaults(func=cmd_plan)
 
     s = sub.add_parser("check", help="对轨迹文件做四道校验")

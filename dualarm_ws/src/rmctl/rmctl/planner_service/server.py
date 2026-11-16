@@ -130,6 +130,27 @@ class _Worker:
         self.stderr_tail = ""
 
     # -- 生命周期 ------------------------------------------------------
+    def close_stdin(self) -> None:
+        """请 worker 收工并关闭 stdin（**避免 reap 干等超时**）。
+
+        worker 的主循环读到 stdin EOF 或 ``{"cmd": "quit"}`` 才会退出；服务
+        端收到响应后必须显式让它收工，否则 ``reap()`` 会一直等到超时
+        （历史上每条 plan 白等 5 s）。
+        """
+        stream = self.proc.stdin
+        if stream is None:
+            return
+        try:
+            if self.proc.poll() is None:
+                try:
+                    stream.write('{"cmd": "quit"}\n')
+                    stream.flush()
+                except (OSError, ValueError):
+                    pass
+            stream.close()
+        except (OSError, ValueError):  # pragma: no cover - 已关闭
+            pass
+
     def kill(self) -> None:
         """SIGKILL worker（**硬中断**，不留残留进程）。"""
         if self.proc.poll() is not None:
@@ -560,6 +581,8 @@ class PlannerServer:
         finally:
             with self._lock:
                 self._active.pop(plan_id, None)
+            # 先请 worker 收工（关 stdin），再回收 —— 否则 reap 会等满超时。
+            worker.close_stdin()
             worker.reap()
             self._bump("workers_reaped")
         status = response.get("status")
