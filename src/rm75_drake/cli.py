@@ -19,8 +19,13 @@
     **不做视觉伺服、不做力控夹取**（感知属 S06；力曲线未标定，
     见 :func:`rm75_drake.gripper.force_from_position`）。
 ``bimanual``
-    **未实现**：双臂紧协调属 S05。本子命令明确报错并返回**非 0** 退出码，
-    绝不静默成功、也绝不假装规划。
+    **双臂紧协调规划（S05 已实现）**：走完整链路（最小坐标参数化 →
+    自研 8 维凸区域 → GCS → 14 维重定时 → 双轨迹 → 14 维零逃逸复检），
+    打印诊断；``--json`` 输出**单行** JSON 摘要
+    （status / reason / stage / diagnostics）。
+    「相对位姿固定」由**构造性满足**（最小坐标映射），残差逐点 ≤1e-6。
+    真机 / 物理指标**无真机 ⇒ 硬件门控 SKIP**：逐条列入
+    ``unverified_metrics``，**绝不**用合成数据冒充物理达标。
 ``replay``
     离线回放：对录制文件做碰撞复检（与 S02-T05 同一 ``edge_step_size``），
     打印逃逸数；**逃逸 > 0 → 退出码 1**。
@@ -45,7 +50,7 @@
 ====  ==========================================================
 0     成功
 1     业务失败（规划失败 / 回放发现逃逸 / 安全态触发 / 执行违规）
-2     用法错误（参数非法）或**命令未实现**（bimanual）
+2     用法错误（参数非法 / 路径缺失 / 命令未实现）
 ====  ==========================================================
 
 headless 约定
@@ -60,6 +65,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -91,6 +97,14 @@ __all__ = [
     "UNVERIFIED_CALIBRATION_METRICS",
     "DEFAULT_CALIBRATION_SAMPLES",
     "DEFAULT_CALIBRATION_FILE",
+    "DEFAULT_DUAL_SCENARIO",
+    "BIMANUAL_MESSAGE",
+    "BIMANUAL_DEFAULT_X_XYZ",
+    "BIMANUAL_DEFAULT_X_RPY",
+    "BIMANUAL_CANDIDATE_LEADER_POSTURES",
+    "UNVERIFIED_COORDINATED_METRICS",
+    "bimanual_x_lr_matrix",
+    "select_bimanual_start",
     "build_parser",
     "main",
 ]
@@ -132,9 +146,43 @@ DEFAULT_CALIBRATION_FILE = str(paths.calibration_files_dir / "dual_arm.yaml")
 
 #: bimanual 的归属说明（**必须**出现在输出里，便于人工核对路线图）。
 BIMANUAL_MESSAGE = (
-    "bimanual 未实现：双臂紧协调（双臂 IK / 双臂 IRIS / 双臂 GCS / 协同抓取）"
-    "归属 **S05**（多机器人协同切片），本切片 S02 只交付单臂链路。"
-    "本命令**不做任何规划**，并以非 0 退出码退出（不静默成功）。"
+    "bimanual 已实现：双臂紧协调规划（S05）—— 最小坐标参数化（相对位姿约束"
+    "**构造性满足**）→ 自研 8 维凸区域 → GCS → 14 维重定时 → 共享时间轴双轨迹"
+    "→ 14 维零逃逸复检。\n"
+    "真机 / 物理指标**无真机 ⇒ 硬件门控 SKIP**（逐条列入 unverified_metrics，"
+    "绝不用合成数据冒充物理达标）。"
+)
+
+#: 双臂场景真相源（``bimanual`` 的默认场景；S04 的双臂场景）。
+DEFAULT_DUAL_SCENARIO = str(paths.scenarios_dir / "dual_arm.yaml")
+
+#: 相对位姿 ``X_LR``（leader TCP 系 → follower TCP 系）的**默认占位值**：
+#: 沿 leader TCP 的 x 轴偏 0.2 m（“两臂夹持同一物体”的最小几何占位）。
+#: ⚠ 这是**占位**，不是标定结果：真实值由任务 / 标定给定，**必须显式传入**
+#: （``--x-xyz`` / ``--x-rpy`` / ``--x-matrix``）才是真实约束。
+BIMANUAL_DEFAULT_X_XYZ: Tuple[float, float, float] = (0.2, 0.0, 0.0)
+BIMANUAL_DEFAULT_X_RPY: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+#: leader 起始位形的**候选表**（按顺序取第一个可行的）：
+#: 每个候选都要满足「follower 有解析 IK 解 + 14 维限位内 + 14 维碰撞自由」，
+#: 且 follower 的可行 ψ **窗口足够宽**（≥3 个连续网格点）时才会被选中。
+BIMANUAL_CANDIDATE_LEADER_POSTURES: Tuple[Tuple[float, ...], ...] = (
+    (-0.2, 1.0, -1.0, -1.0, 0.0, 0.2, 0.0),
+    (0.2, 2.0, -2.0, 1.2, 0.0, -0.3, 0.0),
+    (0.2, 1.0, -1.0, 1.2, 0.0, -0.3, 0.0),
+    (-0.2, 1.0, 0.0, -1.0, 0.0, 0.6, 0.0),
+    (0.2, 2.0, 0.0, -1.0, 0.0, 0.6, 0.0),
+    (0.0, -0.3, 0.0, 1.2, 0.0, 0.2, 0.0),
+)
+
+#: 无真机时**必须如实列出**的未验证物理指标（真相源；CLI 与
+#: ``scripts/coordinated_stats.py`` 共用同一份，**禁止另立第二份清单**）。
+UNVERIFIED_COORDINATED_METRICS: Tuple[str, ...] = (
+    "真实（真机）双臂紧协调规划成功率 ≥ 95%（本环境无真机，未验证）",
+    "真实（真机）协调求解阶段 P95 < 3 s（未验证）",
+    "真实（真机）共持位姿漂移 < 2 mm / 10 s（未验证）",
+    "真实（真机）双臂相对位姿保持（构造性满足仅在仿真中验证）（未验证）",
+    "真实（真机）14 维零逃逸（离线仿真零逃逸 ≠ 真机零逃逸）（未验证）",
 )
 
 
@@ -277,10 +325,135 @@ def build_parser() -> argparse.ArgumentParser:
 
     bimanual = subparsers.add_parser(
         "bimanual",
-        help="双臂规划（**未实现**，属 S05；返回非 0 退出码）",
+        help="双臂紧协调规划（S05 已实现：最小坐标 → 区域 → GCS → 重定时 → 复检）",
         description=BIMANUAL_MESSAGE,
     )
-    bimanual.add_argument("--scenario", default=DEFAULT_SCENARIO, help=argparse.SUPPRESS)
+    bimanual.add_argument(
+        "--scenario",
+        default=DEFAULT_DUAL_SCENARIO,
+        help=f"双臂场景真相源 YAML（默认：{DEFAULT_DUAL_SCENARIO}）",
+    )
+    bimanual.add_argument(
+        "--x-xyz",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help=(
+            "相对位姿 X_LR 的平移（m，leader TCP 系 → follower TCP 系）；"
+            f"默认 {BIMANUAL_DEFAULT_X_XYZ}（**占位值**：真实值请显式给出）"
+        ),
+    )
+    bimanual.add_argument(
+        "--x-rpy",
+        type=float,
+        nargs=3,
+        metavar=("ROLL", "PITCH", "YAW"),
+        default=None,
+        help=(
+            "相对位姿 X_LR 的姿态（**rad**）；"
+            f"默认 {BIMANUAL_DEFAULT_X_RPY}（占位值）"
+        ),
+    )
+    bimanual.add_argument(
+        "--x-matrix",
+        type=float,
+        nargs=16,
+        metavar=tuple(f"M{i}" for i in range(16)),
+        default=None,
+        help="相对位姿 X_LR 的完整 4×4 矩阵（行优先；给了就覆盖 --x-xyz/--x-rpy）",
+    )
+    bimanual.add_argument(
+        "--leader",
+        choices=("left", "right"),
+        default="left",
+        help="leader 臂（约束的参考臂；默认 left）",
+    )
+    bimanual.add_argument(
+        "--follower",
+        choices=("left", "right"),
+        default="right",
+        help="follower 臂（跟随 leader 保持相对位姿；默认 right）",
+    )
+    bimanual.add_argument(
+        "--start-joints",
+        type=float,
+        nargs=7,
+        metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7"),
+        default=None,
+        help=(
+            "leader 起始位形（rad，7 项）；不给则从内置候选表里挑一个"
+            "**可行**的（follower 有解 + 限位内 + 碰撞自由）"
+        ),
+    )
+    bimanual.add_argument(
+        "--goal-joints",
+        type=float,
+        nargs=7,
+        metavar=("Q1", "Q2", "Q3", "Q4", "Q5", "Q6", "Q7"),
+        default=None,
+        help="leader 终点位形（rad，7 项）；不给则取起点 + --goal-step（单轴微移）",
+    )
+    bimanual.add_argument(
+        "--goal-axis",
+        type=int,
+        default=0,
+        help="默认终点在 leader 的哪个关节上微移（0 起；默认 0）",
+    )
+    bimanual.add_argument(
+        "--goal-step",
+        type=float,
+        default=0.02,
+        help="默认终点的微移幅度（rad，默认 0.02）",
+    )
+    bimanual.add_argument(
+        "--num-regions",
+        type=int,
+        default=3,
+        help="最小坐标凸区域数（默认 3）",
+    )
+    bimanual.add_argument(
+        "--path-step",
+        type=float,
+        default=0.005,
+        help="leader 路径推进步长（rad，默认 0.005；越大越快但重定时残差越大）",
+    )
+    bimanual.add_argument(
+        "--psi-grid",
+        type=int,
+        default=33,
+        help="follower 肘点方位角 ψ 的扫描网格数（默认 33）",
+    )
+    bimanual.add_argument(
+        "--collision-edge-step-size",
+        type=float,
+        default=0.02,
+        help="14 维碰撞复检的密采样步长（rad，默认 0.02）",
+    )
+    bimanual.add_argument(
+        "--dt",
+        type=float,
+        default=0.005,
+        help="输出轨迹的采样周期（s，默认 0.005）",
+    )
+    bimanual.add_argument(
+        "--seed",
+        type=int,
+        default=20250516,
+        help="区域生成 / 采样基线的随机种子（默认 20250516；固定 ⇒ 可复现）",
+    )
+    bimanual.add_argument(
+        "--no-degradation",
+        dest="allow_degradation",
+        action="store_false",
+        default=True,
+        help="禁止降级（区域链不完整时直接失败，不走采样基线）",
+    )
+    bimanual.add_argument(
+        "--json",
+        action="store_true",
+        help="以**单行** JSON 输出结果摘要（status / reason / stage / diagnostics）",
+    )
 
     replay = subparsers.add_parser(
         "replay",
@@ -562,12 +735,465 @@ def _cmd_pick(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-# ── bimanual ────────────────────────────────────────────────────────────
+# ── bimanual（双臂紧协调，S05）──────────────────────────────────────────
 def _cmd_bimanual(args: argparse.Namespace) -> int:
-    """``bimanual``：**未实现**（属 S05），返回非 0 退出码。"""
-    print(BIMANUAL_MESSAGE)
-    print("[bimanual] 本命令不做任何规划，也不产生任何轨迹。")
-    return EXIT_USAGE
+    """``bimanual``：双臂紧协调规划（S05）。
+
+    退出码
+    ------
+    * ``0``：规划成功（两条**共享时间轴**的 7 维轨迹 + 零逃逸 + 相对位姿
+      残差逐点达标）；
+    * ``1``：业务失败（follower 无解 / 无路径 / 逃逸 / 残差超阈值 /
+      找不到可行起始位形）；
+    * ``2``：用法错误（场景缺失 / 参数非法 / X_LR 非法）。
+
+    真机 / 物理指标**无真机 ⇒ 硬件门控 SKIP**：逐条列入
+    ``unverified_metrics``（绝不拿合成数据冒充物理达标）。
+    """
+    from .bimanual.dual_scene import build_dual_scene_from_path
+    from .coordinated.planner import CoordinatedPlanOptions, plan_coordinated
+
+    scenario_path = Path(args.scenario)
+    if not scenario_path.is_file():
+        raise _UsageError(f"双臂场景真相源不存在：{scenario_path}")
+    try:
+        bundle = build_dual_scene_from_path(scenario_path)
+    except Exception as exc:  # 场景非法 → 用法错误（点名原因）
+        raise _UsageError(f"双臂场景装配失败：{exc}") from exc
+
+    x_lr, x_meta = _bimanual_x_lr(args)
+    leader = str(getattr(args, "leader", "left"))
+    follower = str(getattr(args, "follower", "right"))
+    if leader == follower:
+        raise _UsageError(f"--leader 与 --follower 不能相同（当前都是 {leader}）")
+    psi_grid = _bimanual_positive_int(getattr(args, "psi_grid", 33), "--psi-grid")
+    path_step = _bimanual_positive_float(
+        getattr(args, "path_step", 0.005), "--path-step"
+    )
+    dt = _bimanual_positive_float(getattr(args, "dt", 0.005), "--dt")
+    edge_step = _bimanual_positive_float(
+        getattr(args, "collision_edge_step_size", 0.02), "--collision-edge-step-size"
+    )
+    num_regions = _bimanual_positive_int(
+        getattr(args, "num_regions", 3), "--num-regions"
+    )
+    goal_step = _bimanual_non_negative_float(
+        getattr(args, "goal_step", 0.02), "--goal-step"
+    )
+
+    # ── 起点 / 终点 ────────────────────────────────────────────────────
+    start, psi_start, start_source = _bimanual_resolve_start(
+        args, bundle, x_lr, psi_grid=psi_grid, leader=leader, follower=follower
+    )
+    if start is None:
+        payload = _bimanual_payload(
+            success=False,
+            status="failed",
+            reason="no_feasible_start",
+            stage="parameterize",
+            message=(
+                "[parameterize] 失败（no_feasible_start）：候选表里没有"
+                "任何**可行**的 leader 起始位形（follower 有解析 IK 解 + "
+                "14 维限位内 + 14 维碰撞自由）；请显式给 --start-joints "
+                "或调整 --x-xyz / --x-rpy"
+            ),
+            scenario_path=scenario_path,
+            x_meta=x_meta,
+            leader=leader,
+            follower=follower,
+            start=None,
+            goal=None,
+            diagnostics={},
+        )
+        _emit_bimanual(args, payload)
+        return EXIT_FAILURE
+
+    goal = _bimanual_resolve_goal(args, start, goal_step=goal_step)
+
+    options = CoordinatedPlanOptions(
+        num_regions=num_regions,
+        path_step=path_step,
+        dt=dt,
+        psi_grid=psi_grid,
+        collision_edge_step_size=edge_step,
+        allow_degradation=bool(getattr(args, "allow_degradation", True)),
+        random_seed=int(getattr(args, "seed", 20250516)),
+    )
+    result = plan_coordinated(
+        bundle,
+        x_lr=x_lr,
+        start_leader_q=start,
+        goal_leader_q=goal,
+        leader=leader,
+        follower=follower,
+        psi_start=psi_start,
+        options=options,
+    )
+    diagnostics = dict(result.diagnostics)
+    diagnostics["start_source"] = start_source
+    payload = _bimanual_payload(
+        success=bool(result.success),
+        status="ok" if result.success else "failed",
+        reason=str(result.reason or ""),
+        stage=str(result.stage or ""),
+        message=str(result.message),
+        scenario_path=scenario_path,
+        x_meta=x_meta,
+        leader=leader,
+        follower=follower,
+        start=start,
+        goal=goal,
+        diagnostics=diagnostics,
+    )
+    _emit_bimanual(args, payload)
+    return EXIT_OK if result.success else EXIT_FAILURE
+
+
+def _bimanual_payload(
+    *,
+    success: bool,
+    status: str,
+    reason: str,
+    stage: str,
+    message: str,
+    scenario_path: Path,
+    x_meta: Dict[str, Any],
+    leader: str,
+    follower: str,
+    start: Optional[np.ndarray],
+    goal: Optional[np.ndarray],
+    diagnostics: Dict[str, Any],
+) -> Dict[str, Any]:
+    """组装 ``bimanual`` 的载荷（**成功 / 失败同构**）。"""
+    return {
+        "command": "bimanual",
+        "status": status,
+        "success": bool(success),
+        "reason": reason,
+        "stage": stage,
+        "message": message,
+        "scenario": str(scenario_path),
+        "x_lr": x_meta,
+        "leader": leader,
+        "follower": follower,
+        "start_joints": None if start is None else [float(v) for v in start],
+        "goal_joints": None if goal is None else [float(v) for v in goal],
+        "diagnostics": diagnostics,
+        "unverified_metrics": list(UNVERIFIED_COORDINATED_METRICS),
+    }
+
+
+def _emit_bimanual(args: argparse.Namespace, payload: Dict[str, Any]) -> None:
+    """输出 ``bimanual`` 结果（``--json`` ⇒ **单行** JSON；否则人类可读）。"""
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, default=str))
+        return
+    print(f"[bimanual] 状态：{payload['status']}"
+          + (f"（reason={payload['reason']}）" if payload["reason"] else ""))
+    print(f"[bimanual] 场景：{payload['scenario']}")
+    x_meta = payload["x_lr"]
+    print(
+        f"[bimanual] 相对位姿 X_LR：平移={x_meta['translation']} "
+        f"姿态={x_meta['rpy']}（来源：{x_meta['source']}）"
+    )
+    print(f"[bimanual] {payload['message']}")
+    diagnostics = payload.get("diagnostics") or {}
+    for key in (
+        "num_regions",
+        "num_escapes",
+        "branch_switches",
+        "psi_switches",
+        "relative_pose_residual_max_position_m",
+        "relative_pose_residual_max_orientation_rad",
+        "region_duration_s",
+        "gcs_duration_s",
+        "map_duration_s",
+        "retime_duration_s",
+        "collision_duration_s",
+        "total_duration_s",
+    ):
+        if key in diagnostics:
+            print(f"[bimanual] {key} = {diagnostics[key]}")
+    if diagnostics.get("degraded"):
+        print(
+            "[bimanual] **已降级**（采样基线兜底）："
+            f"{diagnostics.get('degradation_reason') or 'n/a'}"
+        )
+    print("[bimanual] 以下物理指标**未验证**（不得当作通过）：")
+    for item in payload["unverified_metrics"]:
+        print(f"[bimanual]   - {item}")
+
+
+def _bimanual_positive_float(value: Any, name: str) -> float:
+    """把参数规整成**正有限浮点数**（非法 → :class:`_UsageError`，点名）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise _UsageError(f"{name} 必须是数值，实际：{value!r}") from exc
+    if not np.isfinite(number):
+        raise _UsageError(f"{name} 必须是有限值，实际：{value!r}")
+    if number <= 0.0:
+        raise _UsageError(f"{name} 必须是正有限值，实际：{value!r}")
+    return number
+
+
+def _bimanual_non_negative_float(value: Any, name: str) -> float:
+    """把参数规整成**非负有限浮点数**（非法 → :class:`_UsageError`，点名）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise _UsageError(f"{name} 必须是数值，实际：{value!r}") from exc
+    if not np.isfinite(number):
+        raise _UsageError(f"{name} 必须是有限值，实际：{value!r}")
+    if number < 0.0:
+        raise _UsageError(f"{name} 必须是非负有限值，实际：{value!r}")
+    return number
+
+
+def _bimanual_positive_int(value: Any, name: str) -> int:
+    """把参数规整成**正整数**（非法 → :class:`_UsageError`，点名）。"""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise _UsageError(f"{name} 必须是整数，实际：{value!r}") from exc
+    if not np.isfinite(number) or abs(number - round(number)) > 1e-9:
+        raise _UsageError(f"{name} 必须是整数，实际：{value!r}")
+    if int(round(number)) < 1:
+        raise _UsageError(f"{name} 必须是正整数，实际：{value!r}")
+    return int(round(number))
+
+
+def _bimanual_x_lr(args: argparse.Namespace) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """从命令行参数构造相对位姿 ``X_LR``（**参数非法 ⇒ 用法错误**）。"""
+    try:
+        return bimanual_x_lr_matrix(
+            translation=getattr(args, "x_xyz", None),
+            rpy=getattr(args, "x_rpy", None),
+            matrix=getattr(args, "x_matrix", None),
+        )
+    except ValueError as exc:
+        raise _UsageError(str(exc)) from exc
+
+
+def bimanual_x_lr_matrix(
+    *,
+    translation: Optional[Sequence[float]] = None,
+    rpy: Optional[Sequence[float]] = None,
+    matrix: Optional[Sequence[float]] = None,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """构造相对位姿 ``X_LR``（4×4，leader TCP 系 → follower TCP 系）。
+
+    * ``matrix`` 给了 → 直接用（行优先；末行必须是 ``[0,0,0,1]``）；
+    * 否则用 ``translation`` / ``rpy``；都不给 → 用**占位默认值**
+      （:data:`BIMANUAL_DEFAULT_X_XYZ` / :data:`BIMANUAL_DEFAULT_X_RPY`），
+      并在元信息里标注 ``source="default_placeholder"``（**不隐瞒**）。
+
+    非法输入 → :class:`ValueError`（**点名**）。
+    """
+    if matrix is not None:
+        array = np.asarray(matrix, dtype=float).reshape(4, 4)
+        if not np.all(np.isfinite(array)):
+            raise ValueError("--x-matrix 含 NaN/Inf")
+        if not np.allclose(array[3, :], np.array([0.0, 0.0, 0.0, 1.0]), atol=1e-9):
+            raise ValueError(
+                "--x-matrix 的末行必须是 [0, 0, 0, 1]，实际："
+                f"{array[3, :].tolist()}"
+            )
+        rotation = array[:3, :3]
+        if not np.allclose(rotation @ rotation.T, np.eye(3), atol=1e-6):
+            raise ValueError("--x-matrix 的左上 3×3 必须是正交阵")
+        translation = array[:3, 3]
+        rpy = _bimanual_rpy_from_matrix(rotation)
+        return array, {
+            "translation": [float(v) for v in translation],
+            "rpy": [float(v) for v in rpy],
+            "source": "explicit_matrix",
+            "matrix": [[float(v) for v in row] for row in array],
+        }
+
+    explicit = translation is not None or rpy is not None
+    if translation is None:
+        translation = BIMANUAL_DEFAULT_X_XYZ
+    if rpy is None:
+        rpy = BIMANUAL_DEFAULT_X_RPY
+    translation = np.asarray([float(v) for v in translation], dtype=float)
+    angles = np.asarray([float(v) for v in rpy], dtype=float)
+    if translation.shape != (3,) or angles.shape != (3,):
+        raise ValueError("--x-xyz / --x-rpy 必须各给 3 个数")
+    if not np.all(np.isfinite(translation)) or not np.all(np.isfinite(angles)):
+        raise ValueError("--x-xyz / --x-rpy 含 NaN/Inf")
+    matrix = np.eye(4)
+    matrix[:3, :3] = _bimanual_rotation_from_rpy(angles)
+    matrix[:3, 3] = translation
+    return matrix, {
+        "translation": [float(v) for v in translation],
+        "rpy": [float(v) for v in angles],
+        "source": "explicit" if explicit else "default_placeholder",
+        "matrix": [[float(v) for v in row] for row in matrix],
+    }
+
+
+def _bimanual_rotation_from_rpy(rpy: Sequence[float]) -> np.ndarray:
+    """由 (roll, pitch, yaw)（rad）构造旋转矩阵（**numpy-only**）。
+
+    约定 ``R = Rz(yaw) · Ry(pitch) · Rx(roll)``（与 S02 的
+    :func:`rm75_drake.drake_compat.rotation_from_rpy` 一致）。
+    """
+    roll, pitch, yaw = (float(v) for v in rpy)
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+    ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+    rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+    return rz @ ry @ rx
+
+
+def _bimanual_rpy_from_matrix(rotation: np.ndarray) -> Tuple[float, float, float]:
+    """由旋转矩阵反解 (roll, pitch, yaw)（rad；与上面的约定互逆）。"""
+    sy = -float(rotation[2, 0])
+    sy = max(-1.0, min(1.0, sy))
+    pitch = math.asin(sy)
+    if abs(sy) < 1.0 - 1e-9:
+        roll = math.atan2(float(rotation[2, 1]), float(rotation[2, 2]))
+        yaw = math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))
+    else:  # 万向节奇异：取 roll = 0
+        roll = 0.0
+        yaw = math.atan2(-float(rotation[0, 1]), float(rotation[1, 1]))
+    return (roll, pitch, yaw)
+
+
+def _bimanual_resolve_start(
+    args: argparse.Namespace,
+    bundle: Any,
+    x_lr: np.ndarray,
+    *,
+    psi_grid: int,
+    leader: str,
+    follower: str,
+) -> Tuple[Optional[np.ndarray], Optional[float], str]:
+    """解析 leader 起始位形。
+
+    * 给了 ``--start-joints`` → 直接用（维度 / 数值非法 → 用法错误）；
+    * 否则从 :data:`BIMANUAL_CANDIDATE_LEADER_POSTURES` 里挑**第一个可行**
+      的（follower 有解 + 限位内 + 碰撞自由 + ψ 窗口够宽），
+      并返回它的 ψ（连续跟踪的起点提示）。
+
+    返回 ``(start, psi_start, source)``；找不到可行起点 ⇒
+    ``(None, None, "none")``（**业务失败**，不是用法错误）。
+    """
+    explicit = getattr(args, "start_joints", None)
+    if explicit is not None:
+        start = np.asarray(explicit, dtype=float).reshape(-1)
+        if start.size != 7:
+            raise _UsageError(
+                f"--start-joints 必须是 7 个关节角，实际：{start.size} 个"
+            )
+        if not np.all(np.isfinite(start)):
+            raise _UsageError("--start-joints 含 NaN/Inf")
+        return start, None, "explicit"
+
+    found = select_bimanual_start(
+        bundle, x_lr, psi_grid=psi_grid, leader=leader, follower=follower
+    )
+    if found is None:
+        return None, None, "none"
+    start, psi = found
+    return start, psi, "candidate_table"
+
+
+def select_bimanual_start(
+    bundle: Any,
+    x_lr: np.ndarray,
+    *,
+    psi_grid: int = 33,
+    leader: str = "left",
+    follower: str = "right",
+) -> Optional[Tuple[np.ndarray, float]]:
+    """从候选表里挑一个**可行**的 leader 起始位形（找不到 → ``None``）。
+
+    判据（逐条点名，**不静默换目标**）：follower 有解析 IK 解 + 14 维限位内
+    + 14 维碰撞自由 + 可行 ψ 窗口 ≥3 个连续网格点。
+
+    返回 ``(leader_q, psi)``；``psi`` 是连续跟踪的起点提示。
+    """
+    from .coordinated.parameterization import CoordinatedParameterization
+
+    parameterization = CoordinatedParameterization(
+        bundle, x_lr=x_lr, leader=leader, follower=follower
+    )
+    grid = np.linspace(0.0, 2.0 * math.pi, max(3, int(psi_grid)), endpoint=False)
+    for candidate in BIMANUAL_CANDIDATE_LEADER_POSTURES:
+        q = np.asarray(candidate, dtype=float)
+        psi = _bimanual_pick_psi(parameterization, q, grid)
+        if psi is not None:
+            return q, psi
+    return None
+
+
+def _bimanual_pick_psi(
+    parameterization: Any,
+    leader_q: np.ndarray,
+    grid: np.ndarray,
+) -> Optional[float]:
+    """挑一个**可行且窗口够宽**的 ψ（找不到 → ``None``）。
+
+    判据：ψ 网格上**至少 3 个连续可行点**（⇒ 规划器的余量门槛
+    ``psi_min_margin`` 能挑到点），取该连续段的中点。
+    """
+    feasible: List[bool] = []
+    for psi in grid:
+        x = np.concatenate([leader_q, np.array([float(psi)])])
+        try:
+            q14 = parameterization.to_joint_config(x)
+        except Exception:
+            feasible.append(False)
+            continue
+        feasible.append(
+            bool(parameterization.within_limits(q14))
+            and bool(parameterization.is_collision_free(q14))
+        )
+    count = len(grid)
+    best_run: List[int] = []
+    current: List[int] = []
+    # 多走一格（绕回起点）⇒ 跨边界的连续段也能被识别。
+    for offset in range(count + 1):
+        index = offset % count
+        if feasible[index]:
+            current.append(index)
+        else:
+            if len(current) > len(best_run):
+                best_run = list(current)
+            current = []
+    if len(current) > len(best_run):
+        best_run = list(current)
+    if len(best_run) < 3:
+        return None
+    middle = best_run[len(best_run) // 2]
+    return float(grid[middle % len(grid)])
+
+
+def _bimanual_resolve_goal(
+    args: argparse.Namespace,
+    start: np.ndarray,
+    *,
+    goal_step: float,
+) -> np.ndarray:
+    """解析 leader 终点位形（不给 ⇒ 起点 + 单轴微移 ``--goal-step``）。"""
+    explicit = getattr(args, "goal_joints", None)
+    if explicit is not None:
+        goal = np.asarray(explicit, dtype=float).reshape(-1)
+        if goal.size != 7:
+            raise _UsageError(f"--goal-joints 必须是 7 个关节角，实际：{goal.size} 个")
+        if not np.all(np.isfinite(goal)):
+            raise _UsageError("--goal-joints 含 NaN/Inf")
+        return goal
+    goal = np.asarray(start, dtype=float).copy()
+    axis = int(getattr(args, "goal_axis", 0))
+    if axis < 0 or axis >= 7:
+        raise _UsageError(f"--goal-axis 必须在 0..6 之间，实际：{axis}")
+    goal[axis] = float(goal[axis] + goal_step)
+    return goal
 
 
 # ── replay ──────────────────────────────────────────────────────────────

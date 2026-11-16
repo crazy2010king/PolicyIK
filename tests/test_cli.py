@@ -15,7 +15,7 @@
 * ``--json`` 输出可被 ``json.loads`` 解析。
 
 **负例（可解释失败）**
-* ``bimanual`` → **非 0 退出码**，且消息说明归属 **S05**（不静默成功、不假装规划）；
+* ``bimanual``（S05 已实现）：消息说明归属 **S05** 且**不再**声称「未实现」；
 * ``replay`` 对**人为篡改**的录制（插入一个碰撞构型）→ 逃逸数 > 0 且**非 0 退出码**；
 * ``single`` 同时给 ``--target-xyz`` 与 ``--target-joints`` → 用法错误（退出码 2）；
 * ``single`` 不给任何目标 → 用法错误（退出码 2）；
@@ -107,15 +107,13 @@ def test_top_level_help_exits_zero():
         assert command in result.stdout
 
 
-# ── bimanual（未实现）────────────────────────────────────────────────────
-def test_bimanual_reports_s05_and_returns_nonzero(capsys):
-    """负例：bimanual 未实现 → 非 0 退出码 + 明确说明归属 S05。"""
-    code = cli_mod.main(["bimanual"])
-    captured = capsys.readouterr()
-    combined = captured.out + captured.err
-    assert code != 0
-    assert "S05" in combined
-    assert "未实现" in combined
+# ── bimanual（S05 已实现）────────────────────────────────────────────────
+def test_bimanual_message_reports_s05_and_no_longer_says_unimplemented():
+    """S05 交付后：``bimanual`` **已实现**（不再声称「未实现」），仍归属 S05。"""
+    message = cli_mod.BIMANUAL_MESSAGE
+    assert "S05" in message
+    assert "已实现" in message
+    assert "未实现" not in message
 
 
 # ── replay ──────────────────────────────────────────────────────────────
