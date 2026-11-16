@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "description": "rm_planner 黄金场景集（S07/T5）：版本化、git 跟踪、可 diff。S08（性能 p95）与 S09（一键回归）复用同一份，不另造基准。每个场景都经 rm_planner 服务跑一遍，断言 status / 四道校验 / 墙钟耗时。",
+  "units": {
+    "start": "rad（7 个关节角，joint1..joint7）",
+    "goal.values": "joint → 7 个 rad；pose → [x(m), y(m), z(m), roll(rad), pitch(rad), yaw(rad)]",
+    "timeout_ms": "毫秒（服务端硬超时）",
+    "max_elapsed_s": "秒（客户端墙钟上限，含 worker 启动开销）"
+  },
+  "scenarios": [
+    {
+      "id": "joint_small_local",
+      "name": "小范围关节目标（同零位附近微动）",
+      "why": "最常见的规划请求：期望 SUCCESS 且四道校验全过",
+      "start": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      "goal": {"type": "joint", "values": [0.2, -0.3, 0.1, 0.0, 0.0, 0.0, 0.0]},
+      "constraints": {},
+      "seed": 0,
+      "timeout_ms": 20000,
+      "expect_status": "SUCCESS",
+      "expect_verify_ok": true,
+      "max_elapsed_s": 10.0
+    },
+    {
+      "id": "joint_cross_zero",
+      "name": "跨零位大范围目标（起点偏负 → 终点偏正）",
+      "why": "覆盖「路径跨零位 + 大范围」：期望 SUCCESS 且四道校验全过",
+      "start": [-0.5, 0.6, -0.4, 0.3, -0.2, 0.25, -0.15],
+      "goal": {"type": "joint", "values": [1.2, -1.1, 0.9, -0.8, 0.7, -0.6, 0.5]},
+      "constraints": {},
+      "seed": 3,
+      "timeout_ms": 20000,
+      "expect_status": "SUCCESS",
+      "expect_verify_ok": true,
+      "max_elapsed_s": 15.0
+    },
+    {
+      "id": "cartesian_reachable",
+      "name": "笛卡尔目标（可达位姿，由 joint_small_local 末位姿 FK 得到）",
+      "why": "覆盖 pose 目标 + IK 通路：期望 SUCCESS 且四道校验全过",
+      "start": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      "goal": {
+        "type": "pose",
+        "values": [-0.176674, -0.035814, 0.823255, -0.030872, -0.298455, 0.304642]
+      },
+      "constraints": {},
+      "seed": 0,
+      "timeout_ms": 20000,
+      "expect_status": "SUCCESS",
+      "expect_verify_ok": true,
+      "max_elapsed_s": 10.0
+    },
+    {
+      "id": "unreachable_ik",
+      "name": "不可达目标（笛卡尔目标远离工作空间 → IK 无解）",
+      "why": "覆盖「目标不可达」的诚实失败路径：期望 FAILED 且 failure_reason 指名原因",
+      "start": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      "goal": {"type": "pose", "values": [5.0, 5.0, 5.0, 0.0, 0.0, 0.0]},
+      "constraints": {},
+      "seed": 0,
+      "timeout_ms": 20000,
+      "expect_status": "FAILED",
+      "expect_verify_ok": false,
+      "expect_failure_reason_contains": "IK 无解",
+      "max_elapsed_s": 10.0
+    },
+    {
+      "id": "limit_violation_jerk",
+      "name": "越限场景（时间缩放上限卡死 → 保路径降速自愈被封顶 → 校验不通过）",
+      "why": "覆盖「规划成功但四道校验不过」的失败路径：期望 FAILED 且 verification.ok=false（limits 未通过）",
+      "start": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      "goal": {"type": "joint", "values": [1.5, -1.0, 0.8, -0.6, 0.5, -0.4, 0.3]},
+      "constraints": {"time_scaling": 1.0},
+      "seed": 0,
+      "timeout_ms": 20000,
+      "expect_status": "FAILED",
+      "expect_verify_ok": false,
+      "expect_failure_reason_contains": "四道校验未通过",
+      "max_elapsed_s": 15.0
+    },
+    {
+      "id": "obstacle_blocked_timeout",
+      "name": "障碍物堵死目标（服务端硬超时强制中断）",
+      "why": "验收项 1 的场景面：期望 TIMEOUT —— 是**服务端**在 deadline 处 SIGKILL worker，不是规划器自己放弃",
+      "start": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      "goal": {"type": "joint", "values": [0.2, -0.3, 0.1, 0.0, 0.0, 0.0, 0.0]},
+      "constraints": {},
+      "obstacle": {
+        "name": "blocker",
+        "box_size": [0.5, 0.5, 0.5],
+        "position": [0.2, -0.3, 0.1]
+      },
+      "seed": 0,
+      "timeout_ms": 1200,
+      "expect_status": "TIMEOUT",
+      "expect_verify_ok": null,
+      "expect_failure_reason_contains": "强制中断",
+      "max_elapsed_s": 20.0
+    },
+    {
+      "id": "obstacle_blocked_planner_gives_up",
+      "name": "同一障碍物但给足预算（规划器自己放弃 → FAILED，与 TIMEOUT 区分）",
+      "why": "把「服务端强制中断（TIMEOUT）」与「规划器耗尽 planning_time_s 自己放弃（FAILED）」在同一场景上区分开，证明 TIMEOUT 不是规划器放弃",
+      "start": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+      "goal": {"type": "joint", "values": [0.2, -0.3, 0.1, 0.0, 0.0, 0.0, 0.0]},
+      "constraints": {},
+      "obstacle": {
+        "name": "blocker",
+        "box_size": [0.5, 0.5, 0.5],
+        "position": [0.2, -0.3, 0.1]
+      },
+      "seed": 0,
+      "timeout_ms": 20000,
+      "expect_status": "FAILED",
+      "expect_verify_ok": false,
+      "expect_failure_reason_contains": "规划失败",
+      "max_elapsed_s": 30.0
+    }
+  ]
+}
