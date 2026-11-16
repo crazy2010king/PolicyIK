@@ -44,6 +44,7 @@ from rm_executor import (
     paths,
     report,
     resample,
+    session,
     transport,
 )
 
@@ -58,6 +59,7 @@ __all__ = [
     "paths",
     "report",
     "resample",
+    "session",
     "transport",
 ]
 

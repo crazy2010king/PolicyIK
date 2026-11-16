@@ -46,6 +46,13 @@ from rm_executor import report as report_mod
 from rm_executor.clock import ManualClock, TickClock
 from rm_executor.executor import Executor, ExecutorConfig
 from rm_executor.feedback import ScriptedFeedback
+from rm_executor.session import (
+    DEFAULT_PERIOD_S,
+    FAKE_CALL_RECORD_LIMIT,
+    LIVE_FEEDBACK_PERIOD_S,
+    LiveSession,
+    mirror_feedback,
+)
 from rm_executor.transport import FakeTransport
 
 __all__ = [
@@ -56,14 +63,8 @@ __all__ = [
     "main",
 ]
 
-#: 默认栅格周期（秒）—— 10 ms 单时钟
-DEFAULT_PERIOD_S = 0.010
-
-#: 真机反馈采集周期（秒）—— 落在计划 §5.7 的 10–20 ms 区间
-LIVE_FEEDBACK_PERIOD_S = 0.015
-
-#: 离线假传输的**调用记录保留上限**（长跑时防内存无界增长；计数不受影响）
-FAKE_CALL_RECORD_LIMIT = 2000
+#: 默认栅格周期 / 真机反馈周期 / 假传输记录上限 —— **唯一实现在
+#: :mod:`rm_executor.session`**（本模块只做再导出，避免两处真相）
 
 #: status 严重度排序（合并多轮报告时取最严重者）
 _STATUS_RANK = {
@@ -163,13 +164,8 @@ def _mirror_feedback(transport: FakeTransport, period_s: float) -> ScriptedFeedb
 
     **这是离线代理模型，不是真机结论**（见 ``docs/rm_executor执行线程契约.md``）。
     """
-    def _script(_index: int) -> Optional[List[float]]:
-        call = transport.last_call("transmit") or transport.last_call("preposition")
-        if call is None:
-            return None  # 尚未下发任何指令 → 断流（不伪造快照）
-        return list(call["args"]["deg7"])
-
-    return ScriptedFeedback(script=_script, speed_deg_s=0.0, period_s=period_s)
+    # 唯一实现住在 rm_executor.session（CLI 与会话共用一份，避免两处真相）
+    return mirror_feedback(transport, period_s)
 
 
 def _leg_count(duration_s: Optional[float], traj_duration_s: Optional[float]) -> int:
@@ -455,61 +451,25 @@ def _run_live(trajectory_path: str, config: Optional[ExecutorConfig],
               udp_port: Optional[int], ws: Optional[str],
               duration_s: Optional[float], gate: Any = None,
               motion_gate: Any = None) -> Dict[str, Any]:
-    """真机执行（**与 fake 同一 Executor、同一报告 schema**）。"""
-    try:
-        from rm_hw_bridge import bridge as hw_bridge
-    except Exception as exc:  # noqa: BLE001 - 硬件层不可用 → 诚实降级
-        return _unreachable_report(
-            "控制器不可达：硬件适配层 rm_hw_bridge 不可用（%s）: %s"
-            % (type(exc).__name__, exc),
-            "export PYTHONPATH=$PWD/dualarm_ws/src/rm_hw_bridge:$PYTHONPATH  "
-            "# 让执行层看到硬件适配层",
-            [repr(exc)])
+    """真机执行（**与 fake 同一 Executor、同一报告 schema**）。
 
-    if not ip:
-        return _unreachable_report(
-            "控制器不可达：未提供控制器 ip（--ip 必填）",
-            "加 --ip <控制器IP> --port <TCP端口> 重跑"
-            "（ip 也可从 workcell/baselines/network_plan.yaml 取）",
-            ["未提供 --ip"])
-
-    tcp_port = int(port or getattr(hw_bridge, "DEFAULT_TCP_PORT", 8080))
-    try:
-        link = hw_bridge.connect(ip, tcp_port,
-                                 udp_port=int(udp_port) if udp_port else None,
-                                 arm=arm)
-    except Exception as exc:  # noqa: BLE001 - 建链异常 → 诚实降级
-        return _unreachable_report(
-            "控制器不可达：建立连接异常（%s）: %s" % (type(exc).__name__, exc),
-            "确认控制器已上电、网络可达（ip=%s port=%s）后重跑" % (ip, tcp_port),
-            [repr(exc)])
-
-    if not getattr(link, "connected", False):
-        reason = getattr(link, "reason", "") or "ArmLink 未连接"
-        next_action = getattr(link, "next_action", "") or (
-            "确认控制器已上电、网络可达（ip=%s port=%s）后重跑" % (ip, tcp_port))
-        evidence = list(getattr(link, "evidence", []) or [])
-        evidence.append("ArmLink.connected = False")
-        return _unreachable_report("控制器不可达：%s" % reason,
-                                   next_action, evidence)
-
-    from rm_executor.feedback import make_live_feedback
-    from rm_executor.transport import BridgeTransport
-
-    transport = BridgeTransport(link=link)
-    feedback = make_live_feedback(period_s=LIVE_FEEDBACK_PERIOD_S)
-    clock = TickClock(period_s=DEFAULT_PERIOD_S)
+    **复用 :class:`rm_executor.session.LiveSession`**（S06/T5）：CLI 与工艺层
+    共用同一套建连语义 → **只有一套真机真相**。报告 schema / mode / reason
+    文案 / 退出码 / 控制器不可达语义与复用前**逐字不变**。
+    """
+    session, err = LiveSession.open(arm=arm, ip=ip, port=port,
+                                    udp_port=udp_port, ws=ws, config=config)
+    if err is not None or session is None:
+        return err or _unreachable_report(
+            "控制器不可达：真机会话建立失败",
+            "确认控制器已上电、网络可达后重跑", [])
     try:
         # config=None → 执行器自己按 ws 读工位配置（读不到就记 NEEDS_PARAM 事件）
-        executor = Executor(transport, feedback, config=config, clock=clock,
-                            mode="live", ws=ws, gate=gate,
-                            motion_gate=motion_gate)
-        rep = executor.run(trajectory_path, allow_unverified=False)
+        rep = session.run_trajectory(trajectory_path, allow_unverified=False,
+                                     gate=gate, motion_gate=motion_gate)
     finally:
-        try:
-            link.close()
-        except Exception:  # pragma: no cover - 释放失败不影响报告
-            pass
+        # 停反馈泵 + 关连接（幂等）
+        session.close()
     if duration_s and duration_s > 0:
         # 真机按轨迹实际时长执行；长跑请在真机窗口重复执行（诚实：不假装跑过）
         rep.setdefault("evidence", []).append(
