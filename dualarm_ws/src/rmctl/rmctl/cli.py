@@ -794,17 +794,371 @@ def _run_with_rm_executor(args, live=False):
     return exec_cli.main(argv)
 
 
-def cmd_run(args):
-    """执行一条轨迹。
+# ---------------------------------------------------------------- 工艺路径
+#: 当前支持的声明式工艺任务（`rmctl run <task>` 的**唯一**取值集合）
+PROCESS_TASKS = ("pick_place",)
 
-    三条路径（**验收口径唯一**）：
+#: 工艺循环次数上限（>50 必须人工检查；与 runner 的上限一致）
+PROCESS_MAX_ITERATIONS = 50
+
+#: 任务规格默认路径（相对工作区根）
+PROCESS_DEFAULT_TASK_FILE = os.path.join("workcell", "tasks", "pick_place.yaml")
+
+#: trace 默认落盘路径（相对工作区根）
+PROCESS_DEFAULT_TRACE = os.path.join("build", "run", "pick_place_trace.jsonl")
+
+#: 离线口径声明（**必须**出现在离线模式的所有输出里）
+PROCESS_FAKE_NOTE = "离线代理，不代表真机结论"
+
+#: 工作区同层包（工艺路径的依赖：执行层 / 硬件层 / 安全层）
+PROCESS_WS_PACKAGES = ("rm_executor", "rm_hw_bridge", "rm_safety")
+
+
+def _process_root(args):
+    """工艺路径的工作区根（``--ws`` 或自动发现）。"""
+    return getattr(args, "ws", None) or paths.workspace_root()
+
+
+def _process_path(root, path):
+    """相对路径 → 工作区根下的绝对路径（绝对路径原样保留）。"""
+    if os.path.isabs(path):
+        return path
+    return os.path.join(root, path)
+
+
+def _ensure_ws_packages(root):
+    """把同层的执行层/硬件层/安全层加入 ``sys.path``（只读引用，不拷贝）。
+
+    与 ``scripts/rmenv.sh`` 同源：让 ``rmctl run pick_place`` 在没有手动
+    export PYTHONPATH 时也能看到依赖包；**已存在则不重复添加**。
+    """
+    added = []
+    for name in PROCESS_WS_PACKAGES:
+        pkg_dir = os.path.join(root, "dualarm_ws", "src", name)
+        if os.path.isdir(pkg_dir) and pkg_dir not in sys.path:
+            sys.path.append(pkg_dir)
+            added.append(pkg_dir)
+    return added
+
+
+def _process_arg_error(reason, next_action):
+    """参数互斥 / 越界 → ``(2, reason, next_action)``（可粘贴提示）。"""
+    return 2, reason, next_action
+
+
+def _validate_run_args(args):
+    """``rmctl run`` 的参数互斥 / 边界校验（**先校验再分发**）。
+
+    返回 ``(rc, reason, next_action)``；``rc == 0`` 表示可以分发。
+    """
+    task = getattr(args, "task", None)
+    traj = getattr(args, "traj", None)
+    replay = getattr(args, "replay", None)
+    count = getattr(args, "count", None)
+    task_file = getattr(args, "task_file", None)
+    trace = getattr(args, "trace", None)
+    live = bool(getattr(args, "live", False))
+    report = getattr(args, "report", None)
+
+    if task is not None and task not in PROCESS_TASKS:
+        return _process_arg_error(
+            "未知工艺任务: %r（当前只支持 %s）"
+            % (task, ", ".join(PROCESS_TASKS)),
+            "改成 `rmctl run %s` 后重跑" % PROCESS_TASKS[0])
+    if count is not None and (count < 1 or count > PROCESS_MAX_ITERATIONS):
+        return _process_arg_error(
+            "--count 越界: %d（允许 1..%d 圈；超过 %d 圈必须人工检查）"
+            % (count, PROCESS_MAX_ITERATIONS, PROCESS_MAX_ITERATIONS),
+            "把 --count 改成 1..%d 后重跑" % PROCESS_MAX_ITERATIONS)
+    if replay is not None:
+        conflicts = []
+        if traj is not None:
+            conflicts.append("--traj")
+        if live:
+            conflicts.append("--live")
+        if count is not None:
+            conflicts.append("--count")
+        if task_file is not None:
+            conflicts.append("--task-file")
+        if trace is not None:
+            conflicts.append("--trace")
+        if report is not None:
+            conflicts.append("--report")
+        if conflicts:
+            return _process_arg_error(
+                "--replay 与 %s 互斥（回放只读，绝不下发运动）"
+                % ", ".join(conflicts),
+                "只保留 `--replay <trace.jsonl>` 后重跑")
+    if task is not None and traj is not None:
+        return _process_arg_error(
+            "--traj 与位置参数 %s 互斥（一条命令只跑一种东西）" % task,
+            "要么 `rmctl run --traj <path>`，要么 `rmctl run %s`" % task)
+    if task is None and traj is None and replay is None and not live:
+        return _process_arg_error(
+            "缺少执行目标（既没有 --traj，也没有工艺任务）",
+            "执行一条轨迹：`rmctl run --traj <path>`；"
+            "执行一条取放工艺：`rmctl run %s`" % PROCESS_TASKS[0])
+    return 0, "", ""
+
+
+def _process_thresholds(ws):
+    """判定阈值 + 恢复阶梯上限（**唯一来源链**）。
+
+    * 判定阈值四键 → ``rmctl.gripper_proxy.effective_thresholds``
+      （工位配置优先，缺失项用代理值补齐并标注来源）；
+    * 恢复上限 → ``workcell/rm_workcell.yaml::gripper.max_regrasp`` +
+      ``rm_hw_bridge.gripper_state`` 的 stall/offline 默认上限。
+
+    :return: ``(thresholds, proxy_used_keys, source, config_result)``；
+        ``thresholds is None`` → 工位配置不可用（调用方按 blocked 处理）。
+    """
+    from .gripper_proxy import load_effective_thresholds
+
+    thresholds, proxy_used, source, cfg_result = load_effective_thresholds(ws)
+    if thresholds is None:
+        return None, proxy_used, source, cfg_result
+    config = cfg_result.get("config") or {}
+    try:
+        from rm_hw_bridge import gripper_state as state_mod
+
+        thresholds["max_regrasp"] = int(config.get("max_regrasp") or 0)
+        thresholds["max_stall_retry"] = int(state_mod.DEFAULT_MAX_STALL_RETRY)
+        thresholds["max_offline_retry"] = int(state_mod.DEFAULT_MAX_OFFLINE_RETRY)
+    except Exception as exc:  # noqa: BLE001 - 恢复上限取不到 → 证据留痕
+        evidence = cfg_result.setdefault("evidence", [])
+        evidence.append("恢复阶梯上限注入失败: %r" % exc)
+    return thresholds, proxy_used, source, cfg_result
+
+
+def _process_exit_code(report):
+    """循环级报告 → 进程退出码（沿用 ``rm_executor.contract.EXIT_CODES``）。"""
+    code = report.get("exit_code")
+    if isinstance(code, int) and not isinstance(code, bool):
+        return int(code)
+    status = str(report.get("status") or "")
+    try:
+        from rm_executor import contract as contract_mod
+
+        return int(contract_mod.EXIT_CODES.get(status, 3))
+    except Exception:  # noqa: BLE001 - 执行层不可用 → 保守 blocked
+        return 3
+
+
+def _write_json_report(path, payload):
+    """报告 JSON 落盘（父目录自动创建）。"""
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    return path
+
+
+def _cmd_run_replay(args, path):
+    """回放模式：只读 trace → 逐事件时间线（**绝不下发运动**）。"""
+    root = _process_root(args)
+    trace_path = _process_path(root, path)
+    if not os.path.isfile(trace_path):
+        print("【回放】找不到 trace 文件: %s" % trace_path)
+        print("        下一步：先跑一次 `rmctl run %s` 生成 trace 后再回放"
+              % PROCESS_TASKS[0])
+        return 3
+    from .process.trace import replay_trace
+
+    try:
+        result = replay_trace(trace_path)
+    except Exception as exc:  # noqa: BLE001 - 坏文件 → 诚实降级
+        print("【回放】回放失败: %s: %r" % (type(exc).__name__, exc))
+        print("        下一步：检查 trace 文件是否损坏后重跑")
+        return 3
+
+    print("【回放】%s（只读回放：零运动 / 零 SDK / 零网络）" % trace_path)
+    for line in result.get("lines") or []:
+        print("  %s" % line)
+    summary = result.get("summary") or {}
+    print("")
+    print("  事件数=%s  失败事件=%s  已解析=%s  跳过=%s"
+          % (summary.get("events"), summary.get("failures"),
+             summary.get("parsed"), summary.get("skipped")))
+    last_action = str(summary.get("last_next_action") or "")
+    if last_action:
+        print("  下一步（最后一条非空）: %s" % last_action)
+    return 0
+
+
+def _cmd_run_process(args, task):
+    """工艺路径：声明式规格 → 真实规划 → 执行 → 判定 → trace → 报告。
+
+    CLI 只做**薄分发**：状态机在 ``rmctl.process.runner``、判定在
+    ``rm_hw_bridge.gripper_state``、trace 在 ``rmctl.process.trace``，
+    本函数**不复制**任何一份。
+    """
+    root = _process_root(args)
+    _ensure_ws_packages(root)
+
+    from .process.spec import load_task_spec
+
+    task_file = getattr(args, "task_file", None) or PROCESS_DEFAULT_TASK_FILE
+    task_path = _process_path(root, task_file)
+    spec_result = load_task_spec(path=task_path, ws=root)
+    if spec_result.get("status") != "ok":
+        print("【工艺】任务规格不可用：%s" % spec_result.get("reason"))
+        print("        下一步：%s" % spec_result.get("next_action"))
+        return 3
+    spec = spec_result["spec"]
+
+    thresholds, proxy_used, source, cfg_result = _process_thresholds(root)
+    if thresholds is None:
+        print("【工艺】夹爪配置不可用：%s"
+              % (cfg_result.get("reason") or "未知原因"))
+        print("        下一步：%s" % (cfg_result.get("next_action") or ""))
+        return 3
+
+    try:
+        from .process import clients as clients_mod
+        from .process.runner import ProcessRunner
+        from .process.trace import TraceWriter
+        from rm_hw_bridge import gripper_state
+    except Exception as exc:  # noqa: BLE001 - 依赖不可用 → 诚实降级
+        print("【工艺】工艺层依赖不可用: %s: %r" % (type(exc).__name__, exc))
+        print("        下一步：export PYTHONPATH=$PWD/dualarm_ws/src/"
+              "rm_executor:$PWD/dualarm_ws/src/rm_hw_bridge:$PYTHONPATH 后重跑")
+        return 3
+
+    live = bool(getattr(args, "live", False))
+    mode = "live" if live else "fake"
+    arm = getattr(args, "arm", None) or "left"
+    gate = gripper_state.shared_motion_gate()
+
+    print("【工艺】%s | mode=%s | 规格=%s" % (task, mode, task_path))
+    if mode == "fake":
+        print("        ⚠ %s（本结果**不代表真机结论**）" % PROCESS_FAKE_NOTE)
+    if proxy_used:
+        print("        判定阈值来源=%s（代理补齐: %s）"
+              % (source, ", ".join(proxy_used)))
+
+    session = None
+    try:
+        if live:
+            try:
+                from rm_executor import session as session_mod
+            except Exception as exc:  # noqa: BLE001
+                print("【工艺】执行层 rm_executor 不可用: %s" % exc)
+                print("        下一步：export PYTHONPATH=$PWD/dualarm_ws/src/"
+                      "rm_executor:$PYTHONPATH 后重跑")
+                return 3
+            ip = getattr(args, "ip", None)
+            port = getattr(args, "port", None)
+            udp_port = getattr(args, "udp_port", None)
+            if not ip:
+                plan = _network_plan(root)
+                arm_plan = ((plan or {}).get("arms") or {}).get(arm) or {}
+                ip = arm_plan.get("ip")
+                port = port or arm_plan.get("tcp_port")
+                udp_port = udp_port or arm_plan.get("udp_port")
+            session, err = session_mod.LiveSession.open(
+                arm=arm, ip=ip, port=port, udp_port=udp_port, ws=root)
+            if session is None:
+                err = err or {}
+                print("【工艺】真机会话不可用：%s"
+                      % (err.get("reason") or "真机会话建立失败"))
+                print("        下一步：%s" % (err.get("next_action") or ""))
+                return 4
+            motion = clients_mod.LiveMotionClient(session=session, ws=root, arm=arm)
+            gripper = clients_mod.LiveGripperClient(
+                port=session.gripper_port(), thresholds=thresholds, gate=gate)
+        else:
+            motion = clients_mod.FakeMotionClient(motion_gate=gate, ws=root, arm=arm)
+            gripper = clients_mod.FakeGripperClient(thresholds=thresholds, gate=gate)
+
+        trace_rel = getattr(args, "trace", None) or PROCESS_DEFAULT_TRACE
+        trace_path = _process_path(root, trace_rel)
+        parent = os.path.dirname(os.path.abspath(trace_path))
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
+        sink = TraceWriter(trace_path)
+        try:
+            runner = ProcessRunner(
+                spec,
+                clients_mod.LivePlanner(ws=root),
+                motion,
+                gripper,
+                trace_sink=sink,
+                gate=gate,
+                thresholds=thresholds,
+                max_iterations=getattr(args, "count", None),
+            )
+            report = runner.run()
+        finally:
+            sink.close()
+    except Exception as exc:  # noqa: BLE001 - 统一降级，不抛裸异常
+        print("【工艺】工艺执行异常: %s: %r" % (type(exc).__name__, exc))
+        print("        下一步：查看终端栈信息后重跑同一条命令")
+        return 4
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except Exception:  # pragma: no cover - 释放失败不影响主流程
+                pass
+
+    print("")
+    print("【工艺】循环级报告")
+    print("  status=%s  severity=%s  mode=%s"
+          % (report.get("status"), report.get("severity"), mode))
+    print("  圈次: %s/%s  段数: %s"
+          % (report.get("iterations_completed"), report.get("iterations_planned"),
+             report.get("segments_executed")))
+    print("  原因: %s" % report.get("reason"))
+    next_action = str(report.get("next_action") or "")
+    if next_action:
+        print("  下一步: %s" % next_action)
+    print("  trace: %s" % (report.get("trace_path") or trace_path))
+    if mode == "fake":
+        print("  ⚠ %s（mode=fake；本结果**不代表真机结论**）" % PROCESS_FAKE_NOTE)
+
+    report_out = getattr(args, "report", None)
+    if report_out:
+        out_path = _write_json_report(_process_path(root, report_out), report)
+        print("  报告: %s" % out_path)
+
+    return _process_exit_code(report)
+
+
+def cmd_run(args):
+    """执行一条轨迹，或执行一条声明式工艺。
+
+    三条轨迹路径（**验收口径唯一**，行为逐字不变）：
 
     * 默认 ``--executor legacy``：**legacy** MockExecutor 回放（保留兼容，
       **不作验收证据**）；
     * ``--executor rm_executor``：新 10 ms 执行器的**离线 fake** 路径
       （与真机同一 Executor、同一报告 schema）；
     * ``--live``：新执行器的**真机**路径。
+
+    外加两条**工艺路径**（S06/T6）：``rmctl run pick_place``（声明式工艺
+    编排）与 ``rmctl run --replay <trace>``（只读回放）。
     """
+    rc, reason, next_action = _validate_run_args(args)
+    if rc:
+        print("【参数】%s" % reason)
+        print("        下一步：%s" % next_action)
+        return rc
+
+    task = getattr(args, "task", None)
+    traj = getattr(args, "traj", None)
+    replay = getattr(args, "replay", None)
+    live = bool(getattr(args, "live", False))
+
+    if replay is not None:
+        return _cmd_run_replay(args, replay)
+    if task is not None:
+        return _cmd_run_process(args, task)
+    if live and traj is None:
+        # `rmctl run --live`（未给 --traj）→ 真机工艺路径（默认 pick_place）：
+        # 控制器不可达 → 退出码 4（与既有 live 语义一致）。
+        return _cmd_run_process(args, PROCESS_TASKS[0])
+
     kind = getattr(args, "executor", "legacy") or "legacy"
     if getattr(args, "live", False):
         kind = "rm_executor"
@@ -2166,8 +2520,21 @@ def build_parser():
 
     s = sub.add_parser("run",
                        help="执行一条轨迹（默认 legacy 回放；"
-                            "--executor rm_executor / --live 走新执行器）")
-    s.add_argument("--traj", required=True)
+                            "--executor rm_executor / --live 走新执行器）"
+                            "或执行一条声明式工艺（`rmctl run pick_place`）")
+    s.add_argument("task", nargs="?", default=None,
+                   help="工艺任务名（当前只支持 pick_place；与 --traj 互斥）")
+    s.add_argument("--traj", default=None,
+                   help="要执行的轨迹文件（与工艺任务互斥；缺省且无工艺任务 → 退出码 2）")
+    s.add_argument("--task-file", dest="task_file", default=None,
+                   help="[工艺] 任务规格文件（默认 workcell/tasks/pick_place.yaml）")
+    s.add_argument("--count", type=int, default=None,
+                   help="[工艺] 覆盖规格里的循环次数（1..50，越界 → 退出码 2）")
+    s.add_argument("--trace", default=None,
+                   help="[工艺] trace JSONL 落盘路径"
+                        "（默认 build/run/pick_place_trace.jsonl）")
+    s.add_argument("--replay", default=None,
+                   help="[工艺] 只读回放一份 trace（零运动 / 零 SDK / 零网络）")
     s.add_argument("--period", type=float, default=0.010,
                    help="[legacy] 回放周期（秒）")
     s.add_argument("--fast", action="store_true",
