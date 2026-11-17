@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "generator": "scripts/collect_evidence.py",
+  "environment": {
+    "python_version": "3.10.12",
+    "python_executable": "/usr/bin/python3",
+    "platform": "Linux-5.15.0-139-generic-x86_64-with-glibc2.35",
+    "repo_root": "/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg",
+    "timestamp": "2026-11-17T09:35:59+0800",
+    "drake_version": "1.51.1",
+    "versions_lock_present": true,
+    "baseline_note": "受支持基线为 Python 3.12 + Drake 1.55.0（versions.lock）；本机若为 Python 3.10 / Drake 1.51.1，则属于 fallback 档，结果不得表述为与基线一致。"
+  },
+  "summary": {
+    "passed": 8,
+    "skipped": 0,
+    "failed": 0,
+    "total": 8
+  },
+  "checks": [
+    {
+      "id": "pytest-not-slow",
+      "group": "unit",
+      "description": "全量单测（pytest -m 'not slow'）：1350 级用例回归",
+      "status": "PASS",
+      "duration_s": 389.286,
+      "steps": [
+        {
+          "command": [
+            "/usr/bin/python3",
+            "-m",
+            "pytest",
+            "-q",
+            "-m",
+            "not slow"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 389.285,
+          "reason": "",
+          "summary": "--- stdout (head) ---\n........................................................................ [  5%]\n........................................................................ [ 10%]\n........................................................................ [ 15%]\n........................................................................ [ 20%]\n........................................................................ [ 26%]\n........................................................................ [ 31%]\n........................................................................ [ 36%]\n........................................................................ [ 41%]\n........................................................................ [ 47%]\n........................................................................ [ 52%]\n........................................................................ [ 57%]\n........................................................................ [ 62%]\n........................................................................ [ 68%]\n........................................................................ [ 73%]\n........................................................................ [ 78%]\n--- stdout (tail) ---\n    figure.tight_layout()\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:272: UserWarning: Glyph 38543 (\\N{CJK UNIFIED IDEOGRAPH-968F}) missing from font(s) DejaVu Sans.\n    figure.tight_layout()\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:272: UserWarning: Glyph 26102 (\\N{CJK UNIFIED IDEOGRAPH-65F6}) missing from font(s) DejaVu Sans.\n    figure.tight_layout()\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:272: UserWarning: Glyph 38388 (\\N{CJK UNIFIED IDEOGRAPH-95F4}) missing from font(s) DejaVu Sans.\n    figure.tight_layout()\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:312: UserWarning: Glyph 20463 (\\N{CJK UNIFIED IDEOGRAPH-4FEF}) missing from font(s) DejaVu Sans.\n    figure.tight_layout()\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:312: UserWarning: Glyph 35270 (\\N{CJK UNIFIED IDEOGRAPH-89C6}) missing from font(s) DejaVu Sans.\n    figure.tight_layout()\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:312: UserWarning: Glyph 20391 (\\N{CJK UNIFIED IDEOGRAPH-4FA7}) missing from font(s) DejaVu Sans.\n    figure.tight_layout()\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:322: UserWarning: Glyph 20463 (\\N{CJK UNIFIED IDEOGRAPH-4FEF}) missing from font(s) DejaVu Sans.\n    self._figure.savefig(target, dpi=120)\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:322: UserWarning: Glyph 35270 (\\N{CJK UNIFIED IDEOGRAPH-89C6}) missing from font(s) DejaVu Sans.\n    self._figure.savefig(target, dpi=120)\n\ntests/test_viz.py::test_fallback_backend_draws_without_scene\n  /mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/src/rm75_drake/viz.py:322: UserWarning: Glyph 20391 (\\N{CJK UNIFIED IDEOGRAPH-4FA7}) missing from font(s) DejaVu Sans.\n    self._figure.savefig(target, dpi=120)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\n1369 passed, 3 skipped, 44 deselected, 19 warnings in 388.88s (0:06:28)",
+          "pattern_matched": true
+        }
+      ]
+    },
+    {
+      "id": "verify-env-model",
+      "group": "env",
+      "description": "模型自检（verify_env --model）：DoF / 质量 / 零位末端高度 / 7 条限位",
+      "status": "PASS",
+      "duration_s": 0.172,
+      "steps": [
+        {
+          "command": [
+            "/usr/bin/python3",
+            "tools/verify_env.py",
+            "--model"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 0.172,
+          "reason": "",
+          "summary": "--- stdout (head) ---\n  DoF=7  总质量=7.776000000000001 kg  零位末端=[0.0, 2.241e-06, 0.8505] m  期望高度=0.8505 m\n  joint         lower(rad)      upper(rad)    vel(rad/s)   effort(N·m)\n  --------------------------------------------------------------------\n  joint_1       -3.1060000       3.1060000        3.1416          60.0\n  joint_2       -2.2689000       2.2689000        3.1416          60.0\n  joint_3       -3.1060000       3.1060000        3.9270          30.0\n  joint_4       -2.3560000       2.3560000        3.9270          30.0\n  joint_5       -3.1060000       3.1060000        3.9270          10.0\n  joint_6       -2.2340000       2.2340000        3.9270          10.0\n  joint_7       -6.2831853       6.2831853        3.9270          10.0\n  限位交接件：/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/models/rm75_drake/joint_limits.yaml（软限位收紧 0.0698132 rad）\n[PASS] model — 改造版 RM75-B 模型自检（DoF / 总质量 / 零位末端高度 / 7 条限位）",
+          "pattern_matched": true
+        }
+      ]
+    },
+    {
+      "id": "verify-env-plan",
+      "group": "env",
+      "description": "规划链路自检（verify_env --plan）：场景装配 + IK + 短规划 + 碰撞复检",
+      "status": "PASS",
+      "duration_s": 14.902,
+      "steps": [
+        {
+          "command": [
+            "/usr/bin/python3",
+            "tools/verify_env.py",
+            "--plan"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 14.902,
+          "reason": "",
+          "summary": "--- stdout (head) ---\n[PASS] plan — 规划链路自检（场景装配 + IK + 短规划 + 碰撞复检）\n--- stderr (tail) ---\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 42 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 93 counter-example searches.\nINFO:drake:IrisNp: Terminating because the hyperellipsoid relative volume change 5.872271588075704e-05 is below the threshold 0.001.\nINFO:drake:IrisNp iteration 0\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 58 counter-example searches.\nINFO:drake:IrisNp iteration 1\nINFO:drake: Checking RM75-B::link_1_collision against RM75-B::link_7_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_1_collision against RM75-B::link_7_collision after 43 counter-example searches.\nINFO:drake: Checking RM75-B::base_link_collision against RM75-B::link_6_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_6_collision after 36 counter-example searches.\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 32 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 51 counter-example searches.\nINFO:drake:IrisNp iteration 2\nINFO:drake: Checking RM75-B::base_link_collision against RM75-B::link_6_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_6_collision after 31 counter-example searches.\nINFO:drake: Checking RM75-B::base_link_collision against RM75-B::link_7_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_7_collision after 61 counter-example searches.\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 40 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 49 counter-example searches.\nINFO:drake:IrisNp iteration 3\nINFO:drake: Checking RM75-B::base_link_collision against RM75-B::link_7_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_7_collision after 48 counter-example searches.\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 42 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 73 counter-example searches.\nINFO:drake:IrisNp: Terminating because the hyperellipsoid relative volume change 0.0005153037817192238 is below the threshold 0.001.\nWARNING:rm75_drake.planning.gcs:整数版 GCS 不可用，回退凸松弛：GraphOfConvexSets: There is no solver available that can solve the mixed-integer version of this problem. Please check https://drake.mit.edu/doxygen_cxx/group__solvers.html for more details about supported solvers and how to enable them.\nINFO:drake:Solved GCS shortest path using Clp with convex_relaxation=true and preprocessing=false and rounding.\nINFO:drake:Found 1 unique paths, discarded 99 duplicate paths.\nINFO:drake:Finished 1 rounding solutions with Clp.\n/usr/local/lib/python3.10/dist-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.\n  warnings.warn(\"Unable to import Axes3D. This may be due to multiple versions of \"",
+          "pattern_matched": true
+        }
+      ]
+    },
+    {
+      "id": "forbidden-apis-scan",
+      "group": "static",
+      "description": "厂商解算接口禁用名单静态扫描（src tools scripts）：0 命中",
+      "status": "PASS",
+      "duration_s": 0.162,
+      "steps": [
+        {
+          "command": [
+            "/usr/bin/python3",
+            "scripts/scan_forbidden_apis.py",
+            "src",
+            "tools",
+            "scripts"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 0.162,
+          "reason": "",
+          "summary": "--- stdout (head) ---\nscan_forbidden_apis: 未命中禁用接口（扫描 90 个代码文件，名单 13 项）",
+          "pattern_matched": true
+        }
+      ]
+    },
+    {
+      "id": "cli-single-replay",
+      "group": "cli",
+      "description": "CLI single → replay：录制 + 碰撞复检零逃逸（num_escapes=0）",
+      "status": "PASS",
+      "duration_s": 85.096,
+      "steps": [
+        {
+          "command": [
+            "/usr/bin/python3",
+            "-m",
+            "rm75_drake.cli",
+            "single",
+            "--scenario",
+            "scenarios/single_arm.yaml",
+            "--target-joints",
+            "0.1",
+            "-0.5",
+            "0.0",
+            "0.8",
+            "0.0",
+            "0.4",
+            "0.0",
+            "--region-spacing",
+            "0.25",
+            "--output",
+            "/tmp/collect-evidence-p76lfxyd/recording.json",
+            "--json"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 84.865,
+          "reason": "",
+          "summary": "--- stdout (head) ---\n{\n  \"command\": \"single\",\n  \"success\": true,\n  \"message\": \"规划成功：131 个采样点（0.005 s 网格），时长 0.650 s，区域 6 个，GCS 模式 convex_relaxation，碰撞复检逃逸 0\",\n  \"num_samples\": 131,\n  \"dt\": 0.005,\n  \"duration_s\": 0.65,\n  \"stage_durations_s\": {\n    \"ik\": 0.0,\n    \"regions\": 84.36359055014327,\n    \"gcs\": 0.0026116478256881237,\n    \"retime\": 0.23467483464628458,\n    \"collision\": 0.0021734959445893764\n  },\n  \"num_escapes\": 0,\n--- stdout (tail) ---\n{\n  \"command\": \"single\",\n  \"success\": true,\n  \"message\": \"规划成功：131 个采样点（0.005 s 网格），时长 0.650 s，区域 6 个，GCS 模式 convex_relaxation，碰撞复检逃逸 0\",\n  \"num_samples\": 131,\n  \"dt\": 0.005,\n  \"duration_s\": 0.65,\n  \"stage_durations_s\": {\n    \"ik\": 0.0,\n    \"regions\": 84.36359055014327,\n    \"gcs\": 0.0026116478256881237,\n    \"retime\": 0.23467483464628458,\n    \"collision\": 0.0021734959445893764\n  },\n  \"num_escapes\": 0,\n  \"gripper_schedule\": [],\n  \"recording_path\": \"/tmp/collect-evidence-p76lfxyd/recording.json\",\n  \"notes\": [],\n  \"viz\": null\n}\n--- stderr (tail) ---\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_7_collision after 57 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 133 counter-example searches.\nINFO:drake:IrisNp: Terminating because the hyperellipsoid volume change -152.21755165134346 is below the threshold 0.02.\nINFO:drake:IrisNp iteration 0\nINFO:drake: Checking RM75-B::link_1_collision against RM75-B::link_7_collision has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_1_collision against RM75-B::link_7_collision after 57 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 91 counter-example searches.\nINFO:drake:IrisNp iteration 1\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 62 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 87 counter-example searches.\nINFO:drake:IrisNp iteration 2\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 60 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 63 counter-example searches.\nINFO:drake:IrisNp iteration 3\nINFO:drake: Checking RM75-B::base_link_collision against RM75-B::link_7_collision has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_7_collision after 51 counter-example searches.\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 55 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 72 counter-example searches.\nINFO:drake:IrisNp iteration 4\nINFO:drake: Checking RM75-B::link_5_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_5_collision against workbench_box after 54 counter-example searches.\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 71 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 50 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 74 counter-example searches.\nINFO:drake:IrisNp: Terminating because the hyperellipsoid relative volume change 6.502304053351412e-05 is below the threshold 0.001.\nWARNING:rm75_drake.planning.gcs:整数版 GCS 不可用，回退凸松弛：GraphOfConvexSets: There is no solver available that can solve the mixed-integer version of this problem. Please check https://drake.mit.edu/doxygen_cxx/group__solvers.html for more details about supported solvers and how to enable them.\nINFO:drake:Solved GCS shortest path using Clp with convex_relaxation=true and preprocessing=false and rounding.\nINFO:drake:Found 1 unique paths, discarded 99 duplicate paths.\nINFO:drake:Finished 1 rounding solutions with Clp.\n/usr/local/lib/python3.10/dist-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.\n  warnings.warn(\"Unable to import Axes3D. This may be due to multiple versions of \"",
+          "pattern_matched": true
+        },
+        {
+          "command": [
+            "/usr/bin/python3",
+            "-m",
+            "rm75_drake.cli",
+            "replay",
+            "--recording",
+            "/tmp/collect-evidence-p76lfxyd/recording.json",
+            "--scenario",
+            "scenarios/single_arm.yaml"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 0.231,
+          "reason": "",
+          "summary": "--- stdout (head) ---\n[replay] 录制文件：/tmp/collect-evidence-p76lfxyd/recording.json\n[replay] 录制点数：131（机器人 rm75）\n[replay] 复检位形数：155\n[replay] 逃逸数：0\n[replay] 最大单步关节变化：0.012166 rad\n--- stderr (tail) ---\nINFO:drake:Allocating contexts to support implicit context parallelism 28",
+          "pattern_matched": true
+        }
+      ]
+    },
+    {
+      "id": "cli-bimanual",
+      "group": "cli",
+      "description": "CLI bimanual：双臂紧协调规划成功 + 14 维零逃逸 + 相对位姿残差 ~1e-8 m",
+      "status": "PASS",
+      "duration_s": 1.389,
+      "steps": [
+        {
+          "command": [
+            "/usr/bin/python3",
+            "-m",
+            "rm75_drake.cli",
+            "bimanual",
+            "--json"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 1.389,
+          "reason": "",
+          "summary": "--- stdout (head) ---\n{\"command\": \"bimanual\", \"status\": \"ok\", \"success\": true, \"reason\": \"\", \"stage\": \"\", \"message\": \"协调规划成功：29 个采样点（0.005 s 网格），时长 0.140 s，区域 3 个，GCS 模式 convex_relaxation，碰撞复检逃逸 0，相对位姿残差 max 1.040e-08 m / 3.541e-08 rad\", \"scenario\": \"/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/scenarios/dual_arm.yaml\", \"x_lr\": {\"translation\": [0.2, 0.0, 0.0], \"rpy\": [0.0, 0.0, 0.0], \"source\": \"default_placeholder\", \"matrix\": [[1.0, 0.0, 0.0, 0.2], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]}, \"leader\": \"left\", \"follower\": \"right\", \"start_joints\": [-0.2, 1.0, -1.0, -1.0, 0.0, 0.2, 0.0], \"goal_joints\": [-0.18000000000000002, 1.0, -1.0, -1.0, 0.0, 0.2, 0.0], \"diagnostics\": {\"degraded\": false, \"degradation_reason\": \"\", \"parameterize\": {\"duration_s\": 0.1446439023129642, \"success\": true, \"reason\": \"\", \"num_points\": 5, \"x_start\": [-0.2, 1.0, -1.0, -1.0, 0.0, 0.2, 0.0, 3.236792430971302], \"x_goal\": [-0.18000000000000002, 1.0, -1.0, -1.0, 0.0, 0.2, 0.0, 3.236792430971302]}, \"regions\": {\"duration_s\": 0.7175841447897255, \"success\": true, \"reason\": \"\", \"num_regions\": 3, \"region_ids\": [\"minimal-region-29cb154d14f2\", \"minimal-region-a9061fab9bb5\", \"minimal-region-cfbc4e9d0b3e\"], \"degraded\": false, \"message\": \"\"}, \"gcs\": {\"duration_s\": 0.0015768948942422867, \"success\": true, \"reason\": \"\", \"solver_mode\": \"convex_relaxation\", \"num_edges\": 1, \"num_regions\": 3, \"message\": \"\"}, \"map\": {\"duration_s\": 0.003910678904503584, \"success\": true, \"reason\": \"\", \"num_points\": 5}, \"retime\": {\"duration_s\": 0.2290368382818997, \"success\": true, \"reason\": \"\", \"num_samples\": 29, \"trajectory_duration_s\": 0.14, \"peak_velocity\": [0.2760319765608199, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.37108859777648107, 0.3106775422344832, 0.4563408300021443, 0.15089171532274293, 0.09991610038841969, 0.20873412955282333, 0.3290633698506795], \"peak_acceleration\": [4.36909907226557, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.504854629272415, 4.984364309419398, 6.882169997926013, 2.360568319241807, 1.5991728000841476, 3.5002279570139905, 5.316608827268254]}, \"collision\": {\"duration_s\": 0.0006912718527019024, \"success\": true, \"reason\": \"\", \"num_samples\": 29, \"num_escapes\": 0, \"escape_indices\": []}, \"relative_pose_residual_max_position_m\": 1.0395295533905556e-08, \"relative_pose_residual_max_orientation_rad\": 3.5410041293306645e-08, \"relative_pose_residual_max\": 1.0395295533905556e-08, \"num_escapes\": 0, \"num_regions\": 3, \"region_duration_s\": 0.7175841447897255, \"gcs_duration_s\": 0.0015768948942422867, \"map_duration_s\": 0.003910678904503584, \"retime_duration_s\": 0.2290368382818997, \"collision_duration_s\": 0.0006912718527019024, \"branch_switches\": 17, \"psi_switches\": 0, \"total_duration_s\": 1.1007803571410477, \"start_source\": \"candidate_table\"}, \"unverified_metrics\": [\"真实（真机）双臂紧协调规划成功率 ≥ 95%（本环境无真机，未验证）\", \"真实（真机）协调求解阶段 P95 < 3 s（未验证）\", \"真实（真机）共持位姿漂移 < 2 mm / 10 s（未验证）\", \"真实（真机）双臂相对位姿保持（构造性满足仅在仿真中验证）（未验证）\", \"真实（真机）14 维零逃逸（离线仿真零逃逸 ≠ 真机零逃逸）（未验证）\"]}\n--- stderr (tail) ---\nINFO:drake:Allocating contexts to support implicit context parallelism 28\nWARNING:rm75_drake.planning.gcs:整数版 GCS 不可用，回退凸松弛：GraphOfConvexSets: There is no solver available that can solve the mixed-integer version of this problem. Please check https://drake.mit.edu/doxygen_cxx/group__solvers.html for more details about supported solvers and how to enable them.\nINFO:drake:Solved GCS shortest path using Clp with convex_relaxation=true and preprocessing=false and rounding.\nINFO:drake:Found 1 unique paths, discarded 99 duplicate paths.\nINFO:drake:Finished 1 rounding solutions with Clp.\n/usr/local/lib/python3.10/dist-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.\n  warnings.warn(\"Unable to import Axes3D. This may be due to multiple versions of \"",
+          "pattern_matched": true
+        }
+      ]
+    },
+    {
+      "id": "plan-stats",
+      "group": "plan",
+      "description": "规划指标有界采样（plan_stats --samples 2 --seed 0 --json）：成功率 / P95 / GCS P95",
+      "status": "PASS",
+      "duration_s": 21.78,
+      "steps": [
+        {
+          "command": [
+            "/usr/bin/python3",
+            "scripts/plan_stats.py",
+            "--samples",
+            "2",
+            "--seed",
+            "0",
+            "--json"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 21.78,
+          "reason": "",
+          "summary": "--- stdout (head) ---\n{\n  \"samples_requested\": 2,\n  \"samples_completed\": 2,\n  \"truncated\": false,\n  \"seed\": 0,\n  \"scenario\": \"/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/scenarios/single_arm.yaml\",\n  \"success_rate\": 1.0,\n  \"success_count\": 2,\n  \"failure_breakdown\": {},\n  \"plan_duration_s\": {\n    \"p50\": 10.768882301170379,\n    \"p95\": 10.798772874474526,\n    \"mean\": 10.768882301170379,\n    \"max\": 10.802094049286097\n  },\n--- stdout (tail) ---\n{\n  \"samples_requested\": 2,\n  \"samples_completed\": 2,\n  \"truncated\": false,\n  \"seed\": 0,\n  \"scenario\": \"/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_drake/.gsd-worktrees/M001-acm1jg/scenarios/single_arm.yaml\",\n  \"success_rate\": 1.0,\n  \"success_count\": 2,\n  \"failure_breakdown\": {},\n  \"plan_duration_s\": {\n    \"p50\": 10.768882301170379,\n    \"p95\": 10.798772874474526,\n    \"mean\": 10.768882301170379,\n    \"max\": 10.802094049286097\n  },\n  \"gcs_duration_s\": {\n    \"p50\": 0.0008720210753381252,\n    \"p95\": 0.0008875594474375248\n  },\n  \"gcs_p95_target_s\": 1.0,\n  \"iris_per_region_mean_s\": 5.324037185753696,\n  \"total_wall_time_s\": 21.53795705270022,\n  \"gcs_p95_target_met\": true\n}\n--- stderr (tail) ---\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 57 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 55 counter-example searches.\nINFO:drake:IrisNp iteration 1\nINFO:drake: Checking RM75-B::link_5_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_5_collision against workbench_box after 30 counter-example searches.\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 52 counter-example searches.\nINFO:drake:IrisNp iteration 2\nINFO:drake: Checking RM75-B::base_link_collision against RM75-B::link_6_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_6_collision after 35 counter-example searches.\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 41 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 45 counter-example searches.\nINFO:drake:IrisNp: Terminating because the hyperellipsoid volume change -110.00545036545009 is below the threshold 0.02.\nINFO:drake:IrisNp iteration 0\nINFO:drake: Checking RM75-B::link_1_collision against RM75-B::link_7_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_1_collision against RM75-B::link_7_collision after 36 counter-example searches.\nINFO:drake: Checking RM75-B::link_6_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_6_collision against workbench_box after 39 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 49 counter-example searches.\nINFO:drake:IrisNp iteration 1\nINFO:drake: Checking RM75-B::link_1_collision against RM75-B::link_7_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_1_collision against RM75-B::link_7_collision after 34 counter-example searches.\nINFO:drake: Checking RM75-B::base_link_collision against RM75-B::link_7_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_7_collision after 34 counter-example searches.\nINFO:drake: Checking RM75-B::link_5_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_5_collision against workbench_box after 38 counter-example searches.\nINFO:drake:IrisNp iteration 2\nINFO:drake: Checking RM75-B::base_link_collision against RM75-B::link_7_collision has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::base_link_collision against RM75-B::link_7_collision after 32 counter-example searches.\nINFO:drake: Checking RM75-B::link_7_collision against workbench_box has already required 30 counter-example searches; still searching...\nINFO:drake: Finished checking RM75-B::link_7_collision against workbench_box after 75 counter-example searches.\nINFO:drake:IrisNp: Terminating because the hyperellipsoid volume change -422.01966328191884 is below the threshold 0.02.\nWARNING:rm75_drake.planning.gcs:整数版 GCS 不可用，回退凸松弛：GraphOfConvexSets: There is no solver available that can solve the mixed-integer version of this problem. Please check https://drake.mit.edu/doxygen_cxx/group__solvers.html for more details about supported solvers and how to enable them.\nINFO:drake:Solved GCS shortest path using Clp with convex_relaxation=true and preprocessing=false and rounding.\nINFO:drake:Found 1 unique paths, discarded 99 duplicate paths.\nINFO:drake:Finished 1 rounding solutions with Clp.",
+          "pattern_matched": true
+        }
+      ]
+    },
+    {
+      "id": "ci-fast",
+      "group": "ci",
+      "description": "CI fast 档（bash scripts/ci.sh fast）：整档 FAIL=0",
+      "status": "PASS",
+      "duration_s": 55.363,
+      "steps": [
+        {
+          "command": [
+            "bash",
+            "scripts/ci.sh",
+            "fast"
+          ],
+          "status": "PASS",
+          "exit_code": 0,
+          "duration_s": 55.363,
+          "reason": "",
+          "summary": "--- stdout (head) ---\n=== ci tier: fast（解释器 /usr/bin/python3）===\n[PASS] lint/py_compile — ruff 不可用，py_compile 兜底语法检查（0s）\n[PASS] tests/skeleton — 骨架单测（tests/test_env_lock.py tests/test_paths.py tests/test_forbidden_apis.py）（1s）\n[PASS] lock/consistency — versions.lock 自洽性（0s）\n[PASS] forbidden/apis — 禁用接口静态扫描（src tools scripts）（0s）\n[PASS] tests/model — 模型回归单测（碰撞/质量/FK/限位/夹爪）（1s）\n[PASS] model/verify-env — 模型自检（verify_env --model）（0s）\n[PASS] tests/verify-env-contract — verify_env 退出码契约（参数错误 2 / 内容漂移 1）（1s）\n[PASS] tests/mesh-tools — 网格工具单测（STL 解析 / OBJ 写出 / 包围盒 / 视觉网格链路契约）（1s）\n[PASS] assets/visual-mesh — 官方 STL → OBJ 转换与包围盒复测（需上游归档）（0s）\n[PASS] tests/planning — 规划回归单测（场景/轨迹/CLI/回放）（2s）\n[PASS] tests/device — 设备层与安全闸回归（零硬件：七闸 / 状态机 / 执行环 / 恢复 / 运行日志 / 脚本）（3s）\n[PASS] tests/bimanual-calibration — 双臂几何与标定回归（零硬件：变体 / 单 plant / 碰撞过滤 / 一致性 / 同步执行 / 标定内核 / 标定 CLI）（2s）\n[PASS] tests/bimanual-coordination — 双臂紧协调回归（零硬件：解析 IK / 双臂限位 / 共享时间轴 / 最小坐标参数化 / 凸区域 / 协调规划 / 指标脚本 / 协调 CLI）（28s）\n[PASS] tests/tasks — 任务原语与感知回归（零硬件：schema / 原语 / 状态机 / 双臂 / 感知 / 指标 / CLI）（7s）\n--- stdout (tail) ---\n=== ci tier: fast（解释器 /usr/bin/python3）===\n[PASS] lint/py_compile — ruff 不可用，py_compile 兜底语法检查（0s）\n[PASS] tests/skeleton — 骨架单测（tests/test_env_lock.py tests/test_paths.py tests/test_forbidden_apis.py）（1s）\n[PASS] lock/consistency — versions.lock 自洽性（0s）\n[PASS] forbidden/apis — 禁用接口静态扫描（src tools scripts）（0s）\n[PASS] tests/model — 模型回归单测（碰撞/质量/FK/限位/夹爪）（1s）\n[PASS] model/verify-env — 模型自检（verify_env --model）（0s）\n[PASS] tests/verify-env-contract — verify_env 退出码契约（参数错误 2 / 内容漂移 1）（1s）\n[PASS] tests/mesh-tools — 网格工具单测（STL 解析 / OBJ 写出 / 包围盒 / 视觉网格链路契约）（1s）\n[PASS] assets/visual-mesh — 官方 STL → OBJ 转换与包围盒复测（需上游归档）（0s）\n[PASS] tests/planning — 规划回归单测（场景/轨迹/CLI/回放）（2s）\n[PASS] tests/device — 设备层与安全闸回归（零硬件：七闸 / 状态机 / 执行环 / 恢复 / 运行日志 / 脚本）（3s）\n[PASS] tests/bimanual-calibration — 双臂几何与标定回归（零硬件：变体 / 单 plant / 碰撞过滤 / 一致性 / 同步执行 / 标定内核 / 标定 CLI）（2s）\n[PASS] tests/bimanual-coordination — 双臂紧协调回归（零硬件：解析 IK / 双臂限位 / 共享时间轴 / 最小坐标参数化 / 凸区域 / 协调规划 / 指标脚本 / 协调 CLI）（28s）\n[PASS] tests/tasks — 任务原语与感知回归（零硬件：schema / 原语 / 状态机 / 双臂 / 感知 / 指标 / CLI）（7s）\n[PASS] tests/regression — 会话录制回归（零硬件：session 产物 / golden 逐点一致）（3s）\n[PASS] assets/lock — 上游资产三方交叉校验 + 许可门禁 + NOTICE 一致性（verify_env --upstream --licenses；gen_notice --check）（0s）\n[PASS] tests/upstream — 上游获取与许可门禁回归（零硬件：fetch_upstream / asset_license_gate）（6s）\n--- ci tier 'fast' 汇总：PASS=17 SKIP=0 FAIL=0，耗时 55s ---",
+          "pattern_matched": true
+        }
+      ]
+    }
+  ]
+}
