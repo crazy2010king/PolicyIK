@@ -260,6 +260,7 @@ PYTHONPATH=src python3 -m pytest -q   tests/test_tasks_schema.py tests/test_task
 
 # 3) 单条任务链（逐原语结果 + 逐原语指标）
 PYTHONPATH=src python3 -m rm75_drake.cli task --task tasks/pick_place.yaml
+#    双臂任务（handover）⇒ 退出码 2（task 仅支持单臂，见 §7）
 PYTHONPATH=src python3 -m rm75_drake.cli task --task tasks/handover.yaml --json
 
 # 4) 指标脚本（验收口径 / 端到端口径分行 + 未验证清单）
@@ -295,3 +296,61 @@ PYTHONPATH=src python3 scripts/scan_forbidden_apis.py src tools scripts
   该纪律由 `tests/test_ci_script.py` 自身断言守住
   （存在 `run_check "tests/tasks"`、**不存在** `run_check_skippable "tests/tasks"`、
   且覆盖 7 个 S06 测试文件）。
+
+## 7. CLI 契约边界（S09-T05）
+
+> **一句话**：`task` 子命令**仅支持单臂场景**；多臂场景**显式拒绝**，
+> 退出码 **2** + 稳定 reason 标签 **`task_single_arm_only`**（**不是** SceneError 栈）。
+
+### 7.1 能力边界（为何存在）
+
+`task` 的场景装配固定走**单臂** `build_scene`（7 关节）。场景真相源里
+`robots` 数量 **> 1**（如 `scenarios/dual_arm.yaml` 的 14 关节双臂场景）时，
+装配层无法消费多臂 plant——旧行为是抛出
+`SceneError: 关节顺序与 scenario 不一致` 的**栈**（信息不达意、退出码 1 像业务失败）。
+S09 选择**契约收口**路线（**不**扩 CLI 双臂装配，避免扩散 blast radius）：
+把限制**显式契约化**。
+
+| 场景 | `task` 行为 | 退出码 | 稳定 reason |
+|---|---|---|---|
+| 单臂（`scenarios/single_arm.yaml`，`robots` = 1） | 正常跑完整条原语链 | **0** | `completed` |
+| 单臂但业务失败 / 超门槛 | 逐原语结果 + 门槛失败明细 | **1** | 原语/指标自身 reason（如 `threshold_not_met`） |
+| **多臂**（`scenarios/dual_arm.yaml`，`robots` = 2） | **显式拒绝**（前置校验，不进入装配） | **2** | **`task_single_arm_only`** |
+
+### 7.2 退出码语义（0 / 1 / 2）
+
+* **0**：成功（原语全部成功**且**逐原语门槛达标；真机物理指标硬件门控 SKIP，
+  逐条列入 `unverified_metrics`，**不影响**退出码 0）；
+* **1**：**业务失败**（原语失败 / 碰撞逃逸 / 超门槛）；
+* **2**：**用法错误或命令未支持**——任务文件不存在 / schema 非法 / 参数非法，
+  **或**命中「仅支持单臂」能力边界（`reason = task_single_arm_only`）。
+
+### 7.3 双臂交接的现状与替代路径
+
+* **现状**：`tasks/handover.yaml` 是**部署实例数据**（语义：单臂接近 → 抓取 →
+  抬起 → 双臂共同搬运 → 交接 → 释放 → 撤离），其原语含
+  `bimanual_motion`（`transit` / `handover`）。**双臂原语编排只在库层可用**
+  （`rm75_drake.tasks.bimanual.plan_carry` / `plan_handover`，常数 `X_LR`），
+  **不可经 `task` CLI 复现**——这是**已知缺口**，不得假装已覆盖。
+* **替代路径**：双臂协调走
+  * `cli bimanual`（离线双臂协同求解 + 残差报告，退出码 0）；
+  * `rm75_drake.tasks.bimanual` 的 `plan_carry` / `plan_handover` 编排层；
+  * 场景真相源 `scenarios/dual_arm.yaml`（两臂 URDF + 基座外参）+
+    `calibration/dual_arm.yaml`（基座外参唯一真相源）。
+* **不做的承诺**：**不**承诺「`task` CLI 能跑双臂」；若未来扩展，
+  需同时给出 reason 标签与退出版本的迁移说明。
+
+### 7.4 复算命令
+
+```bash
+# 双臂任务 ⇒ 退出码 2 + reason 标签（不是 SceneError 栈）
+PYTHONPATH=src python3 -m rm75_drake.cli task --task tasks/handover.yaml; echo "exit=$?"
+# 单臂任务 ⇒ 退出码 0（行为不变）
+PYTHONPATH=src python3 -m rm75_drake.cli task --task tasks/pick_place.yaml; echo "exit=$?"
+# 契约回归（守护用例）
+python3 -m pytest -q tests/test_tasks_cli.py
+```
+
+> **需求口径**：R011 的 Proof 措辞（目标文本）见
+> `docs/evidence/REQUIREMENTS-PROOF.md`（S09-T06 产出）——该处**必须**如实反映
+> 本节的「仅支持单臂 + 退出码 2 + 双臂交接不可经 CLI 复现」缺口。

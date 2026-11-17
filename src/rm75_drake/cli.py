@@ -115,6 +115,8 @@ __all__ = [
     "UNVERIFIED_COORDINATED_METRICS",
     "UNVERIFIED_TASK_METRICS",
     "TASK_HARDWARE_GATE_REASON",
+    "REASON_TASK_SINGLE_ARM_ONLY",
+    "TaskSingleArmOnlyError",
     "run_task_chain",
     "bimanual_x_lr_matrix",
     "select_bimanual_start",
@@ -129,6 +131,10 @@ EXIT_OK = 0
 EXIT_FAILURE = 1
 #: 退出码：用法错误或命令未实现。
 EXIT_USAGE = 2
+
+#: ``task`` 子命令命中「仅支持单臂」能力边界时的**稳定原因标签**（R-6）。
+#: 场景真相源里 ``robots`` 数量 > 1 ⇒ 多臂场景 ⇒ ``task`` 当前装配不了。
+REASON_TASK_SINGLE_ARM_ONLY = "task_single_arm_only"
 
 #: 默认场景真相源。
 DEFAULT_SCENARIO = str(paths.scenarios_dir / "single_arm.yaml")
@@ -757,6 +763,22 @@ class _UsageError(RuntimeError):
     """CLI 参数用法错误（退出码 2）。"""
 
 
+class TaskSingleArmOnlyError(RuntimeError):
+    """``task`` 子命令收到**多臂场景**（当前能力边界之外）。
+
+    ``task`` 的场景装配固定走**单臂** ``build_scene``（7 关节），场景真相源里
+    ``robots`` 数量 > 1 时（如 ``scenarios/dual_arm.yaml`` 的 14 关节）无法装配。
+    与其让底层抛「关节顺序与 scenario 不一致」的 SceneError 栈，这里**显式拒绝**，
+    给出稳定原因标签 :data:`REASON_TASK_SINGLE_ARM_ONLY`，并指向替代路径
+    （``cli bimanual`` + bimanual/dual_scene 编排）。
+
+    退出码语义：**2**（用法 / 未支持），不是 1（业务失败）。
+    """
+
+    #: 稳定原因标签（供脚本 / CI / 测试按标签判定）。
+    reason = REASON_TASK_SINGLE_ARM_ONLY
+
+
 # ── single ──────────────────────────────────────────────────────────────
 def _cmd_single(args: argparse.Namespace) -> int:
     """``single``：单臂规划 + 诊断 +（可选）录制。"""
@@ -877,6 +899,9 @@ def run_task_chain(
         任务文件 / 场景文件不存在。
     :class:`rm75_drake.tasks.goals.TaskError`
         任务文件 schema 非法。
+    :class:`rm75_drake.cli.TaskSingleArmOnlyError`
+        场景真相源声明了多台机器人（``robots`` > 1）——``task`` 子命令当前
+        **仅支持单臂场景**（R-6），多臂请改用 ``cli bimanual``。
     """
     from .device.transport import ScriptedTransport
     from .planning.scene import build_scene
@@ -890,6 +915,19 @@ def run_task_chain(
         Path(scenario_path) if scenario_path is not None else _resolve_task_scenario(task)
     )
     scenario = load_scenario(resolved_scenario)
+
+    # ── 能力边界前置校验（R-6）：task 子命令**仅支持单臂场景** ──
+    # 场景真相源里 robots > 1 台 ⇒ 多臂场景；task 的场景装配固定走单臂
+    # build_scene（7 关节），强行装配只会得到「关节顺序与 scenario 不一致」的
+    # SceneError 栈（信息不达意）。这里**显式拒绝**并给出稳定 reason 标签。
+    robot_count = len(getattr(scenario, "robots", ()) or ())
+    if robot_count > 1:
+        raise TaskSingleArmOnlyError(
+            f"[{REASON_TASK_SINGLE_ARM_ONLY}] task 子命令当前**仅支持单臂场景**，"
+            f"但场景 {resolved_scenario} 声明了 {robot_count} 台机器人"
+            f"（{', '.join(scenario.robot_names)}）；"
+            "双臂交接请改用 `cli bimanual` 与 bimanual/dual_scene 编排"
+        )
 
     assembly_started = time.perf_counter()
     scene = build_scene(scenario)
@@ -952,7 +990,8 @@ def _cmd_task(args: argparse.Namespace) -> int:
     * ``0``：成功（原语全部成功**且**逐原语门槛达标）——
       真机物理指标**硬件门控 SKIP**，逐条列入 ``unverified_metrics``；
     * ``1``：业务失败（原语失败 / 碰撞逃逸 / 超门槛）；
-    * ``2``：用法错误（任务文件不存在 / schema 非法 / 参数非法）。
+    * ``2``：用法错误（任务文件不存在 / schema 非法 / 参数非法）或
+      **能力边界未支持**（场景为多臂 ⇒ reason=``task_single_arm_only``）。
     """
     task_path = Path(str(args.task))
     if not task_path.is_file():
@@ -985,6 +1024,23 @@ def _cmd_task(args: argparse.Namespace) -> int:
         raise _UsageError(str(exc)) from exc
     except TaskError as exc:
         raise _UsageError(f"任务文件非法：{exc}") from exc
+    except TaskSingleArmOnlyError as exc:
+        # 能力边界（多臂场景）⇒ 退出码 2（用法 / 未支持），不是 1（业务失败）。
+        message = str(exc)
+        if getattr(args, "json", False):
+            payload = {
+                "command": "task",
+                "status": "unsupported",
+                "success": False,
+                "stage": "precondition",
+                "reason": REASON_TASK_SINGLE_ARM_ONLY,
+                "message": message,
+                "task": str(task_path),
+            }
+            print(json.dumps(payload, ensure_ascii=False, default=str))
+        else:
+            print(f"cli: 未支持：{message}", file=sys.stderr)
+        return EXIT_USAGE
 
     report = outcome["report_object"]
     task_results = outcome["task_results"]

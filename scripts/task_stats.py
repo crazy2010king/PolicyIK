@@ -39,13 +39,16 @@
     python3 scripts/task_stats.py --samples 20         # 调整规模
     python3 scripts/task_stats.py --json               # 机器可读输出
     python3 scripts/task_stats.py --task tasks/handover.yaml
+        # ⇒ 退出码 2（reason=task_single_arm_only：task 仅支持单臂场景，见
+        #   runbooks/s06_task_primitives.md §7）
     python3 scripts/task_stats.py --max-seconds 60      # 时间预算（过载保护）
 
 退出码
 ------
 ``0``  采样完成且**逐原语门槛达标**（真机物理指标硬件门控 SKIP）；
 ``1``  业务失败（门槛未达标 / 一组都没跑成 / 环境不可用）；
-``2``  用法错误（任务文件不存在 / 参数非法）。
+``2``  用法错误（任务文件不存在 / 参数非法）或**命令未支持**
+      （多臂场景 ⇒ reason=task_single_arm_only）。
 """
 
 from __future__ import annotations
@@ -264,6 +267,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("task_stats: --jitter 必须是非负有限数", file=sys.stderr)
         return 2
 
+    from rm75_drake.cli import REASON_TASK_SINGLE_ARM_ONLY, TaskSingleArmOnlyError
+
     try:
         report = run_stats(
             samples=args.samples,
@@ -278,6 +283,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
     except FileNotFoundError as exc:
         print(f"task_stats: 文件不存在：{exc}", file=sys.stderr)
+        return 2
+    except TaskSingleArmOnlyError as exc:
+        # 能力边界（多臂场景）⇒ 退出码 2（用法 / 未支持），不是业务失败。
+        print(
+            f"task_stats: 未支持（{REASON_TASK_SINGLE_ARM_ONLY}）：{exc}",
+            file=sys.stderr,
+        )
         return 2
 
     if args.json:
