@@ -34,17 +34,18 @@ N_RANDOM_CONFIGS = 40
 #: 固定随机种子（回归可复现）。
 RANDOM_SEED = 20260113
 
-#: 精确表的往返容差。
+#: 精确表的往返容差（IK 自身的往返自洽门槛，严于 FK 对照门槛）。
 EXACT_POS_TOL = 1e-9
 EXACT_ROT_TOL = 1e-9
 
-#: 官方舍入表（URDF rpy=1.5708）的往返容差。
-ROUNDED_POS_TOL = 5e-6
-ROUNDED_ROT_TOL = 1e-9
+#: 官方舍入表（URDF rpy=1.5708）的往返容差 —— 阈值来源唯一真相源：
+#: rm75_drake.kinematics.mdh（FK 门槛常量，见 docs/architecture/fk-tolerance.md）。
+ROUNDED_POS_TOL = mdh.FK_POSITION_TOLERANCE_URDF_M
+ROUNDED_ROT_TOL = mdh.FK_ROTATION_TOLERANCE_RAD
 
-#: 与 Drake FK 的一致性容差（官方 URDF 舍入残差 ~2.24e-6 m 的同阶）。
-DRAKE_POS_TOL = 5e-6
-DRAKE_ROT_TOL = 1e-9
+#: 与 Drake FK 的一致性容差（官方 URDF 舍入残差的同阶，来源同上）。
+DRAKE_POS_TOL = mdh.FK_POSITION_TOLERANCE_URDF_M
+DRAKE_ROT_TOL = mdh.FK_ROTATION_TOLERANCE_RAD
 
 
 # ── fixtures ────────────────────────────────────────────────────────────

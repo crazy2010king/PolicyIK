@@ -30,8 +30,10 @@
 这个位置残差**不是本模块的缺陷**，而是官方 URDF 舍入的直接后果：把 URDF 的
 rpy 全部换成精确 ±π/2 后，本表（同样换成精确 ±π/2）与 URDF 链的残差降到
 ~1e-16 m（约定完全等价）。也就是说 **Drake 载入的 FK 相对精确模型本身就有
-~2.2e-6 m 的偏差**，任何独立的解析模型都无法在 1e-6 m 以内与它对齐。
-该残差在 :mod:`tests.test_mdh_fk` 中被显式钉死为已知量（而不是未知误差）。
+~2.2e-6 m 的偏差**，任何独立的解析模型都无法在严格门槛以内与它对齐。
+该残差在 :mod:`tests.test_mdh_fk` 中被显式钉死为已知量（而不是未知误差），
+对应的验收门槛以本模块的常量（唯一真相源）为准，详见
+:data:`FK_TOLERANCE_DOC`。
 
 零 Drake 依赖
 -------------
@@ -52,6 +54,20 @@ __all__ = [
     "MDH_ALPHA_EXACT_PI_2",
     "MDH_ZERO_HEIGHT_M",
     "N_JOINTS",
+    "FK_POSITION_TOLERANCE_URDF_M",
+    "FK_POSITION_TOLERANCE_EXACT_PI2_M",
+    "FK_ROTATION_TOLERANCE_RAD",
+    "ZERO_Y_ROUNDING_BIAS_M",
+    "ZERO_Y_ROUNDING_BIAS_TOLERANCE_M",
+    "WRONG_TABLE_DETECTION_FLOOR_M",
+    "ZERO_HEIGHT_TOLERANCE_M",
+    "ZERO_X_TOLERANCE_M",
+    "ZERO_Z_TOLERANCE_M",
+    "ZERO_ROTATION_TOLERANCE_M",
+    "MDH_HEIGHT_SUM_TOLERANCE_M",
+    "ROUNDING_ALPHA_DELTA_RAD",
+    "ROUNDING_ALPHA_DELTA_TOLERANCE_RAD",
+    "FK_TOLERANCE_DOC",
     "fk",
     "link7_position",
     "link7_rotation",
@@ -102,6 +118,78 @@ MDH_ALPHA_EXACT_PI_2: tuple = (
 #:
 #: 来源：官方开发者中心 RM75 参数表 + 评审记录 E9。
 MDH_ZERO_HEIGHT_M = 0.8505
+
+
+# ── FK 验收门槛（**唯一真相源**）──────────────────────────────────────────
+#
+# 背景：官方 RM75-B URDF 的 joint rpy 用的是**四舍五入值** ``1.5708``
+#（而非精确 ±π/2）。经典 D-H 链把偏移沿"关节转过之后的 z 轴"平移，URDF
+# 把偏移放在父系 y 上，只有在 ±90° 精确成立时两者才重合 —— 因此用官方
+# URDF 做对照时存在**固有残差**：零位 link_7 的 y 偏差实测 ~2.2407e-6 m。
+# 该残差是**模型来源决定的已知量**，不是被测实现的缺陷。
+#
+# 因此门槛被拆成两条互不等价的判据：
+#
+# * :data:`FK_POSITION_TOLERANCE_URDF_M` —— 对着**真实 URDF**（舍入 rpy）
+#   的位置门槛；
+# * :data:`FK_POSITION_TOLERANCE_EXACT_PI2_M` —— 对着**精确 ±π/2 的 URDF
+#   变体**（去掉官方舍入）的位置门槛。
+#
+# 验收口径的正式声明见 :data:`FK_TOLERANCE_DOC`。
+
+#: 对着**真实官方 URDF**（舍入 rpy）比对时的 FK 位置误差门槛（m）。
+#:
+#: 上界由官方 rpy 舍入的固有残差决定（见 :data:`ZERO_Y_ROUNDING_BIAS_M`），
+#: 故放宽到 5e-6 m；残差本身由 :data:`ZERO_Y_ROUNDING_BIAS_M` 单独钉死，
+#: 不会被"悄悄放宽"。
+FK_POSITION_TOLERANCE_URDF_M = 5e-6
+
+#: 对着**精确 ±π/2 的 URDF 变体**比对时的 FK 位置误差门槛（m）。
+#:
+#: 去掉官方舍入后 D-H 约定与 URDF 链完全等价，残差降到数值噪声量级，
+#: 因此这里可以用严格的 1e-6 m 判定。
+FK_POSITION_TOLERANCE_EXACT_PI2_M = 1e-6
+
+#: FK 姿态（旋转矩阵逐元素差）误差门槛（rad）。
+#:
+#: 官方 rpy 舍入对姿态无影响（实测 < 1e-15 rad），故姿态门槛保持严格。
+FK_ROTATION_TOLERANCE_RAD = 1e-9
+
+#: 零位 link_7 的 y 偏差**期望值**（m）—— 官方 rpy 舍入的已知量。
+ZERO_Y_ROUNDING_BIAS_M = 2.2407e-6
+
+#: 零位 y 偏差期望值的允许带宽（m）。
+#:
+#: 远大于数值噪声、远小于残差本身，保证"残差来源被钉死"这件事可判定。
+ZERO_Y_ROUNDING_BIAS_TOLERANCE_M = 1e-8
+
+#: 鉴别力门槛（m）：错误 alpha/d 表与真值的差必须**超过**该值，
+#: 以证明比对本身有鉴别力、不是恒真。
+WRONG_TABLE_DETECTION_FLOOR_M = 1e-3
+
+#: 零位锚点 z（末端高度）的允许偏差（m）。
+ZERO_HEIGHT_TOLERANCE_M = 1e-9
+
+#: 零位锚点 x 的允许偏差（m）。
+ZERO_X_TOLERANCE_M = 1e-12
+
+#: 零位锚点 z 对齐 Drake 的允许偏差（m）—— 舍入只影响水平方向。
+ZERO_Z_TOLERANCE_M = FK_POSITION_TOLERANCE_EXACT_PI2_M
+
+#: 零位锚点姿态（旋转矩阵与单位阵的逐元素差）的允许偏差（无量纲）。
+ZERO_ROTATION_TOLERANCE_M = 1e-12
+
+#: 零位高度锚点与 d 表求和值之间的一致性带宽（m）。
+MDH_HEIGHT_SUM_TOLERANCE_M = 1e-12
+
+#: 官方舍入值 1.5708 与精确 π/2 的差值（rad）—— 残差来源的量化说明。
+ROUNDING_ALPHA_DELTA_RAD = 3.6732e-6
+
+#: 上述差值的允许带宽（rad）。
+ROUNDING_ALPHA_DELTA_TOLERANCE_RAD = 1e-9
+
+#: FK 验收门槛口径的正式声明文档（仓库内路径）。
+FK_TOLERANCE_DOC = "docs/architecture/fk-tolerance.md"
 
 
 def _rot_z(angle: float) -> np.ndarray:
