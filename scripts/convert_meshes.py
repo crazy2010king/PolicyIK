@@ -23,6 +23,7 @@ Drake 1.51.1 / 1.55.0 都不解析 ``.stl``（``MakeConvexHull`` 只吃 .obj/.vt
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -39,6 +40,19 @@ DEFAULT_DST = REPO_ROOT / "models" / "rm75_drake" / "meshes"
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_ENV = 2
+
+
+def rel_to_repo(path: Path) -> str:
+    """把路径渲染成可读形式：仓库内用仓库相对路径，仓库外用 ``../`` 相对形式。
+
+    与 tools/fetch_upstream.py 的同名函数同一约定：**绝不**因为路径在仓库外
+    就抛 ValueError（``Path.relative_to`` 会抛），否则一次本已成功的转换
+    会被日志渲染变成失败。
+    """
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return os.path.relpath(path, REPO_ROOT)
 
 
 def find_stl_files(src: Path) -> list[Path]:
@@ -126,7 +140,7 @@ def main(argv=None) -> int:
                     f"[convert_meshes][ERROR] 写出失败：{out}（{exc}）", file=sys.stderr
                 )
                 return EXIT_FAIL
-            print(f"[convert_meshes] {stl_path.name} -> {out.relative_to(REPO_ROOT)}")
+            print(f"[convert_meshes] {stl_path.name} -> {rel_to_repo(out)}")
 
     # 包围盒表是本脚本的主要产物（改造版 URDF 的 collision box 真值来源），始终打印；
     # --print-boxes 保留为显式开关（与计划里的 CLI 约定一致），不改变默认行为。

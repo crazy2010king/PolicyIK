@@ -216,8 +216,10 @@ run_check "tests/verify-env-contract" "verify_env 退出码契约（参数错误
     "$PYTHON" -m pytest -q tests/test_verify_env_contract.py
 
 # 6) 网格工具单测（合成夹具部分与上游归档无关 → 恒跑；归档依赖用例内部 SKIP）
-run_check "tests/mesh-tools" "网格工具单测（STL 解析 / OBJ 写出 / 包围盒）" -- \
-    "$PYTHON" -m pytest -q tests/test_mesh_tools.py
+#    tests/test_visual_mesh_chain.py 覆盖视觉网格链路的正/反向契约（缺输入 → 退出码 2、
+#    CI 该项必须保留 run_check_skippable 语义），与物化无关的部分恒跑。
+run_check "tests/mesh-tools" "网格工具单测（STL 解析 / OBJ 写出 / 包围盒 / 视觉网格链路契约）" -- \
+    "$PYTHON" -m pytest -q tests/test_mesh_tools.py tests/test_visual_mesh_chain.py
 
 # 7) 视觉网格回归（**依赖上游归档** → 缺失时显式 SKIP，不伪装成通过）
 run_check_skippable "assets/visual-mesh" "官方 STL → OBJ 转换与包围盒复测（需上游归档）" -- \
