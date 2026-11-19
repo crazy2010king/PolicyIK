@@ -25,13 +25,15 @@ from __future__ import annotations
 
 import abc
 import math
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Deque, List, Optional, Sequence, Tuple
 
 from ..planning.trajectory import JOINT_COUNT
+from .binding import RM_TRIPLE_MODE_E, ArmBinding
 from .config import DeviceConfig
-from .sdk import NotAvailableError, SdkAudit, SdkProxy, rad_to_deg
+from .sdk import NotAvailableError, SdkAudit, deg_to_rad, rad_to_deg
 
 __all__ = [
     "TransportError",
@@ -44,6 +46,8 @@ __all__ = [
     "REASON_UNSUPPORTED",
     "GRIPPER_POSITION_MIN",
     "GRIPPER_POSITION_MAX",
+    "GRIPPER_BLOCK_TIMEOUT_S",
+    "RM_TRIPLE_MODE_E",
     "FRAME_INCOMPLETE_ERR_CODE",
     "StateFrame",
     "GripperState",
@@ -65,6 +69,10 @@ REASON_UNSUPPORTED = "unsupported"
 #: 夹爪位置是**无量纲**的 0–1000 整数（不是角度，不做任何 rad/deg 换算）。
 GRIPPER_POSITION_MIN = 0
 GRIPPER_POSITION_MAX = 1000
+
+#: 夹爪下发的**阻塞超时**（s）——阻塞模式等控制器返回「夹爪到位」，
+#: 超时返回 ``-4``。夹爪单程约 0.4 s，取 5 s 留足裕量。
+GRIPPER_BLOCK_TIMEOUT_S = 5
 
 #: 帧级系统错误码里的**特殊值**：``errCode == -3`` 表示「推送数据不完整」
 #: ⇒ 该帧必须丢弃（**不是**故障原因）。其余非 0 值一律视为系统错误码。
@@ -356,135 +364,194 @@ class SdkTransport(ArmTransport):
         *,
         sdk: Any = None,
         audit: Optional[SdkAudit] = None,
+        binding: Optional[ArmBinding] = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.audit = audit if audit is not None else SdkAudit()
         self._sdk = sdk
-        self._proxy: Optional[SdkProxy] = None
+        self._binding: Optional[ArmBinding] = binding
+        self._owns_binding = binding is None
         self._arm: Any = None
+        self._state_source: Any = None
 
     # -- 生命周期 --------------------------------------------------------
     def open(self) -> None:
         """建立连接（幂等）。
+
+        步骤：三线程模式实例 → ``rm_create_robot_arm(ip, port)`` **建连接** →
+        校验句柄（详见 :class:`~rm75_drake.device.binding.ArmBinding`）。
 
         异常
         ----
         :class:`~rm75_drake.device.sdk.NotAvailableError`
             SDK 未安装（**显式**报错，不静默降级）。
         :class:`TransportError`
-            SDK 存在但初始化失败（``reason="sdk_unavailable"``）。
+            SDK 存在但连接失败（``reason="link_down"``）或结构不符
+            （``reason="sdk_unavailable"``）。
         """
         if self._open:
             return
-        if self._sdk is None:
-            from .sdk import load_sdk  # 局部导入：懒加载的最后一环
-
-            try:
-                self._sdk = load_sdk()
-            except NotAvailableError:
-                raise
-            except Exception as exc:  # pragma: no cover - 防御
-                raise TransportError(
-                    f"SDK 加载失败：{exc!r}", reason=REASON_SDK_UNAVAILABLE
-                ) from exc
-        self._proxy = SdkProxy(self._sdk, self.audit)
-        self._arm = self._init_arm()
+        binding = self._binding
+        if binding is None:
+            binding = ArmBinding(self.config, sdk=self._sdk, audit=self.audit)
+        try:
+            report = binding.open()
+        except NotAvailableError:
+            raise
+        except Exception as exc:
+            raise TransportError(
+                f"SDK 初始化失败：{exc!r}", reason=REASON_SDK_UNAVAILABLE
+            ) from exc
+        if not report.connected:
+            # 连接失败（含「替身没有建连接方法」）⇒ 明确报错，不假装已连上。
+            reason = (
+                REASON_LINK_DOWN
+                if "句柄" in report.detail or "连接" in report.detail
+                else REASON_SDK_UNAVAILABLE
+            )
+            raise TransportError(report.detail, reason=reason)
+        self._binding = binding
+        self._arm = binding.arm
         self._open = True
         self._closed = False
 
-    def _init_arm(self) -> Any:
-        """初始化三线程模式下的 ``RoboticArm`` 实例。
-
-        三线程模式是 UDP 主动上报的前提（研究 F4）。
-
-        约定（**不得**破坏）
-        ------------------
-        ``self._arm`` **不用于任何 SDK 调用**——它只是「已初始化的机械臂对象」，
-        所有 SDK 函数调用一律经 :class:`~rm75_drake.device.sdk.SdkProxy` 代理
-        （否则调用审计会漏记，运行时那半证据就成了假绿灯）。
-        取子模块本身走 :meth:`SdkProxy.get_submodule`（属性访问，不计调用）。
-        """
-        proxy = self._require_proxy()
-        try:
-            interface = proxy.get_submodule("rm_robot_interface")
-            arm_cls = getattr(interface, "RoboticArm")
-        except AttributeError as exc:
-            raise TransportError(
-                "SDK 里找不到 RoboticArm（rm_robot_interface.RoboticArm）",
-                reason=REASON_SDK_UNAVAILABLE,
-            ) from exc
-        try:
-            return arm_cls(RM_TRIPLE_MODE_E)
-        except TypeError:
-            # 老版本 SDK 的三线程常量名可能不同：显式回退并记录，不假装。
-            return arm_cls()
-        except Exception as exc:
-            raise TransportError(
-                f"RoboticArm 初始化失败：{exc!r}", reason=REASON_SDK_UNAVAILABLE
-            ) from exc
-
     def close(self) -> None:
-        """关闭连接（幂等）。"""
+        """关闭连接（幂等）。
+
+        **共享绑定**（``binding=...`` 传入的）不会被关闭——它的生命周期归持有者。
+        """
         self._open = False
         self._closed = True
         self._arm = None
+        binding = self._binding
+        if binding is None:
+            return
+        if self._owns_binding:
+            self._binding = None
+            binding.close()
 
     # -- 运动 ------------------------------------------------------------
     def move_j_canfd(self, joint_rad: Sequence[float], *, follow: bool = True) -> None:
         """透传下发关节角（rad → 度 的换算发生在**这一行之前**的唯一转换点）。"""
         self._require_open()
-        proxy = self._require_proxy()
         values = _validate_joint_vector(joint_rad, "joint_rad")
         degrees = [rad_to_deg(v) for v in values]
-        proxy.rm_movej_canfd(degrees, follow=bool(follow), trajectory_mode=0)
+        self._require_binding().call(
+            "rm_movej_canfd", degrees, follow=bool(follow), trajectory_mode=0
+        )
 
     def enable(self, state: bool) -> None:
-        """整臂使能 / 去使能。"""
+        """整臂使能 / 去使能。
+
+        真机实测：``rm_set_joint_en_state(joint_num, en_state)`` 是**逐轴**接口
+        （``en_state`` 是 int：1 使能 / 0 去使能）⇒ 这里逐轴下发。
+        """
         self._require_open()
-        self._require_proxy().rm_set_joint_en_state(bool(state))
+        binding = self._require_binding()
+        for index in range(JOINT_COUNT):
+            binding.call(
+                "rm_set_joint_en_state", index, 1 if state else 0
+            )
 
     def clear_error(self) -> None:
-        """清除逐关节错误码，再清系统错误码（官方顺序）。"""
+        """清除逐关节错误码，再清系统错误码（官方顺序）。
+
+        真机实测：``rm_set_joint_clear_err(joint_num)`` 是**逐轴**接口。
+        """
         self._require_open()
-        proxy = self._require_proxy()
-        proxy.rm_set_joint_clear_err()
-        proxy.rm_clear_system_err()
+        binding = self._require_binding()
+        for index in range(JOINT_COUNT):
+            binding.call("rm_set_joint_clear_err", index)
+        binding.call("rm_clear_system_err")
 
     def emergency_stop(self) -> None:
-        """急停。"""
+        """急停。
+
+        真机实测：``rm_set_arm_emergency_stop(state: bool)``。
+        """
         self._require_open()
-        self._require_proxy().rm_set_arm_emergency_stop()
+        self._require_binding().call("rm_set_arm_emergency_stop", True)
 
     def slow_stop(self) -> None:
         """缓停。"""
         self._require_open()
-        self._require_proxy().rm_set_arm_slow_stop()
+        self._require_binding().call("rm_set_arm_slow_stop")
 
     def set_joint_limits(
         self, lower_rad: Sequence[float], upper_rad: Sequence[float]
     ) -> None:
-        """设置真机限位（rad → 度）。"""
+        """设置真机限位（rad → 度）。
+
+        真机实测：``rm_set_joint_min_pos(joint_num, min_pos)`` /
+        ``rm_set_joint_max_pos(joint_num, max_pos)`` 是**逐轴**接口。
+        """
         self._require_open()
-        proxy = self._require_proxy()
+        binding = self._require_binding()
         lower = _validate_joint_vector(lower_rad, "lower_rad")
         upper = _validate_joint_vector(upper_rad, "upper_rad")
-        proxy.rm_set_joint_min_pos([rad_to_deg(v) for v in lower])
-        proxy.rm_set_joint_max_pos([rad_to_deg(v) for v in upper])
+        for index in range(JOINT_COUNT):
+            binding.call(
+                "rm_set_joint_min_pos", index, rad_to_deg(lower[index])
+            )
+            binding.call(
+                "rm_set_joint_max_pos", index, rad_to_deg(upper[index])
+            )
 
     # -- 状态读取 --------------------------------------------------------
+    def attach_state_source(self, source: Any) -> None:
+        """挂载 UDP 状态源（:class:`~rm75_drake.device.state_source.StateSource`）。
+
+        真机上 UDP 主动上报是**唯一**的状态回读通道：没有挂载状态源时
+        :meth:`read_state` 一律返回 ``None``（**明确是「没有状态」**，
+        不得当成「状态正常」）。
+        """
+        self._state_source = source
+
     def read_state(self) -> Optional[StateFrame]:
         """读取最新一帧状态（来自 UDP 回调缓存）。"""
         self._require_open()
-        getter = getattr(self, "_latest_frame", None)
-        if getter is None:
+        source = self._state_source
+        if source is None:
             return None
-        return getter()
+        return source.latest()
+
+    def read_arm_state(self) -> StateFrame:
+        """**一次性只读查询**机械臂状态（``rm_get_current_arm_state``）。
+
+        与 UDP 主动上报互补：UDP 帧里有逐轴电流 / 使能标志 / 错误码，
+        而这个接口返回**控制器当前**的关节角与位姿（外参标定与围栏判定用）。
+
+        异常
+        ----
+        :class:`TransportError`
+            查询失败（``reason="link_down"``）或返回结构不符。
+        """
+        self._require_open()
+        binding = self._require_binding()
+        ret, raw = binding.call("rm_get_current_arm_state")
+        if int(ret) != 0:
+            raise TransportError(
+                f"rm_get_current_arm_state 返回 {ret}（查询失败）",
+                reason=REASON_LINK_DOWN,
+            )
+        return _state_frame_from_raw(raw)
+
+    def read_joint_currents_ma(self) -> Tuple[float, ...]:
+        """读取逐轴电流（mA，7 维）。"""
+        self._require_open()
+        ret, raw = self._require_binding().call("rm_get_current_joint_current")
+        if int(ret) != 0:
+            raise TransportError(
+                f"rm_get_current_joint_current 返回 {ret}（查询失败）",
+                reason=REASON_LINK_DOWN,
+            )
+        return tuple(float(v) for v in raw)
 
     def read_gripper(self) -> GripperState:
         """读取夹爪状态（``rm_get_gripper_state``）。"""
         self._require_open()
-        raw = self._require_proxy().rm_get_gripper_state()
+        raw = self._require_binding().call("rm_get_gripper_state")
         return _gripper_state_from_raw(raw)
 
     def command_gripper_position(self, position: int, *, speed: int = 100) -> None:
@@ -492,43 +559,95 @@ class SdkTransport(ArmTransport):
 
         * 夹爪位置是**无量纲** 0–1000 整数 ⇒ **不涉及 rad/deg 换算**；
         * ``rm_set_gripper_position`` 已在 SDK 白名单内（``device/sdk.py``）
-          ⇒ **不改** ``sdk.py`` / ``versions.lock``。
+          ⇒ **不改** ``sdk.py`` / ``versions.lock``；
+        * 真机实测：签名是 ``(position, block, timeout)``——
+          阻塞模式会等待控制器返回「夹爪到位」，超时返回 ``-4``。
         """
         self._require_open()
         value = _validate_gripper_position(position)
         _validate_gripper_speed(speed)
-        self._require_proxy().rm_set_gripper_position(value)
+        self._require_binding().call(
+            "rm_set_gripper_position", value, True, GRIPPER_BLOCK_TIMEOUT_S
+        )
 
     # -- 内部工具 --------------------------------------------------------
-    def _require_proxy(self) -> SdkProxy:
-        if self._proxy is None:
+    def _require_binding(self) -> ArmBinding:
+        if self._binding is None:
             raise TransportError(
-                "传输层未初始化 SDK 代理（先调用 open()）", reason=REASON_NOT_OPEN
+                "传输层未初始化 SDK 绑定（先调用 open()）", reason=REASON_NOT_OPEN
             )
-        return self._proxy
+        return self._binding
+
+
+def _state_frame_from_raw(raw: Any) -> StateFrame:
+    """把 ``rm_get_current_arm_state`` 的返回翻译成 :class:`StateFrame`。
+
+    真机返回结构（实测）::
+
+        {"joint": [deg, ...], "pose": [x, y, z, rx, ry, rz], "err": {"err_len": n, "err": [...]}}
+
+    * ``joint`` 是**度** ⇒ 这里换算成 rad（唯一转换点 :func:`deg_to_rad`）；
+    * ``err.err`` 是逐轴错误码（字符串，``"0"`` = 无错）；
+    * UDP 帧才带电流 / 使能标志 ⇒ 这里保持默认（**不猜**）。
+    """
+    if not isinstance(raw, dict):
+        raise TransportError(
+            f"rm_get_current_arm_state 返回结构非法：{type(raw).__name__}",
+            reason=REASON_INVALID_INPUT,
+        )
+    joints = raw.get("joint")
+    if not isinstance(joints, (list, tuple)) or len(joints) != JOINT_COUNT:
+        raise TransportError(
+            f"rm_get_current_arm_state 的 joint 维度非法：{joints!r}",
+            reason=REASON_INVALID_INPUT,
+        )
+    positions = tuple(deg_to_rad(float(v)) for v in joints)
+    err_codes = [0] * JOINT_COUNT
+    err = raw.get("err")
+    if isinstance(err, dict):
+        entries = err.get("err")
+        if isinstance(entries, (list, tuple)):
+            for index, item in enumerate(entries[:JOINT_COUNT]):
+                try:
+                    err_codes[index] = int(item)
+                except (TypeError, ValueError):
+                    err_codes[index] = -1
+    return StateFrame(
+        joint_positions_rad=positions,
+        joint_err_codes=tuple(err_codes),
+        received_at=time.monotonic(),
+    )
 
 
 def _gripper_state_from_raw(raw: Any) -> GripperState:
-    """把 SDK 的夹爪状态结构体翻译成 :class:`GripperState`。"""
+    """把 SDK 的夹爪状态翻译成 :class:`GripperState`。
+
+    真机实测结构：``rm_get_gripper_state()`` 返回 ``(ret, dict)``，dict 的键是
+    ``enable_state / status / error / mode / current_force / temperature / actpos``；
+    ``status``：**0 = 离线，1 = 在线**（与 UDP 帧里的 ``rm_plus_state``
+    「0 = 在线」语义相反 ⇒ 两处都必须按各自文档解释，**不得混用**）。
+    """
     if raw is None:
         return GripperState(online=False, position=0)
     if isinstance(raw, GripperState):
         return raw
-    online = True
-    position = 0
-    if isinstance(raw, dict):
-        online = bool(raw.get("rm_plus_state", 0) == 0)
-        position = int(raw.get("gripper_position", 0) or 0)
-    else:
-        plus_state = getattr(raw, "rm_plus_state", None)
-        if plus_state is not None:
-            online = int(plus_state) == 0
-        position = int(getattr(raw, "gripper_position", 0) or 0)
+    payload: Any = raw
+    if isinstance(raw, tuple) and len(raw) == 2 and isinstance(raw[1], dict):
+        payload = raw[1]
+    if isinstance(payload, dict):
+        if "status" in payload:
+            online = bool(int(payload.get("status", 0)) == 1)
+        else:
+            online = bool(int(payload.get("rm_plus_state", 0)) == 0)
+        if "actpos" in payload:
+            position = int(payload.get("actpos", 0) or 0)
+        else:
+            position = int(payload.get("gripper_position", 0) or 0)
+        return GripperState(online=online, position=position)
+    plus_state = getattr(raw, "rm_plus_state", None)
+    online = True if plus_state is None else bool(int(plus_state) == 0)
+    position = int(getattr(raw, "gripper_position", 0) or 0)
     return GripperState(online=online, position=position)
-
-
-#: SDK 的三线程模式常量（与官方 ``RM_TRIPLE_MODE_E`` 一致）。
-RM_TRIPLE_MODE_E = 3
 
 
 # ── 离线替身 ────────────────────────────────────────────────────────────

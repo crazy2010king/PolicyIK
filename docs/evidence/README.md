@@ -22,6 +22,7 @@
 | 3 | `S02-rerun.md` | R006 / R007 / R011 / R012 / R017（间接） | S02 全量复跑（8/8 PASS）与「旧口径 → 现状口径」漂移对照表（CI fast PASS=17、扫描 90 文件/13 项 0 命中、bimanual exit 0、GCS 凸松弛口径） | `python3 scripts/collect_evidence.py --output docs/evidence/s02-rerun.json` |
 | 4 | `S09-ci-fast.md` | R019（间接：许可/资产链路）、R014（CI 门禁面） | 上游归档物化后官方网格解包链路跑通；`assets/visual-mesh` 由 `[SKIP]` 转 `[PASS]`，fast 档 **PASS=17 SKIP=0 FAIL=0** | `bash scripts/ci.sh fast` |
 | 5 | `S09-upstream-archive.md` | **R019** | 上游归档物化与**字节级校验**闭合：`--verify` 退出码 0、两条 sha256 与 MANIFEST / versions.lock 三方逐字一致；归档**不入 git**、入库凭据与**可复现配方** | `python3 tools/fetch_upstream.py --verify` |
+| 6 | `rm75-b-real-arm-ladder.md` | 真机验证阶梯（L0–L14）首轮实测 | 现场 RM75-B（192.168.1.18）只读级别 L0/L1/L2/L3/L5/L10 **全部 PASS**；L4 因机械臂处于**急停态**（`arm_current_status=9`）判 FAIL ⇒ 运动级被门禁拦截；`cycle` 读法实测定为 **5 ms 的倍数**（P50=4.998 ms）；**修掉 8 个真机缺陷**；未验证指标逐条列出 | `python3 scripts/real_machine_ladder.py --to L5 --device-config devices/rm75_b_192_168_1_18.yaml --json` |
 
 机器可读产物（与 `S02-rerun.md` 配套）：`s02-rerun.json`
 （`schema_version=1`，`generator=scripts/collect_evidence.py`，逐项命令 / 退出码 / 耗时 / 摘要）。

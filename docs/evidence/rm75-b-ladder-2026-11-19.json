@@ -1,0 +1,442 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-19T20:04:36+0800",
+  "mode": "hardware",
+  "allow_motion": false,
+  "device": {
+    "schema_version": 1,
+    "name": "rm75_b_192_168_1_18",
+    "arm_ip": "192.168.1.18",
+    "tcp_port": 8080,
+    "udp_port": 8080,
+    "udp_cycle": 1,
+    "joint_zero_offset": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "accel_limits": {
+      "measured": false,
+      "values": [
+        6.0,
+        6.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ]
+    },
+    "current_thresholds": {
+      "calibrated": false,
+      "values": [
+        1500.0,
+        1500.0,
+        1200.0,
+        1200.0,
+        1000.0,
+        1000.0,
+        1000.0
+      ]
+    },
+    "fence": {
+      "table_height_m": 0.75,
+      "singularity_radius_m": 0.15
+    }
+  },
+  "stages": [
+    {
+      "stage_id": "L0",
+      "title": "链路与网关可达（只读，零 SDK）",
+      "tier": "A",
+      "status": "pass",
+      "metrics": {
+        "tcp_connected": true,
+        "tcp_latency_ms": 0.6991099799051881,
+        "tcp_detail": "",
+        "http_status": 200,
+        "http_detail": "http://192.168.1.18:80/",
+        "arm_ip": "192.168.1.18",
+        "tcp_port": 8080
+      },
+      "failures": [],
+      "evidence": [
+        "ping / TCP 连接耗时",
+        "厂商网页 HTTP 状态码"
+      ],
+      "notes": [
+        "tcp_connected=True（要求为真）",
+        "http_status=200（要求属于 {200, 403, 301, 302}）"
+      ],
+      "duration_s": 0.020143939997069538
+    },
+    {
+      "stage_id": "L1",
+      "title": "厂商 SDK 与控制器能力（只读）",
+      "tier": "A",
+      "status": "pass",
+      "metrics": {
+        "sdk_available": true,
+        "connected": true,
+        "arm_dof": 7,
+        "controller_version": 3,
+        "connect_detail": "已连接 192.168.1.18:8080（handle id=1）"
+      },
+      "failures": [],
+      "evidence": [
+        "SDK 版本",
+        "API 版本",
+        "arm_dof",
+        "控制器代次"
+      ],
+      "notes": [
+        "sdk_available=True（要求为真）",
+        "arm_dof=7（要求 == 7）",
+        "controller_version=3（要求为真）"
+      ],
+      "duration_s": 0.09477566892746836
+    },
+    {
+      "stage_id": "L2",
+      "title": "真机连接与只读状态快照（只读）",
+      "tier": "A",
+      "status": "pass",
+      "metrics": {
+        "connected": true,
+        "state_query_ok": true,
+        "joint_positions_rad": [
+          0.014608,
+          0.734888,
+          0.339467,
+          -0.395404,
+          -0.021276,
+          0.092607,
+          -3.499682
+        ],
+        "joint_positions_deg": [
+          0.837,
+          42.106,
+          19.45,
+          -22.655,
+          -1.219,
+          5.306,
+          -200.517
+        ],
+        "joint_err_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "joint_error_count": 0,
+        "tcp_pose": [
+          0.31582,
+          0.037005,
+          0.75107,
+          -0.109,
+          0.33,
+          -0.043
+        ],
+        "tcp_height_m": 0.75107,
+        "tcp_radius_m": 0.3179805692569909,
+        "joint_currents_ma": [
+          -243.0,
+          -1589.0,
+          -427.0,
+          -499.0,
+          -74.0,
+          118.0,
+          11.0
+        ]
+      },
+      "failures": [],
+      "evidence": [
+        "关节角（deg 与 rad）",
+        "TCP 位姿",
+        "逐轴电流（mA）",
+        "逐轴错误码"
+      ],
+      "notes": [
+        "connected=True（要求为真）",
+        "state_query_ok=True（要求为真）",
+        "joint_error_count=0（要求 == 0）"
+      ],
+      "duration_s": 0.017024165019392967
+    },
+    {
+      "stage_id": "L3",
+      "title": "UDP 主动上报接入与周期标定（只读）",
+      "tier": "A",
+      "status": "pass",
+      "metrics": {
+        "push_target_ip": "192.168.1.198",
+        "udp_port": 8080,
+        "udp_cycle": 1,
+        "expected_period_ms": 5.0,
+        "incomplete_frames": 0,
+        "invalid_frames": 0,
+        "frames": 600,
+        "p50_ms": 4.994502989575267,
+        "p99_ms": 5.213046628050506,
+        "p999_ms": 5.389430043287575,
+        "max_ms": 5.395889049395919,
+        "min_ms": 4.62929904460907,
+        "period_match": true,
+        "cycle_reading": "A（cycle 单位 = 5 ms 的倍数）"
+      },
+      "failures": [],
+      "evidence": [
+        "实测周期 P50/P99/P99.9/max",
+        "cycle 读法结论",
+        "不完整帧计数"
+      ],
+      "notes": [
+        "frames=600（要求 >= 100）",
+        "period_match=True（要求为真）",
+        "incomplete_frames=0（要求 == 0）"
+      ],
+      "duration_s": 3.2085865839617327
+    },
+    {
+      "stage_id": "L4",
+      "title": "使能标志与就绪判定（只读）",
+      "tier": "A",
+      "status": "fail",
+      "metrics": {
+        "en_flags_received": true,
+        "joint_en_flags": [
+          true,
+          true,
+          true,
+          true,
+          true,
+          true,
+          true
+        ],
+        "enabled_axis_count": 7,
+        "all_axes_enabled": true,
+        "joint_err_codes": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "joint_error_count": 0,
+        "arm_current_status": 9,
+        "gripper_online": true
+      },
+      "failures": [
+        "arm_current_status=9（要求不属于 {9, 10}）"
+      ],
+      "evidence": [
+        "逐轴使能标志",
+        "控制器状态",
+        "机械臂状态枚举"
+      ],
+      "notes": [
+        "en_flags_received=True（要求为真）",
+        "all_axes_enabled=True（要求为真）",
+        "joint_error_count=0（要求 == 0）"
+      ],
+      "duration_s": 2.7717906050384045e-05
+    },
+    {
+      "stage_id": "L5",
+      "title": "运动前静态安全自检（围栏 / 软限位，只读）",
+      "tier": "A",
+      "status": "pass",
+      "metrics": {
+        "joints_within_soft_limits": true,
+        "out_of_range_joints": [],
+        "fence_violations": 0,
+        "fence_details": [],
+        "link7_position_m": [
+          0.30777,
+          -0.03701,
+          0.75441
+        ],
+        "tcp_height_m": 0.75441,
+        "tcp_radius_m": 0.30998,
+        "table_height_m": 0.75,
+        "singularity_radius_m": 0.15,
+        "fence_height_margin_m": 0.00441,
+        "fence_radius_margin_m": 0.15998
+      },
+      "failures": [],
+      "evidence": [
+        "TCP 高度 / 水平距离",
+        "围栏参数",
+        "越界项列表"
+      ],
+      "notes": [
+        "joints_within_soft_limits=True（要求为真）",
+        "fence_violations=0（要求 == 0）"
+      ],
+      "duration_s": 0.020640403032302856
+    },
+    {
+      "stage_id": "L6",
+      "title": "单轴小幅点动与回零（首次运动）",
+      "tier": "B",
+      "status": "blocked",
+      "metrics": {},
+      "failures": [],
+      "evidence": [],
+      "notes": [
+        "依赖级别 ['L4'] 未通过（状态：{'L4': 'fail'}） ⇒ 按门禁规则不得进入本级"
+      ],
+      "duration_s": 0.0
+    },
+    {
+      "stage_id": "L7",
+      "title": "5 ms 透传保持位姿与周期抖动（运动）",
+      "tier": "B",
+      "status": "blocked",
+      "metrics": {},
+      "failures": [],
+      "evidence": [],
+      "notes": [
+        "依赖级别 ['L6'] 未通过（状态：{'L6': 'blocked'}） ⇒ 按门禁规则不得进入本级"
+      ],
+      "duration_s": 0.0
+    },
+    {
+      "stage_id": "L8",
+      "title": "规划轨迹执行与末端跟踪（运动 + 外部测量）",
+      "tier": "C",
+      "status": "blocked",
+      "metrics": {},
+      "failures": [],
+      "evidence": [],
+      "notes": [
+        "依赖级别 ['L7'] 未通过（状态：{'L7': 'blocked'}） ⇒ 按门禁规则不得进入本级"
+      ],
+      "duration_s": 0.0
+    },
+    {
+      "stage_id": "L9",
+      "title": "夹爪供电 / 协议 / 开合与夹持反馈（运动）",
+      "tier": "B",
+      "status": "blocked",
+      "metrics": {},
+      "failures": [],
+      "evidence": [],
+      "notes": [
+        "依赖级别 ['L4'] 未通过（状态：{'L4': 'fail'}） ⇒ 按门禁规则不得进入本级"
+      ],
+      "duration_s": 0.0
+    },
+    {
+      "stage_id": "L10",
+      "title": "安全七闸逐闸验证（离线注入 + 真机围栏拒绝）",
+      "tier": "C",
+      "status": "pass",
+      "metrics": {
+        "gates_checked": 7,
+        "gates_blocked": 7,
+        "gates": {
+          "G1": {
+            "expected_reason": "soft_limit",
+            "reasons": [
+              "soft_limit",
+              "delta_clamp",
+              "accel_clamp"
+            ],
+            "action": "clamp",
+            "blocked": true
+          },
+          "G2": {
+            "expected_reason": "delta_clamp",
+            "reasons": [
+              "delta_clamp",
+              "accel_clamp"
+            ],
+            "action": "clamp",
+            "blocked": true
+          },
+          "G3": {
+            "expected_reason": "accel_clamp",
+            "reasons": [
+              "delta_clamp",
+              "accel_clamp"
+            ],
+            "action": "clamp",
+            "blocked": true
+          },
+          "G4": {
+            "expected_reason": "watchdog",
+            "reasons": [
+              "watchdog"
+            ],
+            "action": "clamp",
+            "blocked": true
+          },
+          "G5": {
+            "expected_reason": "current",
+            "reasons": [
+              "current"
+            ],
+            "action": "stop",
+            "blocked": true
+          },
+          "G6": {
+            "expected_reason": "fence",
+            "reasons": [
+              "fence"
+            ],
+            "action": "stop",
+            "blocked": true
+          },
+          "G7": {
+            "expected_reason": "state_age",
+            "reasons": [
+              "watchdog",
+              "state_age"
+            ],
+            "action": "stop",
+            "blocked": true
+          }
+        },
+        "real_fence_rejected": true,
+        "real_fence_detail": [
+          "TCP 高度 0.4943 m 低于桌面高度 0.7500 m"
+        ]
+      },
+      "failures": [],
+      "evidence": [
+        "逐闸注入结果",
+        "真机越界目标被拒的记录"
+      ],
+      "notes": [
+        "gates_checked=7（要求 >= 7）",
+        "gates_blocked=7（要求 == 7）",
+        "real_fence_rejected=True（要求为真）"
+      ],
+      "duration_s": 0.004902294022031128
+    }
+  ],
+  "summary": {
+    "pass": 6,
+    "fail": 1,
+    "skip": 0,
+    "blocked": 4,
+    "manual": 0
+  },
+  "unverified_metrics": [
+    "5 ms 透传周期抖动（P50/P99/P99.9/max）",
+    "末端跟踪误差（目标 < 3 mm）",
+    "急停响应时间（目标 < 100 ms）",
+    "100 Hz × 30 min 长稳",
+    "五类故障注入的物理验证（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位 / 供电跌落）"
+  ]
+}

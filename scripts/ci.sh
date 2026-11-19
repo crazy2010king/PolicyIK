@@ -259,9 +259,17 @@ DEVICE_TESTS=(
     tests/test_device_run_log.py
     tests/test_device_scripts.py
     tests/test_rm_device_driver.py
+    tests/test_device_realtime.py
 )
 run_check "tests/device" "设备层与安全闸回归（零硬件：七闸 / 状态机 / 执行环 / 恢复 / 运行日志 / 脚本）" -- \
     "$PYTHON" -m pytest -q "${DEVICE_TESTS[@]}"
+
+# 9b) **真机验证阶梯（零硬件）**。
+#     阶梯定义与判定逻辑（15 级 L0–L14 的判据 / 门禁 / 人工证据回填）
+#     + 阶梯与设计文档的级别一致性断言。
+#     阶梯本身零硬件可验证 ⇒ **恒跑**，不得 SKIP。
+run_check "tests/validation-ladder" "真机验证阶梯回归（零硬件：判据 / 门禁 / 人工证据 / 文档一致性）" -- \
+    "$PYTHON" -m pytest -q tests/test_validation_ladder.py
 
 # 10) **双臂几何与标定回归（零硬件）**（S04-T08 接入）。
 #     模型变体生成器 / 双臂单 plant 装配 / 程序化碰撞过滤矩阵 / 共同点一致性判定器 /

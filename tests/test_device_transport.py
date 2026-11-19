@@ -48,54 +48,100 @@ def _config():
     )
 
 
-class _FakeSdk:
-    """假 SDK：记录调用参数，模拟白名单符号。"""
+class _FakeArm:
+    """假 ``RoboticArm`` **实例**（模型化真 SDK 的真实形态）。
 
-    def __init__(self) -> None:
-        self.calls = []
-        self.rm_robot_interface = types.SimpleNamespace(
-            RoboticArm=lambda mode: types.SimpleNamespace(arm_dof=7, mode=mode)
-        )
+    真机实测（RM75-B / SDK 1.1.7）确认：厂商 API 的调用形态是
+    **实例方法**，且：
 
-    def rm_movej_canfd(self, joint, follow=False, trajectory_mode=0):
+    * 建连接必须显式调 ``rm_create_robot_arm(ip, port)``；
+    * 逐关节接口（使能 / 清错 / 限位）是**逐轴**调用（``joint_num`` + 值）；
+    * 夹爪位置接口是 ``rm_set_gripper_position(position, block, timeout)``；
+    * 急停接口是 ``rm_set_arm_emergency_stop(state: bool)``。
+    """
+
+    def __init__(self, mode, calls):
+        self.mode = mode
+        self.calls = calls
+        self.arm_dof = 7
+        self.robot_controller_version = 3
+        self.handle = types.SimpleNamespace(id=1)
+
+    def rm_create_robot_arm(self, ip, port):
+        self.calls.append(("rm_create_robot_arm", ip, int(port)))
+        return self.handle
+
+    def rm_movej_canfd(self, joint, follow=False, expand=0, trajectory_mode=0, radio=0):
         self.calls.append(("rm_movej_canfd", list(joint), follow, trajectory_mode))
         return 0
 
-    def rm_set_joint_en_state(self, state):
-        self.calls.append(("rm_set_joint_en_state", bool(state)))
+    def rm_set_joint_en_state(self, joint_num, en_state):
+        self.calls.append(("rm_set_joint_en_state", int(joint_num), int(en_state)))
         return 0
 
-    def rm_set_joint_clear_err(self):
-        self.calls.append(("rm_set_joint_clear_err",))
+    def rm_set_joint_clear_err(self, joint_num):
+        self.calls.append(("rm_set_joint_clear_err", int(joint_num)))
         return 0
 
     def rm_clear_system_err(self):
         self.calls.append(("rm_clear_system_err",))
         return 0
 
-    def rm_set_arm_emergency_stop(self):
-        self.calls.append(("rm_set_arm_emergency_stop",))
+    def rm_set_arm_emergency_stop(self, state=True):
+        self.calls.append(("rm_set_arm_emergency_stop", bool(state)))
         return 0
 
     def rm_set_arm_slow_stop(self):
         self.calls.append(("rm_set_arm_slow_stop",))
         return 0
 
-    def rm_set_joint_min_pos(self, pos):
-        self.calls.append(("rm_set_joint_min_pos", list(pos)))
+    def rm_set_joint_min_pos(self, joint_num, min_pos):
+        self.calls.append(("rm_set_joint_min_pos", int(joint_num), float(min_pos)))
         return 0
 
-    def rm_set_joint_max_pos(self, pos):
-        self.calls.append(("rm_set_joint_max_pos", list(pos)))
+    def rm_set_joint_max_pos(self, joint_num, max_pos):
+        self.calls.append(("rm_set_joint_max_pos", int(joint_num), float(max_pos)))
         return 0
 
     def rm_get_gripper_state(self):
         self.calls.append(("rm_get_gripper_state",))
-        return types.SimpleNamespace(rm_plus_state=0, gripper_position=512)
+        return 0, {
+            "enable_state": 1,
+            "status": 1,
+            "error": 0,
+            "mode": 1,
+            "current_force": 0,
+            "temperature": 25,
+            "actpos": 512,
+        }
 
-    def rm_set_gripper_position(self, position):
-        self.calls.append(("rm_set_gripper_position", int(position)))
+    def rm_set_gripper_position(self, position, block, timeout):
+        self.calls.append(
+            ("rm_set_gripper_position", int(position), bool(block), int(timeout))
+        )
         return 0
+
+    def rm_get_current_arm_state(self):
+        self.calls.append(("rm_get_current_arm_state",))
+        return 0, {
+            "joint": [0.0] * 7,
+            "pose": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "err": {"err_len": 1, "err": ["0"]},
+        }
+
+    def rm_get_current_joint_current(self):
+        self.calls.append(("rm_get_current_joint_current",))
+        return 0, [0.0] * 7
+
+
+class _FakeSdk:
+    """假 SDK 命名空间（只提供 ``rm_robot_interface``，模拟官方包的空顶层）。"""
+
+    def __init__(self) -> None:
+        self.calls = []
+        self.rm_robot_interface = types.SimpleNamespace(
+            RoboticArm=lambda mode: _FakeArm(mode, self.calls)
+        )
 
 
 # ── ScriptedTransport ──────────────────────────────────────────────────
@@ -245,11 +291,34 @@ def test_sdk_transport_converts_rad_to_deg_before_sending():
     transport = SdkTransport(_config(), sdk=fake)
     transport.open()
     transport.move_j_canfd([math.pi] * 7)
-    name, joint, follow, trajectory_mode = fake.calls[0]
+    name, joint, follow, trajectory_mode = fake.calls[1]
     assert name == "rm_movej_canfd"
     assert joint == pytest.approx([180.0] * 7)
     assert follow is True
     assert trajectory_mode == 0
+
+
+def test_sdk_transport_connects_with_rm_create_robot_arm():
+    """真机形态：必须显式建连接（不调 ``rm_create_robot_arm`` 就没有句柄）。"""
+    fake = _FakeSdk()
+    transport = SdkTransport(_config(), sdk=fake)
+    transport.open()
+    assert fake.calls[0] == ("rm_create_robot_arm", "192.168.1.18", 8080)
+
+
+def test_sdk_transport_enable_and_clear_error_are_per_joint():
+    """逐关节接口（使能 / 清错）是**逐轴**调用（真机实测签名）。"""
+    fake = _FakeSdk()
+    transport = SdkTransport(_config(), sdk=fake)
+    transport.open()
+    transport.enable(True)
+    transport.clear_error()
+    enables = [c for c in fake.calls if c[0] == "rm_set_joint_en_state"]
+    clears = [c for c in fake.calls if c[0] == "rm_set_joint_clear_err"]
+    assert len(enables) == 7
+    assert len(clears) == 7
+    assert enables[0] == ("rm_set_joint_en_state", 0, 1)
+    assert clears[0] == ("rm_set_joint_clear_err", 0)
 
 
 def test_sdk_transport_only_uses_whitelisted_symbols():
@@ -284,8 +353,11 @@ def test_sdk_transport_set_joint_limits_converts_to_deg():
     transport.open()
     transport.set_joint_limits([math.pi / 2] * 7, [math.pi / 2] * 7)
     names = {call[0]: call for call in fake.calls}
-    assert names["rm_set_joint_min_pos"][1] == pytest.approx([90.0] * 7)
-    assert names["rm_set_joint_max_pos"][1] == pytest.approx([90.0] * 7)
+    assert names["rm_set_joint_min_pos"][2] == pytest.approx(90.0)
+    assert names["rm_set_joint_max_pos"][2] == pytest.approx(90.0)
+    first_min = next(c for c in fake.calls if c[0] == "rm_set_joint_min_pos")
+    assert first_min[1] == 0
+    assert len([c for c in fake.calls if c[0] == "rm_set_joint_min_pos"]) == 7
 
 
 def test_sdk_transport_read_gripper_maps_state():
