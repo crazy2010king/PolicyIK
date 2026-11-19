@@ -427,12 +427,22 @@ def _local_ip_for(target):
 
 def _connect_arm(arm="left", ip=None, port=DEFAULT_TCP_PORT, udp_port=None,
                  enable_realtime=False, realtime_period_ms=UDP_PERIOD_MS,
-                 ws=None, lib=None):
+                 ws=None, lib=None, link=None):
     """建立**句柄语义**连接（真机路径唯一入口）。
 
     返回 ``(link, failure)``：``failure`` 为 ``None`` 表示连接成功；否则是可直接
     落盘的失败结果字典（NEEDS_HUMAN / error）。
+
+    ``link``：**已建立的**句柄（注入复用）。控制器对客户端连接数有上限
+    （实测 5），因此整轮真机验证应建一次链、全程复用 —— 注入的句柄带
+    ``_rmctl_shared`` 标记，本模块**不负责关闭**它。
     """
+    if link is not None:
+        try:
+            setattr(link, "_rmctl_shared", True)
+        except Exception:  # pragma: no cover - 假句柄可能不允许设属性
+            pass
+        return link, None
     loader, import_error = _hw_loader()
     if loader is None:
         reason = "硬件适配层 rm_hw_bridge 不可用：%s" % import_error
@@ -515,7 +525,15 @@ def _joint_degrees(link):
 
 
 def _close_link(link):
+    """释放句柄。
+
+    **共享句柄不由本层释放**：真机窗口里控制器对客户端连接数有上限（实测 5，
+    见 docs/rm_hw_bridge硬件适配层说明.md §10），整轮验证应当建一次链、全程复用；
+    由调用方（阶梯编排器）统一释放。共享句柄带 ``_rmctl_shared`` 标记。
+    """
     if link is None:
+        return
+    if getattr(link, "_rmctl_shared", False):
         return
     try:
         link.close()
@@ -656,7 +674,7 @@ def _synthetic_udp_frames(duration_s, period_ms, dropouts=2, seed=7):
 
 def udp_stability(arm="left", duration_s=UDP_DEFAULT_DURATION_S,
                   period_ms=UDP_PERIOD_MS, ip=None, port=8091,
-                  dry_run=False, ws=None, lib=None):
+                  dry_run=False, ws=None, lib=None, link=None):
     """实时上报稳定性：断流次数 + 周期是否落在 5 ms 倍数上。
 
     真机路径需要 SDK（三线程模式 + 主动上报配置）与上报可达；
@@ -678,7 +696,7 @@ def udp_stability(arm="left", duration_s=UDP_DEFAULT_DURATION_S,
 
     link, failure = _connect_arm(arm=arm, ip=ip, udp_port=port,
                                  enable_realtime=True, realtime_period_ms=period_ms,
-                                 ws=ws, lib=lib)
+                                 ws=ws, lib=lib, link=link)
     if failure is not None:
         failure["experiment"] = "udp_stability"
         failure["params"] = params
@@ -805,7 +823,8 @@ def _ladder_peak(times, points, joint_index):
 
 def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
                     trials=LADDER_DEFAULT_TRIALS, dt=LADDER_DT_S,
-                    duration_s=4.0, ip=None, dry_run=False, ws=None, lib=None):
+                    duration_s=4.0, ip=None, dry_run=False, ws=None, lib=None,
+                    link=None):
     """阶梯速度反推 acceleration / jerk 上限。
 
     取**多次采样的包络**（各 trial 峰值的最小值 = 保守下界），不用单次极值。
@@ -848,7 +867,7 @@ def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
                         samples, summary,
                         _synthetic_evidence("ladder_acc_jerk", "合成阶梯轨迹"), started)
 
-    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib, link=link)
     if failure is not None:
         failure["experiment"] = "ladder_acc_jerk"
         failure["params"] = params
@@ -941,7 +960,7 @@ def _repeatability_stats(samples):
 
 
 def tcp_repeatability(arm="left", target_deg=None, repeats=TCP_DEFAULT_REPEATS,
-                      ip=None, dry_run=False, ws=None, lib=None):
+                      ip=None, dry_run=False, ws=None, lib=None, link=None):
     """TCP 位置**重复性**（明确区分重复性 ≠ 绝对精度）。
 
     官方标称 ±0.05 mm 是重复性标称值；本实验给出的是"多次到同一点的散布"，
@@ -962,7 +981,7 @@ def tcp_repeatability(arm="left", target_deg=None, repeats=TCP_DEFAULT_REPEATS,
                         samples, summary,
                         _synthetic_evidence("tcp_repeatability", "合成 TCP 散布"), started)
 
-    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib, link=link)
     if failure is not None:
         failure["experiment"] = "tcp_repeatability"
         failure["params"] = params
@@ -1006,7 +1025,8 @@ def tcp_repeatability(arm="left", target_deg=None, repeats=TCP_DEFAULT_REPEATS,
 
 # ------------------------------------------------------------------ FK 交叉
 def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
-                        dry_run=False, ws=None, lib=None, urdf_path=None):
+                        dry_run=False, ws=None, lib=None, urdf_path=None,
+                        link=None):
     """FK 与控制器位姿交叉校验（调用 ``rmctl.fk_cross.cross_check``）。
 
     控制器位姿只进入比对报告，**不得**写回轨迹/模型（R003）。
@@ -1027,7 +1047,7 @@ def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
                         syn["samples"], summary,
                         _synthetic_evidence("fk_cross", "合成 FK 交叉样本"), started)
 
-    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib, link=link)
     if failure is not None:
         failure["experiment"] = "fk_cross"
         failure["params"] = params
@@ -1113,7 +1133,8 @@ def _estop_state(link, ret):
     }
 
 
-def estop_drill(arm="left", ip=None, dry_run=False, ws=None, lib=None):
+def estop_drill(arm="left", ip=None, dry_run=False, ws=None, lib=None,
+                link=None):
     """软停 / 急停演练：记录 SDK 返回码、错误码与状态快照。"""
     params = {"ip": ip, "mode": "soft_stop_then_emergency",
               "safety_checklist": list(ESTOP_SAFETY_CHECKLIST),
@@ -1130,7 +1151,7 @@ def estop_drill(arm="left", ip=None, dry_run=False, ws=None, lib=None):
         return _result("estop_drill", arm, "dry_run", STATUS_DRY_RUN, params, [],
                         summary, _synthetic_evidence("estop_drill", "合成急停演练"), started)
 
-    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib, link=link)
     if failure is not None:
         failure["experiment"] = "estop_drill"
         failure["params"] = params
@@ -1175,7 +1196,8 @@ def estop_drill(arm="left", ip=None, dry_run=False, ws=None, lib=None):
 
 
 # ------------------------------------------------------------------ 零位采集
-def zero_capture(arm="left", photos=None, ip=None, dry_run=False, ws=None, lib=None):
+def zero_capture(arm="left", photos=None, ip=None, dry_run=False, ws=None, lib=None,
+                 link=None):
     """零位读数与证据引用。
 
     零位标定**只能走示教器受控流程**（黑名单符号禁止调用），本脚本只负责
@@ -1191,7 +1213,7 @@ def zero_capture(arm="left", photos=None, ip=None, dry_run=False, ws=None, lib=N
         return _result("zero_capture", arm, "dry_run", STATUS_DRY_RUN, params, [],
                         summary, _synthetic_evidence("zero_capture", "无读数的空采集"), started)
 
-    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib)
+    link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib, link=link)
     if failure is not None:
         failure["experiment"] = "zero_capture"
         failure["params"] = params

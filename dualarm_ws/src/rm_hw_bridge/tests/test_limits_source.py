@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import shutil
 
 import pytest
 import yaml
@@ -427,3 +428,49 @@ def test_downlink_uses_only_whitelisted_symbols(pkg_root):
     allowed = set(loader.contract_symbols())
     for sym in DOWNLINK_SYMBOLS:
         assert sym in allowed
+
+
+# --------------------------------------------------------------- 规划域 / 执行域
+def _limits_with_workspace(tmp_path, monkeypatch, repo_root):
+    """造一个只含 joint_limits.yaml 的临时工作区，返回其限值。"""
+    monkeypatch.delenv("RM_WS", raising=False)
+    cfg = tmp_path / "dualarm_ws" / "src" / "rm_description" / "config"
+    cfg.mkdir(parents=True)
+    (tmp_path / "workcell").mkdir(parents=True, exist_ok=True)
+    src = os.path.join(repo_root, "dualarm_ws", "src", "rm_description", "config",
+                       "joint_limits.yaml")
+    shutil.copyfile(src, str(cfg / "joint_limits.yaml"))
+    return limits_mod.load_joint_limits(str(tmp_path))
+
+
+def test_execution_range_is_separate_from_planning_range(tmp_path, monkeypatch, repo_root):
+    """执行域（机械范围）与规划域（保守）必须分开。
+
+    起因（2026-11-19 真机实测）：RM75 的 J7 机械范围 ±360°，规划域只取 ±180°；
+    真机当前位姿 J7 = -200.5° **在规划域之外、执行域之内**。若执行层用规划域
+    复检位置，会把合法可执行的位姿判成越界（实测 501 项越界）。
+    """
+    limits = _limits_with_workspace(tmp_path, monkeypatch, repo_root)
+    j7 = limits["joint7"]
+    assert j7["plan_min_pos"] == pytest.approx(-3.14159, abs=1e-5)
+    assert j7["plan_max_pos"] == pytest.approx(3.14159, abs=1e-5)
+    assert j7["min_pos"] == pytest.approx(-6.283185, abs=1e-5)
+    assert j7["max_pos"] == pytest.approx(6.283185, abs=1e-5)
+
+
+def test_joints_without_execution_range_keep_planning_range(tmp_path, monkeypatch, repo_root):
+    limits = _limits_with_workspace(tmp_path, monkeypatch, repo_root)
+    for name in ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6"):
+        item = limits[name]
+        assert item["min_pos"] == pytest.approx(item["plan_min_pos"])
+        assert item["max_pos"] == pytest.approx(item["plan_max_pos"])
+
+
+def test_current_real_pose_passes_execution_range_but_not_planning_range(tmp_path,
+                                                                         monkeypatch, repo_root):
+    """真机实测位姿（J7=-200.5°）：执行域内，��划域外（如实反映）。"""
+    limits = _limits_with_workspace(tmp_path, monkeypatch, repo_root)
+    j7 = limits["joint7"]
+    real_j7_rad = -200.537 * 3.141592653589793 / 180.0
+    assert j7["min_pos"] <= real_j7_rad <= j7["max_pos"]
+    assert not (j7["plan_min_pos"] <= real_j7_rad <= j7["plan_max_pos"])

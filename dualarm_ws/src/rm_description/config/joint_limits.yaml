@@ -1,6 +1,15 @@
 # 自建关节限值（唯一真值）。来源：睿尔曼官方 RM75 参数页 + 本项目实测计划。
 # 注意：不使用官方 URDF 里统一的 velocity=3.14 rad/s（官方实际 J3–J7 可到 225°/s = 3.927 rad/s）。
 # 加速度上限官方未给出 RM75 数值，暂用保守值，实测后更新（设计 §5.2 / R1）。
+#
+# **规划域 vs 执行域**（2026-11-19 真机实测后区分）：
+#   - ``lower/upper``            = **规划域**：规划器 / 四道校验用的范围（保守）；
+#   - ``execution_lower/upper``  = **执行域**：真机机械范围（驱动级限位下发 / 执行层
+#     时间域复检用）。缺省时等于 ``lower/upper``。
+#   起因：RM75 的 J7 机械范围是 ±360°（厂商参数页），而规划域只取 ±180°。
+#   真机当前位姿 J7 = -200.5° **落在规划域之外、执行域之内** —— 若执行层用规划域
+#   复检位置，会把**合法可执行**的位姿判成越界（实测 501 项越界，真机执行层无法
+#   执行任何以当前位姿为起点的轨迹）。故两者必须分开。
 rm75_arm:
   joint1: {lower: -3.106,  upper: 3.106,  velocity: 3.1416, acceleration: 5.2359, jerk: 30.0}   # ±178°, 180°/s
   joint2: {lower: -2.2689, upper: 2.2689, velocity: 3.1416, acceleration: 5.2359, jerk: 30.0}   # ±130°, 180°/s
@@ -8,4 +17,4 @@ rm75_arm:
   joint4: {lower: -2.356,  upper: 2.356,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±135°, 225°/s
   joint5: {lower: -3.106,  upper: 3.106,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±178°, 225°/s
   joint6: {lower: -2.234,  upper: 2.234,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±128°, 225°/s
-  joint7: {lower: -3.14159, upper: 3.14159, velocity: 3.9270, acceleration: 5.2359, jerk: 30.0} # 规划域 ±180°（执行域 ±360°）
+  joint7: {lower: -3.14159, upper: 3.14159, execution_lower: -6.283185, execution_upper: 6.283185, velocity: 3.9270, acceleration: 5.2359, jerk: 30.0} # 规划域 ±180°，执行域 ±360°（厂商参数页）

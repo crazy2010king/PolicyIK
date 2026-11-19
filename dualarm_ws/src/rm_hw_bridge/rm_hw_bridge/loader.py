@@ -178,10 +178,19 @@ def _handle_id(handle: Any) -> Optional[int]:
     RM-API2 的句柄是 ``rm_robot_handle*``（结构体只有一个 ``int id``），
     因此真实指针的 id 在 ``handle.contents.id``；兼容注入的假 SDK（直接暴露
     ``handle.id``）。返回 ``None`` 表示读不出 id（调用方应视为可疑）。
+
+    **NULL 指针必须安全降级**：ctypes 对空指针取 ``.contents`` 会抛
+    ``ValueError: NULL pointer access``（不是 AttributeError，``getattr`` 的
+    默认值兜不住）——这正是"控制器客户端连接数达上限、rm_create_robot_arm 返回
+    NULL"时的真实表现。这里统一吞掉并返回 ``None``，让上层给出可粘贴的错误，
+    而不是把裸 ctypes 异常抛给调用方。
     """
     if handle is None:
         return None
-    contents = getattr(handle, "contents", None)
+    try:
+        contents = getattr(handle, "contents", None)
+    except (ValueError, AttributeError):
+        return None
     if contents is not None:
         value = getattr(contents, "id", None)
         if value is not None:

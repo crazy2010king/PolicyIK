@@ -470,8 +470,17 @@ def run_probe(arm: str = "left", ip: str = DEFAULT_IP, port: int = DEFAULT_PORT,
               speed_pct: int = DEFAULT_SPEED_PCT, enable_realtime: bool = True,
               precheck_only: bool = False, dry_run: bool = False,
               channel: str = "movej", move_timeout_s: float = MOVE_TIMEOUT_S,
+              close_link: bool = True,
               ws: Optional[str] = None, lib: Any = None,
               link_factory=None) -> Dict[str, Any]:
+    """跑一次安全探针，返回报告字典。
+
+    ``link_factory`` 只在测试里注入假句柄；默认走真机连接。
+
+    ``close_link=False`` 时**不关闭**传入的句柄 —— 真机窗口里控制器对客户端
+    连接数有上限（实测 5，见 docs/rm_hw_bridge硬件适配层说明.md §10），
+    因此整轮验证应当**建一次链、全程复用**，不要每条命令重连。
+    """
     """跑一次安全探针，返回报告字典。
 
     ``link_factory`` 只在测试里注入假句柄；默认走真机连接。
@@ -715,10 +724,11 @@ def run_probe(arm: str = "left", ip: str = DEFAULT_IP, port: int = DEFAULT_PORT,
                        next_action="可进入下一阶段：扩大基线采集（如 rmctl.hwcollect）",
                        started_at=started)
     finally:
-        try:
-            link.close()
-        except Exception:  # pragma: no cover - 释放失败不影响结论
-            pass
+        if close_link:
+            try:
+                link.close()
+            except Exception:  # pragma: no cover - 释放失败不影响结论
+                pass
 
 
 # ------------------------------------------------------------------ CLI

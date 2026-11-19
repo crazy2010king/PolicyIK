@@ -388,10 +388,48 @@ python3 -m rmctl gripper judge --fault each --count 10 --json
 | **`.so` 单客户端占用约束** | 同一 `ip:port` 只允许一个客户端（见 `network_plan.yaml` 的 `constraints.single_client_per_endpoint`） | 采集脚本独占连接；不要同时开 `connect` 与 `hwcollect` |
 | 回调被 GC 会段错误 | ctypes 回调对象被回收后，SDK 持有的是悬空函数指针 | 桥接层**显式持有**回调与缓冲引用（`_log_callbacks` / `_joint_buffers`） |
 | SDK 版本必须与契约一致 | 契约里的符号以 RM-API2 **1.1.7** 为准 | `hw:symbols` 检查会报缺失符号清单；换 SDK 需重新核对 `abi_spec.yaml` |
+| **控制器客户端连接数上限 ≈ 5** | RM75-B 控制器对同一客户端的连接数有上限；超过后 `rm_create_robot_arm` 返回 NULL / `id=-1`，且**释放很慢**（实测 >200 s 未自动释放，5~10 min 量级） | 见 §9：**建一次链、全程复用**（探针 / hwcollect / 执行层都支持注入既有句柄） |
 
 ---
 
-## 9. 排障速查
+## 9. 连接预算：控制器只接纳 ≈5 个客户端（2026-11-19 真机实测）
+
+### 9.1 实测证据（RM75-B，192.168.1.18:8080）
+
+| 观察 | 数值 |
+|---|---|
+| 同一进程内连续「建链 → 关闭」第 1~5 次 | 全部成功（`handle.id != -1`） |
+| 第 6 次及以后 | `rm_create_robot_arm` 返回 **NULL** → 后续 SDK 调用抛 `ValueError: NULL pointer access` |
+| 换新进程再连 | 仍返回 `id=-1`（**控制器侧**限额，不是 SDK 进程内限额） |
+| 限额释放 | 实测 **5~10 分钟量级**才恢复（>200 s 内未恢复） |
+
+> 这条限额同时解释了历史上"ping 不通 / `handle is NULL` / `invaild ip`"的一批现象：
+> 那不是网络问题，而是**客户端连接额度被前面的脚本耗尽**。
+
+### 9.2 硬规矩
+
+1. **一轮真机工作 = 一条连接**：建一次链，**全程复用**；不要每条命令各连一次。
+   - `rm75_safe_probe.run_probe(..., link_factory=..., close_link=False)`
+   - `rm_hw_bridge.hwcollect.*(..., link=<既有句柄>)`（注入的句柄带 `_rmctl_shared` 标记，本模块不关闭它）
+   - `rm_executor.cli.execute(..., link=<既有句柄>)` → `LiveSession.open(link=...)`
+2. **编排器**：`scripts/rm75_validation_ladder.py` 已按"共享一条连接"实现（见该脚本 `LadderContext.ensure_link`）。
+3. **失败时的处置**：报 `blocked` + 说明"连接额度已满"，**等待释放**或**重启控制器**，不要反复重试刷额度。
+
+### 9.3 诚实报错（本层已修）
+
+`rm_create_robot_arm` 返回空指针 / `id=-1` 时，本层现在会**先做一次 TCP 可达性探测**再分类：
+
+| 探测结果 | 判定 | 状态 |
+|---|---|---|
+| TCP 端口**通** | 控制器在线，只是**不接纳新客户端**（额度已满） | `blocked`（3）+ "复用既有连接 / 等待释放 / 重启控制器" |
+| TCP 端口**不通** | 控制器离线 / 网络不通 | `error`（4）+ "确认上电与网线" |
+
+并且：NULL 指针读 `.contents` 会抛 `ValueError: NULL pointer access`（`getattr` 的默认值兜不住），
+本层已把它安全降级为 `id=None` → 结构化报错，不再把裸 ctypes 异常抛给调用方。
+
+---
+
+## 10. 排障速查
 
 | 现象 | 查什么 |
 |---|---|
@@ -401,3 +439,5 @@ python3 -m rmctl gripper judge --fault each --count 10 --json
 | `hw:limits_source` INFO | 基线 `status` 还是 blocked/pending → 走 §7.5 回填流程 |
 | 快照里 `controller_trajectory_type_name` 不是 `RM_NO_PLANNING_E` | 控制器在**偷偷规划**（透传失效），停下来查是谁下发了位姿类指令 |
 | `rm_get_joint_degree` 返回 -1 / "机械臂已断开" | 控制器不可达或已被别的客户端占用（见 §8） |
+| `rm_create_robot_arm` 返回 NULL / `id=-1` | **先看 §9**：多半是客户端连接额度已满（不是网络问题）；等待释放或重启控制器 |
+| 建链报 `ValueError: NULL pointer access` | 同上（NULL 句柄的后续调用）；本层已改为结构化报错，不应再看到裸异常 |

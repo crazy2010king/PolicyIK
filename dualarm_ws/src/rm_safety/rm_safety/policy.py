@@ -409,6 +409,11 @@ def evaluate(signals: Mapping[str, Any], thresholds: SafetyThresholds) -> Decisi
             value = _num(item)
             if value is not None:
                 err_codes.append(int(value))
+    # **码 0 = 无错误**（厂商 ``rm_current_arm_state_t.err[]`` 约定）：0 不是故障码，
+    # 必须排除在分类之外 —— 否则会把"无错误"当成"未知码"并保守升级到 L3 缓停
+    # （2026-11-19 真机实测：真机常态上报 arm_err=[0]，执行层因此被误判为
+    # unknown_error_code → L3 缓停，整条轨迹只跑了 2 拍就被停掉）。
+    err_codes = [code for code in err_codes if code != 0]
     error_code_map = signals.get("error_code_map")
     if err_codes:
         collision_codes: List[int] = []

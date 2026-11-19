@@ -93,8 +93,39 @@ DEFAULT_PRE_POSITION_TIMEOUT_S = 30.0
 #: 到位等待上限（秒）—— 超时 → blocked
 DEFAULT_ARRIVAL_TIMEOUT_S = 2.0
 
-#: 控制器「无规划」轨迹类型名（抢轨迹判据的唯一期望值）
+#: 控制器「无规划」轨迹类型名（纯透传）
 EXPECTED_TRAJECTORY_TYPE = "RM_NO_PLANNING_E"
+
+#: CANFD 透传阶段**可接受**的控制器轨迹类型集合（抢轨迹判据）。
+#:
+#: 真机实测（2026-11-19，RM75-B 控制器 192.168.1.18）：透传通道下控制器上报的
+#: 轨迹类型**随下发的 trajectory_mode 变化**，而不是恒为“纯透传”：
+#:
+#:   * ``trajectory_mode=0``（完全透传）→ ``RM_NO_PLANNING_E``
+#:   * ``trajectory_mode=1``（曲线拟合，本项目默认）→ ``RM_SPLINE_CURVE_MOTION_PLANNING_E``
+#:   * 滤波/混合                        → ``RM_BLEND_TRAJECTORY_PLANNING_E``
+#:
+#: 若把期望值只写成 RM_NO_PLANNING_E，会把**我们自己下发的透传**误判为“控制器抢
+#: 轨迹”（FATAL + 急停，实测连跑三次分别被判成 blend / spline 两种形态）。
+#:
+#: 真正需要报警的是**别人下发的轨迹**类型（见 :data:`CONFLICT_TRAJECTORY_TYPES`）。
+EXPECTED_TRAJECTORY_TYPES = (
+    "RM_NO_PLANNING_E",
+    "RM_BLEND_TRAJECTORY_PLANNING_E",
+    "RM_SPLINE_CURVE_MOTION_PLANNING_E",
+)
+
+#: 明确属于「**别人下发的轨迹**」的控制器轨迹类型 → 判为真抢轨迹。
+#:
+#: 关节空间/笛卡尔/回放规划都不是本项目会下发的形态（本项目的位姿类接口全在
+#: ``contract.yaml`` 黑名单里，关节角只走 CANFD 透传），因此看到它们就意味着
+#: **有另一个客户端在抢这条臂**。
+CONFLICT_TRAJECTORY_TYPES = (
+    "RM_JOINT_SPACE_PLANNING_E",
+    "RM_CARTESIAN_LINEAR_PLANNING_E",
+    "RM_CARTESIAN_ARC_PLANNING_E",
+    "RM_TRAJECTORY_REPLAY_PLANNING_E",
+)
 
 #: 控制器看门狗自检周期（秒）—— 落在 10–20 ms 区间（计划 §5.7）
 DEFAULT_WATCHDOG_PERIOD_S = 0.015
@@ -224,6 +255,7 @@ class ControllerWatchdog:
     def __init__(self,
                  transport: Any,
                  expected_type_name: str = EXPECTED_TRAJECTORY_TYPE,
+                 expected_type_names: Optional[Sequence[str]] = None,
                  period_s: float = DEFAULT_WATCHDOG_PERIOD_S,
                  on_conflict: Optional[Callable[[str, Dict[str, Any]], None]] = None,
                  on_query_failed: Optional[Callable[[str, List[str]], None]] = None,
@@ -232,6 +264,9 @@ class ControllerWatchdog:
                  ) -> None:
         self.transport = transport
         self.expected_type_name = str(expected_type_name)
+        #: 可接受的轨迹类型集合（缺省 = 仅 {expected_type_name}，保持旧语义）
+        self.expected_type_names = tuple(expected_type_names) if expected_type_names else (
+            (self.expected_type_name,))
         self.period_s = float(period_s)
         self.on_conflict = on_conflict
         self.on_query_failed = on_query_failed
@@ -423,7 +458,7 @@ class ControllerWatchdog:
         observed = str(type_name)
         self.last_error = ""
         self._record(thread_name, observed, str(status), "")
-        if observed != self.expected_type_name:
+        if observed not in self.expected_type_names:
             self.conflict.set()
             if self.on_conflict:
                 self.on_conflict(observed, result)
@@ -484,6 +519,7 @@ class Executor:
                  watchdog_interval_ticks: int = DEFAULT_WATCHDOG_INTERVAL_TICKS,
                  watchdog_wait_timeout_s: float = DEFAULT_WATCHDOG_WAIT_TIMEOUT_S,
                  expected_trajectory_type: str = EXPECTED_TRAJECTORY_TYPE,
+                 expected_trajectory_types: Optional[Sequence[str]] = None,
                  gate: Any = None,
                  motion_gate: Any = None,
                  ) -> None:
@@ -509,6 +545,10 @@ class Executor:
         self.watchdog_interval_ticks = max(1, int(watchdog_interval_ticks))
         self.watchdog_wait_timeout_s = float(watchdog_wait_timeout_s)
         self.expected_trajectory_type = str(expected_trajectory_type)
+        #: 可接受的轨迹类型集合（透传阶段：纯透传 + 混合规划）
+        self.expected_trajectory_types = (
+            tuple(expected_trajectory_types) if expected_trajectory_types
+            else tuple(EXPECTED_TRAJECTORY_TYPES))
 
         self.mode = mode or ("fake" if getattr(transport, "name", "") == "fake"
                              else "live")
@@ -1267,6 +1307,7 @@ class Executor:
         self._watchdog = ControllerWatchdog(
             self.transport,
             expected_type_name=self.expected_trajectory_type,
+            expected_type_names=self.expected_trajectory_types,
             period_s=self.watchdog_period_s,
             on_conflict=self._on_controller_conflict,
             on_query_failed=self._on_controller_query_failed,
@@ -1325,6 +1366,7 @@ class Executor:
         """
         evidence = [
             "expected_type_name=%s" % self.expected_trajectory_type,
+            "expected_type_names=%s" % (",".join(self.expected_trajectory_types),),
             "observed_type_name=%s" % type_name,
             "watchdog_thread=%s" % threading.current_thread().name,
             "tick_thread_ident=%s" % self._tick_thread_ident,
@@ -1856,8 +1898,12 @@ class Executor:
             evidence.append("夹爪互锁：阶段 B 之前被拒绝（闸门状态=%s），"
                             "未下发任何运动指令" % blocked["state"])
             return self._finalize(t_start, evidence)
-        # 控制器看门狗先行启动（**独立线程**：SDK 状态查询不进 tick 线程）
-        self._start_watchdog()
+        # 阶段 B 期间**不启动控制器看门狗**：预就位走的是 ``rm_movej``
+        # （控制器内部规划），此时控制器轨迹类型必然是 RM_JOINT_SPACE_PLANNING_E
+        # ——若此时看门狗就绪，会把**我们自己下发的规划运动**误判为“控制器抢轨迹”
+        # （2026-11-19 真机实测：V5 阶段因此报 FATAL + 急停）。
+        # “抢轨迹”只在**阶段 C（CANFD 透传）**期间有意义：那时控制器应当处于
+        # 纯透传态（RM_NO_PLANNING_E），任何其它类型都是真的抢轨迹。
         goal_start_deg = self._to_deg(grid_p[0], factor)
         pre_result = self.transport.preposition(goal_start_deg,
                                                 self._config.pre_position_speed)
@@ -1897,6 +1943,10 @@ class Executor:
             return self._finalize(t_start, evidence)
         self.stream_clock = self._make_stream_clock(self._config.period_s,
                                                      self._now())
+        # 控制器看门狗在此刻启动（**独立线程**：SDK 状态查询不进 tick 线程）：
+        # 阶段 B 已完成、进入纯透传阶段，此刻起控制器轨迹类型必须是
+        # RM_NO_PLANNING_E，否则就是真的“抢轨迹”。
+        self._start_watchdog()
         jitter_before = len(self.stream_clock.jitter_samples_ms)
         if self._stream_ticks(grid_p, factor) is None:
             return self._finalize(t_start, evidence)

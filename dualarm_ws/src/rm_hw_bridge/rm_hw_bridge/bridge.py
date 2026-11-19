@@ -319,6 +319,24 @@ def _handle_id(handle: Any) -> Optional[int]:
     return loader._handle_id(handle)
 
 
+def _tcp_reachable(ip: str, port: int, timeout_s: float = 1.0) -> bool:
+    """TCP 层探测：控制器**端口可达**吗？
+
+    用途：把"控制器不可达"与"控制器可达但拒绝创建客户端连接（连接数达上限）"
+    这两种**处理方式完全不同**的情况分开：
+
+    * 端口不通 → 控制器离线 / 网线 / IP 错 → 现场处理；
+    * 端口通但 ``rm_create_robot_arm`` 失败 → 控制器在线，只是**不接纳新客户端**
+      （RM-API2 实测：同一控制器对客户端连接数有上限，达到后返回 NULL / id=-1）。
+    """
+    import socket as _socket
+    try:
+        with _socket.create_connection((str(ip), int(port)), timeout=float(timeout_s)):
+            return True
+    except OSError:
+        return False
+
+
 def _err_flag_to_list(err_flag: int) -> List[int]:
     """关节错误位标志 → 每关节错误码列表（bit i 对应关节 i+1）。"""
     return [(int(err_flag) >> i) & 1 for i in range(ARM_DOF)]
@@ -1823,29 +1841,45 @@ def connect(
             endpoint=endpoint,
         )
     if handle is None:
+        reachable = _tcp_reachable(ip, port)
         return ArmLink(
             bridge=bridge,
-            status=errors.STATUS_ERROR,
-            reason="rm_create_robot_arm 返回空指针（连接数达上限 5 或参数非法）",
-            next_action="确认本进程没有残留的旧连接（最多 5 个），"
-                        "并核对 ip=%s port=%s 后重跑" % (ip, port),
-            evidence=evidence + ["rm_create_robot_arm -> NULL"],
+            status=errors.STATUS_BLOCKED,
+            reason=("rm_create_robot_arm 返回空指针：控制器 %s:%s %s"
+                    % (ip, port,
+                       "可达但不接纳新客户端（该控制器的客户端连接数已达上限）"
+                       if reachable else "端口不可达（控制器离线 / 网络不通）")),
+            next_action=(
+                "连接数上限的处置：① **同一进程内建一次链、全程复用**（不要每条命令都重连）；"
+                "② 等待控制器释放旧连接后重跑（实测释放很慢）；"
+                "③ 必要时重启控制器后重跑。"
+                if reachable else
+                "确认控制器已上电、网线正常、ip=%s 正确后重跑" % ip),
+            evidence=evidence + ["rm_create_robot_arm -> NULL",
+                                 "tcp_reachable=%s" % reachable],
             endpoint=endpoint,
         )
     handle_id = _handle_id(handle)
     if handle_id is None or handle_id < 0:
+        reachable = _tcp_reachable(ip, port)
         return ArmLink(
             bridge=bridge,
-            status=errors.STATUS_ERROR,
-            reason="rm_create_robot_arm 返回无效句柄 id=%s（控制器不可达）" % handle_id,
+            status=errors.STATUS_BLOCKED if reachable else errors.STATUS_ERROR,
+            reason=("rm_create_robot_arm 返回无效句柄 id=%s：控制器 %s:%s %s"
+                    % (handle_id, ip, port,
+                       "**可达但不接纳新客户端**（客户端连接数已达上限）"
+                       if reachable else "不可达（控制器离线 / 网络不通）")),
             next_action=(
+                "连接数上限的处置：① **同一进程内建一次链、全程复用**（不要每条命令都重连）；"
+                "② 等待控制器释放旧连接后重跑（实测释放很慢）；"
+                "③ 必要时重启控制器后重跑。"
+                if reachable else
                 "1) ping %s 确认控制器在线；"
                 "2) 确认 %s:%s 的 TCP 端口可达；"
                 "3) 确认同一 ip:port 没有被其它客户端占用（单客户端约束）；"
-                "4) 确认已 rm_init(RM_TRIPLE_MODE_E) 后重跑"
-                % (ip, ip, port)
-            ),
-            evidence=evidence + ["rm_create_robot_arm handle.id=%s" % handle_id],
+                "4) 确认已 rm_init(RM_TRIPLE_MODE_E) 后重跑" % (ip, ip, port)),
+            evidence=evidence + ["rm_create_robot_arm handle.id=%s" % handle_id,
+                                 "tcp_reachable=%s" % reachable],
             endpoint=endpoint,
         )
     evidence.append("handle.id=%d" % handle_id)

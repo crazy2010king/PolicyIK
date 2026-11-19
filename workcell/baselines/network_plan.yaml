@@ -14,9 +14,10 @@ blocked:
     （0.49 ms）、TCP 8080 可连、RM-API2 1.1.7 握手成功（rm_create_robot_arm 得到有效
     handle，handle.id != -1），状态快照可读（控制器 RM_NO_PLANNING_E / RM_IDLE_E，
     7 轴全部使能、关节错误码全 0），最小动作验证通过（0.3° 微动 + 回程）。
-    但**本表仍未标 measured**：UDP 主动上报只取到个位数帧（快照时刻的 frames=1~2），
-    尚未做 10 分钟级的 `rmctl.hwcollect udp_stability` 长跑，
-    实时上报周期/丢包率/抖动三项**没有实测数据**；右臂 192.168.1.19 本轮完全未接触。
+    但**本表仍未标 measured**：UDP 主动上报虽已实测（60 s 内 2400 帧、实测周期 25.0 ms、
+    无断流窗口），但**到达率只有约 20%**（期望 12000 帧），且尚未做 10 分钟级的
+    `rmctl.hwcollect udp_stability` 长跑，丢包率/抖动两项**没有可用的长跑数据**；
+    右臂 192.168.1.19 本轮完全未接触。
     因此 status 保持 blocked —— 连通性已通 ≠ 上报质量已实测。
   attempted_actions:
     - "本机端口占用核查：ss -ulnp | grep -E '8091|8092' 无输出（本机侧无冲突）"
@@ -28,7 +29,10 @@ blocked:
     - "2026-11-19 RM-API2 实连（远端主机，RM-API2 1.1.7 x86-64）：rmctl doctor 的 hw:sdk / hw:symbols（22 核心 + 21 支持）/ hw:contract 三项全 PASS"
     - "2026-11-19 rmctl connect --arm left --ip 192.168.1.18 --json → status=ok，状态快照全字段可读（控制器位姿 scope=cross_check_only）"
     - "2026-11-19 最小动作验证（scripts/rm75_safe_probe.py，0.3°/2% 速度/单关节/去程回程）：movej 通道到位误差 0.046°、回程偏差 0.042°；canfd 通道到位误差 0.167°、回程偏差 0.159° —— 两条通道均判定通过"
-    - "2026-11-19 未做：udp_stability 10 分钟长跑（上报周期/丢包/抖动实测）、右臂 192.168.1.19 的任何接触"
+    - "2026-11-19 验证阶梯（scripts/rm75_validation_ladder.py）：V0 契约体检 / V1 连接与快照（7/7 前置检查）/ V3 最小运动（0.3°，到位误差 0.016~0.054°）/ V4 canfd 透传（到位误差 0.152~0.186°）均通过"
+    - "2026-11-19 UDP 上报实测（60 s）：2400 帧、**实测周期 25.0 ms**（配置 5 ms 的 5 倍）、无断流窗口、到达率约 20% —— 周期虽落在 5 ms 的整数倍上，但到达率远低于标称，**不能据此把本表标 measured**"
+    - "2026-11-19 连接额度实测：同一进程连续建链 5 次成功，第 6 次起 rm_create_robot_arm 返回 NULL（换新进程同样 id=-1），>200 s 内未恢复（约 5~10 min 量级释放）"
+    - "2026-11-19 未做：udp_stability 600 s 长跑、右臂 192.168.1.19 的任何接触、V8 阶梯 acc/jerk（10°/档）、V9 急停演练"
   next_action: >-
     连通性已确认，本表只差"上报质量"这一项实测：在真机窗口内依次执行
     ss -ulnp | grep 8091（确认端口空闲），再跑
@@ -52,8 +56,15 @@ constraints:
   single_client_per_endpoint: true   # 同一 ip:port 单客户端（上一个进程未退净会静默失败）
   triple_thread_mode: true           # 必须三线程模式
   wired_direct: true                 # 有线直连，关闭防火墙
+  # 2026-11-19 真机实测：控制器对客户端连接数有上限（≈5），超过后
+  # rm_create_robot_arm 返回 NULL / id=-1，且释放很慢（5~10 min 量级）。
+  # 因此**一轮真机工作建一次链、全程复用**（探针 / hwcollect / 执行层均支持
+  # 注入既有句柄）。详见 docs/rm_hw_bridge硬件适配层说明.md §9。
+  max_clients_per_controller: 5
+  reuse_single_connection_per_run: true
 notes:
   - "UDP 8092 为第二臂预留；单臂窗口不得占用"
   - "端口占用/单客户端约束导致静默失败，采集前用 ss -ulnp 确认端口空闲"
   - "2026-11-13 首次窗口结论：规划值来自官方配置（未经实连验证），status=blocked"
-  - "2026-11-19 复测结论：左臂 192.168.1.18 连通性与最小动作控制**已验证**（见 attempted_actions）；上报质量与右臂仍未实测，status 仍为 blocked"
+  - "2026-11-19 复测结论：左臂 192.168.1.18 连通性与最小动作控制**已验证**（见 attempted_actions）；上报到达率与右臂仍未实测，status 仍为 blocked"
+  - "2026-11-19 新增硬约束：控制器客户端连接数上限 ≈5（见 constraints）—— 一轮真机工作必须建一次链、全程复用"

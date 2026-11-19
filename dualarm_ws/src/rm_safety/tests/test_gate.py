@@ -292,3 +292,31 @@ def test_default_socket_path_is_under_build_run():
     path = default_socket_path()
     assert path.endswith(DEFAULT_SOCKET_RELPATH.replace(os.sep, "/"))
     assert "build" in path and "run" in path
+
+
+# --------------------------------------------------------------- 错误码 0 = 无错误
+def test_zero_error_code_is_not_treated_as_unknown_fault():
+    """厂商 ``err[]`` 里 0 = 无错误 —— 不得当成"未知码"升级到 L3。
+
+    回归（2026-11-19 真机实测）：真机常态上报 ``arm_err=[0]``，若不排除 0，
+    执行层会被误判为 ``unknown_error_code`` → L3 缓停，轨迹只跑 2 拍就被停掉。
+    """
+    from rm_safety import policy as policy_mod
+
+    thresholds = policy_mod.SafetyThresholds(
+        follow_warn_deg=2.0, follow_stop_deg=5.0, stream_warn_ms=50.0,
+        stream_stop_ms=200.0)
+    decision = policy_mod.evaluate({"arm_err": [0]}, thresholds)
+    assert "unknown_error_code" not in decision.detected
+    assert decision.level == "", decision.level
+
+
+def test_nonzero_unknown_code_still_escalates_conservatively():
+    """非 0 且未登记的码 → 仍然是 unknown → L3（保守语义不变）。"""
+    from rm_safety import policy as policy_mod
+
+    thresholds = policy_mod.SafetyThresholds(
+        follow_warn_deg=2.0, follow_stop_deg=5.0, stream_warn_ms=50.0,
+        stream_stop_ms=200.0)
+    decision = policy_mod.evaluate({"arm_err": [0, 99999]}, thresholds)
+    assert "unknown_error_code" in decision.detected

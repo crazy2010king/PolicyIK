@@ -232,6 +232,106 @@ def test_controller_trajectory_conflict_is_fatal_and_stops_immediately(write_tra
     assert events_mod.exit_code_for_severity(_worst_severity(rep)) == 4
 
 
+class _PlanningDuringPrepositionTransport(FakeTransport):
+    """预就位期间控制器处于**规划态**（真机行为：``rm_movej`` → 控制器规划）。
+
+    回归（2026-11-19 真机实测）：看门狗若在阶段 B 就绪，会把我们自己下发的
+    预就位规划运动误判为“控制器抢轨迹”（FATAL + 急停）。因此看门狗必须在
+    阶段 B 结束、进入纯透传阶段之后才启动。
+    """
+
+    def preposition(self, deg7, speed=10):
+        result = super().preposition(deg7, speed=speed)
+        self.calls.append(("preposition_done",))
+        return result
+
+    def current_trajectory_type(self):
+        # 预就位尚未完成 → 规划态；完成后 → 纯透传态
+        planning = not any(c[0] == "preposition_done" for c in self.calls)
+        if planning:
+            return {"status": "ok", "reason": "控制器规划态（预就位中）",
+                    "type": 1, "type_name": "RM_JOINT_SPACE_PLANNING_E"}
+        return {"status": "ok", "reason": "", "type": 0,
+                "type_name": "RM_NO_PLANNING_E"}
+
+
+def test_blend_trajectory_type_is_accepted_during_streaming(write_traj):
+    """透传阶段控制器处于**混合轨迹规划**（RM_BLEND_TRAJECTORY_PLANNING_E）→ 不算抢轨迹。
+
+    回归（2026-11-19 真机实测）：canfd 透传时控制器就是混合规划态；若期望值只写
+    RM_NO_PLANNING_E，会把正常透传误判为“控制器抢轨迹”（FATAL + 急停）。
+    """
+    path = write_traj(_traj_payload())
+    transport = FakeTransport(script={
+        "current_trajectory_type": {
+            "status": "ok", "reason": "混合轨迹规划（canfd 真机行为）",
+            "type": 6, "type_name": "RM_BLEND_TRAJECTORY_PLANNING_E",
+        }
+    })
+    feedback = ScriptedFeedback(script=_script(transport), speed_deg_s=0.0,
+                                period_s=0.010)
+    executor = _make_executor(transport, feedback)
+    rep = executor.run(path)
+
+    assert not _events_of(rep, "controller_trajectory_conflict"), rep["events"]
+    assert transport.count("stop") == 0
+
+
+def test_spline_curve_motion_type_is_accepted_during_streaming(write_traj):
+    """透传阶段控制器处于**样条曲线运动**（RM_SPLINE_CURVE_MOTION_PLANNING_E）→ 不算抢轨迹。
+
+    回归（2026-11-19 真机实测）：``trajectory_mode=1``（曲线拟合，本项目默认）
+    时控制器上报的正是这个类型 —— 把它当抢轨迹会 FATAL + 急停。
+    """
+    path = write_traj(_traj_payload())
+    transport = FakeTransport(script={
+        "current_trajectory_type": {
+            "status": "ok", "reason": "曲线拟合（canfd 真机行为）",
+            "type": 4, "type_name": "RM_SPLINE_CURVE_MOTION_PLANNING_E",
+        }
+    })
+    feedback = ScriptedFeedback(script=_script(transport), speed_deg_s=0.0,
+                                period_s=0.010)
+    executor = _make_executor(transport, feedback)
+    rep = executor.run(path)
+
+    assert not _events_of(rep, "controller_trajectory_conflict"), rep["events"]
+    assert transport.count("stop") == 0
+
+
+def test_other_client_joint_space_trajectory_is_a_conflict(write_traj):
+    """**别人下发的关节空间轨迹**仍然是真抢轨迹（必须 FATAL + 停机）。"""
+    path = write_traj(_traj_payload())
+    transport = FakeTransport(script={
+        "current_trajectory_type": {
+            "status": "ok", "reason": "另一个客户端下发了关节空间轨迹",
+            "type": 1, "type_name": "RM_JOINT_SPACE_PLANNING_E",
+        }
+    })
+    feedback = ScriptedFeedback(script=_script(transport), speed_deg_s=0.0,
+                                period_s=0.010)
+    executor = _make_executor(transport, feedback)
+    rep = executor.run(path)
+
+    conflict = _events_of(rep, "controller_trajectory_conflict")
+    assert len(conflict) == 1, rep["events"]
+    assert conflict[0]["severity"] == "FATAL"
+    assert transport.count("stop") == 1
+
+
+def test_preposition_planning_state_is_not_a_controller_conflict(write_traj):
+    """阶段 B（预就位，控制器规划态）**不得**报抢轨迹。"""
+    path = write_traj(_traj_payload())
+    transport = _PlanningDuringPrepositionTransport()
+    feedback = ScriptedFeedback(script=_script(transport), speed_deg_s=0.0,
+                                period_s=0.010)
+    executor = _make_executor(transport, feedback)
+    rep = executor.run(path)
+
+    assert not _events_of(rep, "controller_trajectory_conflict"), rep["events"]
+    assert transport.count("stop") == 0
+
+
 def test_current_trajectory_type_is_never_called_from_tick_thread(write_traj):
     """控制器状态查询**只在看门狗线程**：tick 线程 0 次调用。"""
     path = write_traj(_traj_payload())

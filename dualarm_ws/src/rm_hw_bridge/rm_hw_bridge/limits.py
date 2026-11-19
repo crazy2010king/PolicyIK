@@ -155,12 +155,34 @@ def load_joint_limits(ws: Optional[str] = None) -> Dict[str, Any]:
                 raise ValueError(
                     "关节限值文件 %s.%s 不是数值（%r）: %s" % (name, label, value, path)
                 )
+        # **规划域 vs 执行域**分开：
+        #   * min_pos/max_pos           = 执行域（真机机械范围）→ 驱动级限位下发 +
+        #     执行层时间域位置复检（防止下发超出机械范围的指令）；
+        #   * plan_min_pos/plan_max_pos = 规划域（规划器 / 四道校验用）。
+        # 缺省时执行域 = 规划域（绝大多数关节如此）。
+        exec_lower = item.get("execution_lower")
+        exec_upper = item.get("execution_upper")
+        for label, value in (("execution_lower", exec_lower),
+                             ("execution_upper", exec_upper)):
+            if value is not None and not _is_num(value):
+                raise ValueError(
+                    "关节限值文件 %s.%s 不是数值（%r）: %s" % (name, label, value, path)
+                )
+        min_pos = float(lower) if exec_lower is None else float(exec_lower)
+        max_pos = float(upper) if exec_upper is None else float(exec_upper)
+        if min_pos > float(lower) or max_pos < float(upper):
+            raise ValueError(
+                "关节限值文件 %s 的执行域（[%s, %s]）不得窄于规划域（[%s, %s]）: %s"
+                % (name, min_pos, max_pos, lower, upper, path)
+            )
         out[name] = {
             "max_speed": float(velocity),
             "max_acc": float(acc),
             "jerk": float(jerk),
-            "min_pos": float(lower),
-            "max_pos": float(upper),
+            "min_pos": min_pos,
+            "max_pos": max_pos,
+            "plan_min_pos": float(lower),
+            "plan_max_pos": float(upper),
         }
     return out
 

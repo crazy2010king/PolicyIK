@@ -312,7 +312,8 @@ def execute(mode: str = "fake",
             injections: Optional[List[str]] = None,
             gate: Any = None,
             motion_gate: Any = _UNSET,
-            motion_gate_note: Optional[str] = None) -> Dict[str, Any]:
+            motion_gate_note: Optional[str] = None,
+            link: Any = None) -> Dict[str, Any]:
     """跑一次执行，返回**统一报告**（fake / live 同一 schema）。
 
     本函数**不抛裸异常**：任何失败都变成 ``status=blocked|error`` 的报告
@@ -327,6 +328,11 @@ def execute(mode: str = "fake",
     （见 :func:`_make_motion_gate`）；显式传 ``None`` → **不启用互锁**。
     ``motion_gate_note``：调用方自带的互锁说明（写进报告 evidence）；
     缺省 → 由本函数按实际状态生成。
+
+    ``link``：**已建立的** ``rm_hw_bridge.ArmLink``（真机路径复用既有连接）。
+    真机窗口里控制器对客户端连接数有上限（实测 5），因此整轮验证应当
+    **建一次链、全程复用**：把同一个 link 传给探针与执行层，
+    避免每条命令重连把连接额度耗尽。
     """
     mode = "live" if str(mode) == "live" else "fake"
 
@@ -393,7 +399,7 @@ def execute(mode: str = "fake",
     try:
         if mode == "live":
             report = _run_live(trajectory_path, config, arm, ip, port, udp_port,
-                               ws, duration_s, gate, motion_gate)
+                               ws, duration_s, gate, motion_gate, link=link)
         else:
             report = _run_fake(trajectory_path, config, ws, allow_unverified,
                                realtime, legs, injection_specs, gate, motion_gate)
@@ -450,15 +456,18 @@ def _run_live(trajectory_path: str, config: Optional[ExecutorConfig],
               arm: str, ip: Optional[str], port: Optional[int],
               udp_port: Optional[int], ws: Optional[str],
               duration_s: Optional[float], gate: Any = None,
-              motion_gate: Any = None) -> Dict[str, Any]:
+              motion_gate: Any = None, link: Any = None) -> Dict[str, Any]:
     """真机执行（**与 fake 同一 Executor、同一报告 schema**）。
 
     **复用 :class:`rm_executor.session.LiveSession`**（S06/T5）：CLI 与工艺层
     共用同一套建连语义 → **只有一套真机真相**。报告 schema / mode / reason
     文案 / 退出码 / 控制器不可达语义与复用前**逐字不变**。
+
+    ``link``：已建立的句柄（复用连接，省控制器连接额度）。
     """
     session, err = LiveSession.open(arm=arm, ip=ip, port=port,
-                                    udp_port=udp_port, ws=ws, config=config)
+                                    udp_port=udp_port, ws=ws, config=config,
+                                    link=link)
     if err is not None or session is None:
         return err or _unreachable_report(
             "控制器不可达：真机会话建立失败",
