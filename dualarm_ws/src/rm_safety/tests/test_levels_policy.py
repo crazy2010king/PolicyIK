@@ -213,12 +213,45 @@ def test_error_code_without_map_is_l3_conservative(thresholds):
     assert decision.level == "L3"
 
 
-def test_protection_stop_is_l4(thresholds):
-    decision = evaluate({"arm_current_status": 9}, thresholds)
+def test_protection_stop_is_l4_with_error_code(thresholds):
+    """停止态 + **非零错误码** → 立即 L4 保护停（真机保护/碰撞/越限都置错误码）。"""
+    decision = evaluate({"arm_current_status": 9, "arm_err": [90003]}, thresholds)
     assert decision.fault_kind == FAULT_KIND_PROTECTION_STOP
     assert decision.level == "L4"
     assert decision.exit_code == 4
     assert decision.action == "stop"
+
+
+def test_idle_stop_without_error_code_is_only_advisory(thresholds):
+    """**普通停止态**（无错误码）不再误判成保护停。
+
+    回归（2026-11-19 真机实测）：RM-API2 的 RM_STOP_E(9) 是普通停止态（空闲、
+    预就位刚结束、透传刚下发时都会短暂出现）；仅凭状态就判 L4 会让真机执行层
+    在正常透传刚开始时被误停（实测 ticks=2 即停）。
+    """
+    decision = evaluate({"arm_current_status": 9}, thresholds)
+    assert decision.fault_kind != FAULT_KIND_PROTECTION_STOP
+    assert decision.level == ""
+    assert any(e.get("fault_kind") == "advisory" for e in decision.evidence)
+
+
+def test_persistent_stop_while_commanding_is_protection_stop(thresholds):
+    """停止态**持续超过宽限**且我们正在下发指令 → L4（我们被卡住了）。"""
+    grace = getattr(thresholds, "protection_grace_ms", 100.0)
+    decision = evaluate(
+        {"arm_current_status": 9, "commanding_motion": True,
+         "protection_stop_ms": grace + 1.0}, thresholds)
+    assert decision.fault_kind == FAULT_KIND_PROTECTION_STOP
+    assert decision.level == "L4"
+
+
+def test_short_stop_while_commanding_is_not_protection_stop(thresholds):
+    """停止态**未超过宽限** → 只记 advisory（抗瞬态）。"""
+    decision = evaluate(
+        {"arm_current_status": 9, "commanding_motion": True,
+         "protection_stop_ms": 5.0}, thresholds)
+    assert decision.fault_kind != FAULT_KIND_PROTECTION_STOP
+    assert decision.level == ""
 
 
 def test_self_triggered_stop_is_not_protection_stop(thresholds):
@@ -244,7 +277,8 @@ def test_primary_is_highest_level(thresholds):
 def test_primary_uses_kind_priority_within_same_level(thresholds):
     """同等级内按故障类优先级：保护停 > 断流。"""
     decision = evaluate(
-        {"stream_age_ms": 250.0, "arm_current_status": 9}, thresholds)
+        {"stream_age_ms": 250.0, "arm_current_status": 9, "arm_err": [90003]},
+        thresholds)
     assert decision.level == "L4"
     assert decision.fault_kind == FAULT_KIND_PROTECTION_STOP
 

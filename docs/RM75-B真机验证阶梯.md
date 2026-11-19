@@ -103,56 +103,53 @@ docker run --rm --network host -v /home:/home -w "$PWD" \
 
 ---
 
-## 5. 2026-11-19 首轮实跑结果
+## 5. 2026-11-19 实跑结果（V0 → V9 全部执行完毕）
 
-### 5.1 通过的阶段
+**证据工件（可入库）**：`workcell/baselines/evidence/rm75_validation_ladder_20261119.json`
+（由 `scripts/rm75_evidence_merge.py` 合并 5 份真机报告生成）。
 
-| 阶段 | 结论（实测值） |
+### 5.1 阶段结果总览（10 个阶段：9 pass / 1 failed）
+
+| 阶段 | 结论（真机实测值） |
 |---|---|
-| V0 | `hw:sdk` / `hw:symbols`（22 核心 + 21 支持）/ `hw:contract`（155 个 .py 零违规）全 PASS |
-| V1 | 建链成功；7 项前置检查 7/7 通过；控制器 `RM_NO_PLANNING_E` / `RM_IDLE_E`；7 轴全部使能、错误码全 0、温度 30~32 ℃ |
-| V2 | 60 s 上报 **2400 帧**，**实测周期 25.0 ms**（配置 5 ms 的 5×），无断流窗口；到达率 20% → **质量不合格**（不阻断） |
-| V3 | J1 +0.3°（2% 速度）：到位误差 **0.016~0.054°**，其它关节漂移 **≤0.004°**，回程 **0.027~0.051°** |
-| V4 | canfd 透传：到位误差 **0.152~0.186°**，漂移 **≤0.004°**，回程 **0.138~0.165°** |
+| V0 契约体检 | `hw:sdk` / `hw:symbols`（22 核心 + 21 支持）/ `hw:contract`（155 个 .py 零违规）全 PASS |
+| V1 连接与快照 | 建链成功；7 项前置检查 7/7；控制器 `RM_NO_PLANNING_E`；7 轴全使能、错误码全 0、温度 30~32 ℃ |
+| V2 UDP 上报质量 | **600 s 长跑**：24002 帧、**实测周期 24.998 ms**（配置 5 ms 的 5 倍）、**断流窗口 0**、最大空窗 0.0 ms → PASS（"到达率 20%" 的根因是控制器按 25 ms 上报，**不是随机丢包**） |
+| V3 最小运动（`rm_movej`） | J1 +0.3°（2% 速度）：到位误差 **0.005°**、其它关节漂移 **0.002°**、回程 **0.038°** |
+| V4 关节角透传（canfd） | 到位误差 **0.163°**、漂移 **0.002°**、回程 **0.162°** |
+| V5 执行层 live 闭环 | **501 拍 / 5.53 s**：到位误差 **0.0030°**、跟随误差 RMS **0.0506°**、tick 抖动 p99 **0.201 ms** → CC2 三条门限（<0.1° / ≤0.3° / <2 ms）全达标 |
+| V6 FK 交叉校验 | **failed（诚实）**：最大位置偏差 **75.03 mm**（阈值 1 mm），归因 `systematic_translation`（偏差方向一致 → 整体平移），且 TCP 未标定 → **该偏差不能当作模型精度结论** |
+| V7 TCP 重复性 | 固定目标 30 次：最大散布 **0.0341 mm**、平均散布 0.0127 mm（标称 ±0.05 mm，within_nominal=true） |
+| V8 阶梯 acc/jerk（高风险） | joint1 3 档（10°/档、速度 5/8/11%、每档测完回原位）：包络 acc **1.7557 rad/s²**、jerk **81.099 rad/s³** |
+| V9 急停演练（高风险） | 软停 + 急停 rc=0、`drill_performed=true`、状态快照留档 → **臂现在处于停止态，需在示教器清错并重新使能** |
 
-### 5.2 V5（执行层 live）暴露并修掉的 **4 个真机缺陷**
+### 5.2 真机跑出来并修掉的 **7 个缺陷**
 
 | # | 现象（真机） | 根因 | 修复 |
 |---|---|---|---|
-| 1 | 建链抛 `ValueError: NULL pointer access` | 控制器连接额度耗尽；且 NULL 指针读 `.contents` 抛裸 ctypes 异常 | 本层安全降级 + TCP 可达性探测分类（`blocked` vs `error`） |
-| 2 | 时间域限值复检 **501 项越界** | 声明限位把 **规划域 ±180°** 当成 **执行域** 用；真机 J7 = **-200.5°** 落在规划域外、执行域内 | `joint_limits.yaml` 拆出 `execution_lower/upper`（J7 ±360°），执行层用执行域、规划器仍用规划域 |
-| 3 | 误判「控制器抢轨迹」（`RM_JOINT_SPACE_PLANNING_E`） | 看门狗在**阶段 B 预就位**就绪，而预就位本来就走 `rm_movej`（控制器规划） | 看门狗改为**阶段 C 起流前**才启动 |
-| 4 | 误判「控制器抢轨迹」（`RM_BLEND_…` / `RM_SPLINE_…`） | 透传时控制器的轨迹类型**随 `trajectory_mode` 变化**（0→纯透传 / 1→样条 / 滤波→混合），不是恒为纯透传 | 期望值改成**集合**：{纯透传, 混合, 样条}；真正的抢轨迹（关节空间/笛卡尔/回放）仍然 FATAL + 停机 |
+| 1 | 建链抛 `ValueError: NULL pointer access` | 控制器连接额度耗尽；NULL 指针读 `.contents` 抛裸 ctypes 异常 | 结构化报错 + TCP 可达性探测分类（`blocked`=额度满 / `error`=不可达）；`_handle_id` 对 NULL 安全降级 |
+| 2 | 时间域限值复检 **501 项越界** | 声明限位把**规划域 ±180°** 当**执行域**用；真机 J7 = **-200.5°** 在规划域外、执行域内 | `joint_limits.yaml` 拆出 `execution_lower/upper`（J7 执行域 ±360°）；执行层用执行域、规划器仍用规划域 |
+| 3 | 误判「控制器抢轨迹」（`RM_JOINT_SPACE_PLANNING_E`） | 看门狗在**阶段 B 预就位**就绪，而预就位走 `rm_movej`（控制器必然规划） | 看门狗改为**阶段 C 起流前**才启动 |
+| 4 | 误判「控制器抢轨迹」（`RM_BLEND_…` / `RM_SPLINE_…` / `RM_CARTESIAN_ARC_…`） | 透传时控制器轨迹类型**随 `trajectory_mode` 与运动阶段变化** | 期望值改成**集合**（透传族）+ **连续 3 次**才判抢轨迹（抗瞬态）；别人的关节空间/回放轨迹仍 FATAL + 停机 |
+| 5 | `arm_err=[0]` 被当未知错误码 → L3 缓停，轨迹只跑 2 拍 | 厂商约定 0 = 无错误，但被当"未知码"保守升级 | 安全层排除 0（真机保护/碰撞仍照常升级） |
+| 6 | **普通停止态**被当「保护停」→ L4 急停（ticks=2 即停） | `RM_STOP_E(9)` 是**普通停止态**（空闲/预就位刚结束/透传刚下发都会短暂出现），单看状态就升级 L4 | 保护停判据加**佐证**：有非零错误码 → 立即 L4；或停止态**持续 >100 ms** 且正在下发指令 → L4；否则只记 advisory |
+| 7 | 阶梯实验 `joints` 参数**被忽略** → 7 个关节各走 10° 且不回原位 | 真机路径硬编码 `range(7)` | 真机路径**只动指定关节**（1 基关节号），每档测完**自动回原位**（净位移 0） |
 
-外加一处**安全层误升级**：`arm_err=[0]`（0 = 无错误）被当成"未知错误码"→ L3 缓停，
-导致轨迹只跑 2 拍就被停掉 —— 已修正为**排除 0**（并补回归用例）。
+外加**阶梯自身的两处判据错误**（本轮自查发现并修掉）：
 
-### 5.3 仍未达标 / 仍未做（**会话结束时的真实状态**）
+* V6 只看采集层 `status`（"ok"）→ 把 FK 交叉校验的 **FAIL 误报成通过**；改为判 `summary.ok` + 归因解释；
+* 报告里"只跑部分阶段"时阶段号与名称**张冠李戴**（拿全局表 zip 部分结果）；改为按位置配对。
 
-| 项 | 状态 | 归属 / 下一步 |
+### 5.3 仍未达标 / 仍未做
+
+| 项 | 状态 | 归属 |
 |---|---|---|
-| UDP 上报到达率 ~20%、实测周期 25 ms（≠ 配置 5 ms） | 质量不合格（V2 `failed`，不阻断后续阶段） | `network_plan.yaml` 仍 `blocked`；需 600 s 长跑 + 主机侧负载排查 |
-| V5 执行层 live 闭环 | 4 个真机缺陷已定位并修复（含回归用例）；**修完后的确认复跑未完成** | 见 §5.4 的现场待办；复跑命令见 §3 |
-| V6 FK 交叉校验、V7 TCP 重复性 | 被 V5 的失败挡住（阶梯纪律）→ V5 通过后可跑 | CC5 / CC4 |
-| V8 阶梯 acc/jerk（10°/档）、V9 急停演练 | **未跑**（需 `--allow-risky` + 现场看护 + 示教器在手边） | CC4 / CC7 |
-| CC1 / CC3 / CC8 | 不在本阶梯范围（见 §1） | — |
-
-### 5.4 现场待办（**会话结束时臂不可达**）
-
-会话末尾（约 17:45 起）`ping 192.168.1.18` **持续 100% 丢包**（持续 >10 min），
-控制器整体不可达（TCP 8080 亦连不上）。因此 V5 的确认复跑、V6/V7、V8/V9 都没能做完。
-
-| 待办 | 说明 |
-|---|---|
-| ① 现场确认臂的**供电与网线**（或控制器是否重启/挂死） | 这是**环境条件**，不是代码问题；阶梯此时会如实报 `blocked`（"控制器不可达"），不会伪造结论 |
-| ② 恢复后按 §3 重跑 `--max-stage V7` | 阶梯会重跑 V0..V7 并覆盖 `build/reports/validation/ladder_report.json` |
-| ③ V8 / V9 单独安排现场窗口 | `--allow-risky` + 急停按钮在手 + 示教器在手（急停后需人工清错并重新使能） |
-| ④ 补 600 s UDP 长跑 | 把 `network_plan.yaml` 的上报质量三项真正测出来（到达率 / 周期 / 抖动） |
-
-> **可能性提示（不下定论）**：会话中出现过"连接额度耗尽 + 反复重试"（本轮多次触发
-> `id=-1`），控制器随后整体不可达。**无法确认**二者是否相关，但**连接风暴确实是
-> 本轮暴露出的最需要收敛的行为** —— 现在全链路都改成"一轮真机工作一条连接"，
-> 且连接额度耗尽会立刻以 `blocked` + 可粘贴处置动作报出来（不再刷重试）。
+| V6 FK 交叉校验 | failed（**真不合格**）：75.03 mm 系统性平移 | 需先**标定 TCP**（`calibration.tcp` 现为 null），再复测；零位也未取证 |
+| CC1（取放 50 次真机）/ CC3（性能+人工 MTTR）/ CC8 | 不在本阶梯范围（见 §1） | — |
+| V8 的 joint2..joint7 | 未测（只测了 joint1，3 档） | 基线 `measured_limits` 仍是 blocked：需 7 个关节都测齐才能把 status 改 measured |
+| 基线回填 | 四张基线仍是 `blocked` | 已把实测值写进各基线的 `partial_observations` + 证据工件；正式值字段待全表测齐 |
+| 右臂 192.168.1.19 | 未接触 | — |
+| 控制器固件 / 示教器版本 | 未读取 | 需示教器界面 |
 
 ---
 
@@ -162,13 +159,13 @@ docker run --rm --network host -v /home:/home -w "$PWD" \
 **唯一原因**是"真机窗口不可达 → CC1/CC2/CC4/CC6/CC7 与 Operational/UAT 计划项缺少
 真机与现场人证据"。本阶梯的定位就是**逐条补上这些证据**：
 
-| 验收条款 | 本阶梯能给的证据 | 还差什么 |
+| 验收条款 | 本阶梯给的证据（2026-11-19 真机） | 还差什么 |
 |---|---|---|
-| CC2 | V3/V5：真机微动 + 10 ms 透传闭环 + 到位误差 | 600 s 无保护停长跑、tick p99、跟随误差 RMS |
-| CC4 | V2/V7/V8：上报质量、重复性、acc/jerk 实测 | V8 需现场看护；供电/接地等现场项 |
-| CC5 | V0/V6：契约、符号、FK 交叉 | — |
-| CC6 | V1/V4/V5：建链→快照→透传→反馈闭环 | 断流 200 ms 内停机的真机复现 |
-| CC7 | V9：急停演练留档 | V9 未跑；「≤50 圈强制人工检查」流程需写入工艺文件 |
+| CC2 | V3/V5：真机微动 + **501 拍 10 ms 透传闭环**，到位误差 0.0030°、跟随误差 RMS 0.0506°、抖动 p99 0.201 ms（**三条门限全达标**） | 600 s **无保护停**长跑（当前只做了 600 s 上报长跑，不是执行长跑） |
+| CC4 | V2（600 s 上报长跑，零断流）/ V7（重复性 0.0341 mm）/ V8（joint1 acc/jerk 3 档） | joint2..joint7 的 acc/jerk；供电/接地等现场项 |
+| CC5 | V0（契约+符号+审计）/ V6（FK 交叉**已跑但不合格**：75.03 mm 系统性平移） | V6 要先标定 TCP 才能达标 |
+| CC6 | V1/V4/V5：建链→快照→透传→反馈闭环→到位判定（**全链路真机通过**） | 断流 200 ms 内停机的**真机复现**（离线注入已有） |
+| CC7 | V9：急停演练留档（软停+急停 rc=0、状态快照） | 「≤50 圈强制人工检查」流程需写入工艺文件 |
 
 > 本文件**不替代**里程碑验证流程：证据产出后仍需按 `docs/code_doc/真机基线与实测限值归档说明.md`
 > 回填 `workcell/baselines/*.yaml`，再重跑 `/gsd validate-milestone`。
@@ -181,7 +178,21 @@ docker run --rm --network host -v /home:/home -w "$PWD" \
 python3 -m pytest dualarm_ws/src/rmctl/tests/test_rm75_validation_ladder.py \
                  dualarm_ws/src/rmctl/tests/test_rm75_safe_probe.py \
                  dualarm_ws/src/rmctl/tests/test_rm75_probe_runner.py \
-                 dualarm_ws/src/rmctl/tests/test_rm75_probe_report.py -q
+                 dualarm_ws/src/rmctl/tests/test_rm75_probe_report.py \
+                 dualarm_ws/src/rm_executor/tests/test_feedback_events.py \
+                 dualarm_ws/src/rm_safety/tests/test_levels_policy.py -q
+```
+
+证据工件（入库用）：
+
+```bash
+python3 scripts/rm75_evidence_merge.py \
+    --out workcell/baselines/evidence/rm75_validation_ladder_20261119.json \
+    build/reports/validation/ladder_report.json \
+    build/reports/validation_rerun/ladder_report.json \
+    build/reports/validation_udp600/ladder_report.json \
+    build/reports/validation_v8/ladder_report.json \
+    build/reports/validation_v9/ladder_report.json
 ```
 
 阶梯编排器的离线用例覆盖：阶段注册表与风险标注、高风险阶段授权闸门、

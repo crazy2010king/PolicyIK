@@ -5,7 +5,7 @@
 #   - 同一 ip:port 只能被一个客户端占用；上一个进程未退干净会静默失败（采集前先确认端口空闲）。
 kind: network_plan
 schema_version: 1
-version: 3                  # 基线修订号（单调递增）
+version: 4                  # 基线修订号（单调递增）
 status: blocked
 captured_at: null
 blocked:
@@ -14,11 +14,11 @@ blocked:
     （0.49 ms）、TCP 8080 可连、RM-API2 1.1.7 握手成功（rm_create_robot_arm 得到有效
     handle，handle.id != -1），状态快照可读（控制器 RM_NO_PLANNING_E / RM_IDLE_E，
     7 轴全部使能、关节错误码全 0），最小动作验证通过（0.3° 微动 + 回程）。
-    但**本表仍未标 measured**：UDP 主动上报虽已实测（60 s 内 2400 帧、实测周期 25.0 ms、
-    无断流窗口），但**到达率只有约 20%**（期望 12000 帧），且尚未做 10 分钟级的
-    `rmctl.hwcollect udp_stability` 长跑，丢包率/抖动两项**没有可用的长跑数据**；
-    右臂 192.168.1.19 本轮完全未接触。
-    因此 status 保持 blocked —— 连通性已通 ≠ 上报质量已实测。
+    但**本表仍未标 measured**：UDP 主动上报已做 **600 s 长跑**（24002 帧、实测周期 24.998 ms、
+    **断流窗口 0**、最大空窗 0.0 ms）—— 周期落在 5 ms 的整数倍上、无丢包；
+    然而"到达率 20%"的根因是**控制器实际以 25 ms 周期上报**（配置 5 ms 的 5 倍），
+    不是随机丢包（丢包率实测为 0）。该结论目前**只有左臂**，
+    右臂 192.168.1.19 本轮完全未接触 → 全表口径的 status 仍保持 blocked。
   attempted_actions:
     - "本机端口占用核查：ss -ulnp | grep -E '8091|8092' 无输出（本机侧无冲突）"
     - "网络连通（2026-11-13 首次窗口）：ping -c 2 192.168.1.18 → 100% packet loss；ping -c 2 192.168.1.19 → 100% packet loss"
@@ -31,6 +31,7 @@ blocked:
     - "2026-11-19 最小动作验证（scripts/rm75_safe_probe.py，0.3°/2% 速度/单关节/去程回程）：movej 通道到位误差 0.046°、回程偏差 0.042°；canfd 通道到位误差 0.167°、回程偏差 0.159° —— 两条通道均判定通过"
     - "2026-11-19 验证阶梯（scripts/rm75_validation_ladder.py）：V0 契约体检 / V1 连接与快照（7/7 前置检查）/ V3 最小运动（0.3°，到位误差 0.016~0.054°）/ V4 canfd 透传（到位误差 0.152~0.186°）均通过"
     - "2026-11-19 UDP 上报实测（60 s）：2400 帧、**实测周期 25.0 ms**（配置 5 ms 的 5 倍）、无断流窗口、到达率约 20% —— 周期虽落在 5 ms 的整数倍上，但到达率远低于标称，**不能据此把本表标 measured**"
+    - "2026-11-19 UDP 上报 **600 s 长跑**（rmctl.hwcollect udp_stability --duration-s 600）：24002 帧 / 期望 120000、**实测周期 24.998 ms**、**断流窗口 0**、最大空窗 0.0 ms、period_multiple_ok=true → 结论：控制器实际以 25 ms 周期上报（配置的 5 倍），**无随机丢包**；见 partial_observations"
     - "2026-11-19 连接额度实测：同一进程连续建链 5 次成功，第 6 次起 rm_create_robot_arm 返回 NULL（换新进程同样 id=-1），>200 s 内未恢复（约 5~10 min 量级释放）"
     - "2026-11-19 未做：udp_stability 600 s 长跑、右臂 192.168.1.19 的任何接触、V8 阶梯 acc/jerk（10°/档）、V9 急停演练"
   next_action: >-
@@ -39,6 +40,23 @@ blocked:
     python3 -m rmctl.hwcollect udp_stability --arm left --duration-s 600；
     收到非零帧数且周期落在 5 ms 倍数上后，把 status 改为 measured 并填 captured_at
     （右臂 192.168.1.19 未验证，一并补测或明确标注"未接触"）。
+# 已实测但**尚未进入全表基线状态**的观测（右臂未接触 → status 仍 blocked）。
+partial_observations:
+  captured_at: "2026-11-19"
+  arm: left
+  note: "以下为左臂实测观测；右臂 192.168.1.19 本轮未接触，全表 status 仍为 blocked"
+  udp_stability_600s:
+    duration_s: 600
+    frames: 24002
+    expected_frames: 120000
+    observed_period_ms: 24.998
+    configured_period_ms: 5
+    period_multiple_ok: true
+    dropout_count: 0
+    max_gap_ms: 0.0
+    source: "RM75-B 192.168.1.18 真机 600 s 长跑（rmctl.hwcollect udp_stability --duration-s 600）"
+    method: "SDK 主动上报回调计数 + 50 ms 采样窗判断流；周期由 frames/elapsed 反算"
+    note: "到达率 20% 的根因是控制器实际以 25 ms 周期上报（配置 5 ms 的 5 倍），不是随机丢包"
 arms:
   left:
     ip: "192.168.1.18"
@@ -49,9 +67,11 @@ arms:
     tcp_port: 8080
     udp_port: 8092          # 预留第二臂（单臂窗口只占用 8091）
 realtime_report:
-  period_ms: 5              # 实时上报周期（5 ms 的倍数）
+  period_ms: 5              # **配置**的实时上报周期（5 ms 的倍数）
+  measured_period_ms: 25    # **实测**周期（2026-11-19，600 s 长跑）：控制器实际按配置的 5 倍上报
   cycle_multiple_ms: 5      # SDK cycle 单位 = 5 ms
   mode: triple_thread       # rm_init(RM_TRIPLE_MODE_E)：不开三线程收不到 UDP
+  note: "配置 5 ms → 实测 25 ms（5 的整数倍，断流窗口 0）：控制器把上报周期按 5 ms 的整数倍取用；本表据此记两个值，不把配置值当实测值"
 constraints:
   single_client_per_endpoint: true   # 同一 ip:port 单客户端（上一个进程未退净会静默失败）
   triple_thread_mode: true           # 必须三线程模式

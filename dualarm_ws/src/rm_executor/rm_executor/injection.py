@@ -101,6 +101,14 @@ LIMIT_EXCEEDED_JOINT_INDEX = 0
 #: ``protection_stop`` 注入使用的控制器状态码（``RM_STOP_E``）
 PROTECTION_STOP_STATUS = 9
 
+#: ``protection_stop`` 注入**同时**置上的控制器错误码。
+#:
+#: 2026-11-19 真机实测修订：``RM_STOP_E(9)`` 只是**普通停止态**（空闲 / 预就位刚
+#: 结束 / 透传刚下发都会短暂出现），单看状态就判 L4 会把正常透传误停。
+#: 因此"保护停"的真实形态是 **停止态 + 错误码** —— 控制器触发保护时一定会置
+#: 错误码。注入按真实形态来：停止态 + 保护类错误码（工程声明映射码 90003）。
+PROTECTION_STOP_ERROR_CODE = 90003
+
 #: 不接受参数的注入种类
 _NO_PARAM_KINDS: Tuple[str, ...] = ("controller_conflict", "protection_stop")
 
@@ -444,6 +452,7 @@ def apply_injections(transport: Any, feedback: Any,
             arm_err = [int(item.get("value"))]
         elif kind == "protection_stop":
             arm_status = PROTECTION_STOP_STATUS
+            arm_err = [PROTECTION_STOP_ERROR_CODE]
     if conflict:
         transport = _ConflictTransport(transport)
     if arm_err is not None or arm_status is not None:
@@ -489,7 +498,7 @@ def describe(injections: Sequence[Dict[str, Any]]) -> List[str]:
                        "码表为工程声明映射，预期 L3 缓停，离线代理）"
                        % int(item.get("value") or 0))
         elif kind == "protection_stop":
-            out.append("injection: protection_stop=arm_current_status=%d"
-                       "（RM_STOP_E，预期 L4 急停，离线代理）"
-                       % PROTECTION_STOP_STATUS)
+            out.append("injection: protection_stop=arm_current_status=%d + arm_err=[%d]"
+                       "（RM_STOP_E + 保护类错误码，预期 L4 急停，离线代理）"
+                       % (PROTECTION_STOP_STATUS, PROTECTION_STOP_ERROR_CODE))
     return out

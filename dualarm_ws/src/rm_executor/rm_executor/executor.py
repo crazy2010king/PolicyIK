@@ -113,19 +113,32 @@ EXPECTED_TRAJECTORY_TYPES = (
     "RM_NO_PLANNING_E",
     "RM_BLEND_TRAJECTORY_PLANNING_E",
     "RM_SPLINE_CURVE_MOTION_PLANNING_E",
+    "RM_CARTESIAN_LINEAR_PLANNING_E",
+    "RM_CARTESIAN_ARC_PLANNING_E",
 )
 
 #: 明确属于「**别人下发的轨迹**」的控制器轨迹类型 → 判为真抢轨迹。
 #:
-#: 关节空间/笛卡尔/回放规划都不是本项目会下发的形态（本项目的位姿类接口全在
-#: ``contract.yaml`` 黑名单里，关节角只走 CANFD 透传），因此看到它们就意味着
-#: **有另一个客户端在抢这条臂**。
+#: * ``RM_JOINT_SPACE_PLANNING_E``：另一客户端用 ``rm_movej`` 下发的关节空间轨迹
+#:   （本项目自己的预就位走 rm_movej，但那是**阶段 B**，看门狗那时还没启动）；
+#: * ``RM_TRAJECTORY_REPLAY_PLANNING_E``：轨迹回放 —— 本项目从不下发。
+#:
+#: 其余（纯透传 / 混合 / 样条 / 笛卡尔直线 / 笛卡尔圆弧）都是**我们自己这条
+#: CANFD 透传**在曲线拟合（``trajectory_mode=1``）下可能出现的形态 —— 真机实测
+#: 同一段透传里就先后出现过 spline 与 cartesian-arc 两种上报（见
+#: ``docs/RM75-B真机验证阶梯.md`` §5.2）。把它们当抢轨迹会导致**正常的透传被判 FATAL
+#: 并急停**，因此排除在红��之外。
 CONFLICT_TRAJECTORY_TYPES = (
     "RM_JOINT_SPACE_PLANNING_E",
-    "RM_CARTESIAN_LINEAR_PLANNING_E",
-    "RM_CARTESIAN_ARC_PLANNING_E",
     "RM_TRAJECTORY_REPLAY_PLANNING_E",
 )
+
+#: 「抢轨迹」判据需要**连续**看到几次外部轨迹类型才成立（抗瞬态）。
+#:
+#: 真机实测：CANFD 透传期间控制器的轨迹类型会在若干形态之间切换（纯透传/样条/
+#: 笛卡尔圆弧…），单次采样不足以判定"被抢"。看门狗周期 15 ms、每 2 拍查一次
+#: → 连续 3 次 ≈ 30 ms，足以区分瞬态与持续。
+DEFAULT_CONFLICT_CONFIRMATIONS = 3
 
 #: 控制器看门狗自检周期（秒）—— 落在 10–20 ms 区间（计划 §5.7）
 DEFAULT_WATCHDOG_PERIOD_S = 0.015
@@ -261,6 +274,7 @@ class ControllerWatchdog:
                  on_query_failed: Optional[Callable[[str, List[str]], None]] = None,
                  on_unknown: Optional[Callable[[Dict[str, Any]], None]] = None,
                  max_checks: int = 4096,
+                 conflict_confirmations: int = DEFAULT_CONFLICT_CONFIRMATIONS,
                  ) -> None:
         self.transport = transport
         self.expected_type_name = str(expected_type_name)
@@ -277,6 +291,10 @@ class ControllerWatchdog:
         self.checks: List[Dict[str, Any]] = []
         self.max_checks = max(1, int(max_checks))
         self.total_checks = 0
+        #: 「抢轨迹」需要连续确认几次（抗瞬态；1 = 旧行为，立即判）
+        self.conflict_confirmations = max(1, int(conflict_confirmations))
+        #: 连续看到"外部轨迹类型"的次数
+        self.consecutive_conflicts = 0
         #: 抢轨迹已确认（线程安全标志位，tick 线程只读）
         self.conflict = threading.Event()
         self.last_error = ""
@@ -457,12 +475,20 @@ class ControllerWatchdog:
 
         observed = str(type_name)
         self.last_error = ""
-        self._record(thread_name, observed, str(status), "")
         if observed not in self.expected_type_names:
-            self.conflict.set()
-            if self.on_conflict:
-                self.on_conflict(observed, result)
+            # 外部轨迹类型：需**连续**确认才判为抢轨迹（瞬态只留证据、不停机）
+            self.consecutive_conflicts += 1
+            self._record(thread_name, observed, str(status),
+                         "外部轨迹类型 %s（连续 %d/%d）"
+                         % (observed, self.consecutive_conflicts,
+                            self.conflict_confirmations))
+            if self.consecutive_conflicts >= self.conflict_confirmations:
+                self.conflict.set()
+                if self.on_conflict:
+                    self.on_conflict(observed, result)
             return observed
+        self.consecutive_conflicts = 0
+        self._record(thread_name, observed, str(status), "")
         return observed
 
     def _record(self, thread_name: str, type_name: Optional[str],
@@ -931,6 +957,10 @@ class Executor:
         self._safety_error_codes = None
         self._safety_error_code_warnings: List[str] = []
         self._self_triggered_stop = False
+        #: 控制器停止态的起始时刻（单调时钟；不在停止态时为 None）
+        self._stop_state_since_s = None
+        #: 当前是否正在下发运动指令（阶段 C 流式 / 阶段 D 保持）
+        self._commanding_motion = False
         self._limit_check = "unavailable"
         self._limit_check_reason = ""
         self._limits_cache: Optional[Dict[str, Any]] = None
@@ -949,6 +979,7 @@ class Executor:
                 follow_stop_deg=contract.FOLLOW_STOP_DEG,
                 stream_warn_ms=contract.STREAM_WARN_MS,
                 stream_stop_ms=contract.STREAM_STOP_MS,
+                protection_grace_ms=contract.PROTECTION_GRACE_MS,
             )
         except Exception as exc:  # noqa: BLE001
             self._safety_error = "安全阈值构造失败（%s）: %s" % (type(exc).__name__, exc)
@@ -965,6 +996,7 @@ class Executor:
                     follow_stop_deg=contract.FOLLOW_STOP_DEG,
                     stream_warn_ms=contract.STREAM_WARN_MS,
                     stream_stop_ms=contract.STREAM_STOP_MS,
+                    protection_grace_ms=contract.PROTECTION_GRACE_MS,
                     l1_speed_scale=cfg.get("l1_speed_scale", 0.5),
                     enable_l1_slowdown=bool(cfg.get("enable_l1_slowdown", True)),
                     enable_l2_pause_on_stream_lag=bool(
@@ -1095,7 +1127,35 @@ class Executor:
                 arm_status = int(raw_status)
         signals["arm_err"] = arm_err
         signals["arm_current_status"] = arm_status
+        # 停止态**持续时长**（毫秒）与"是否正在下发运动指令"——
+        # 保护停判据需要这两项佐证（普通停止态不算保护停，见 rm_safety.policy）。
+        signals["protection_stop_ms"] = self._protection_stop_ms(arm_status)
+        signals["commanding_motion"] = bool(self._commanding_motion)
         return signals
+
+    def _protection_states(self) -> Tuple[int, ...]:
+        """保护停状态集合（来自安全层唯一真值；取不到时回退到 (9, 10)）。"""
+        module = (self._safety_modules or {}).get("policy")
+        states = getattr(module, "ARM_STATUS_PROTECTION_STATES", None)
+        return tuple(states) if states else (9, 10)
+
+    def _protection_stop_ms(self, arm_status: Optional[int]) -> Optional[float]:
+        """控制器停止态已持续多久（毫秒）；不在停止态 → ``None``。
+
+        真机实测（2026-11-19）：``RM_STOP_E(9)`` 是**普通停止态**（空闲 / 预就位刚
+        结束 / 透传刚下发时都会短暂出现），单次看到它不能判保护停；只有
+        "持续超过宽限 + 我们正在下发指令" 或 "有非零错误码" 才是保护停。
+        """
+        if arm_status is None:
+            self._stop_state_since_s = None
+            return None
+        if int(arm_status) not in self._protection_states():
+            self._stop_state_since_s = None
+            return None
+        if self._stop_state_since_s is None:
+            self._stop_state_since_s = time.monotonic()
+            return 0.0
+        return (time.monotonic() - self._stop_state_since_s) * 1000.0
 
     def _on_safety_event(self, type: str, severity: str, reason: str,
                           evidence: Any, next_action: str) -> None:
@@ -1367,6 +1427,8 @@ class Executor:
         evidence = [
             "expected_type_name=%s" % self.expected_trajectory_type,
             "expected_type_names=%s" % (",".join(self.expected_trajectory_types),),
+            "conflict_confirmations=%d" % self._watchdog.conflict_confirmations
+            if self._watchdog else "conflict_confirmations=?",
             "observed_type_name=%s" % type_name,
             "watchdog_thread=%s" % threading.current_thread().name,
             "tick_thread_ident=%s" % self._tick_thread_ident,
@@ -1943,6 +2005,8 @@ class Executor:
             return self._finalize(t_start, evidence)
         self.stream_clock = self._make_stream_clock(self._config.period_s,
                                                      self._now())
+        # 从此刻起我们在**下发运动指令**（保护停判据的"佐证"之一）
+        self._commanding_motion = True
         # 控制器看门狗在此刻启动（**独立线程**：SDK 状态查询不进 tick 线程）：
         # 阶段 B 已完成、进入纯透传阶段，此刻起控制器轨迹类型必须是
         # RM_NO_PLANNING_E，否则就是真的“抢轨迹”。
@@ -1950,6 +2014,7 @@ class Executor:
         jitter_before = len(self.stream_clock.jitter_samples_ms)
         if self._stream_ticks(grid_p, factor) is None:
             return self._finalize(t_start, evidence)
+        self._commanding_motion = False
         self._jitter_samples = list(self.stream_clock.jitter_samples_ms[jitter_before:])
         jitter_p99 = metrics_mod.percentile(self._jitter_samples, 99)
         self._add_event(

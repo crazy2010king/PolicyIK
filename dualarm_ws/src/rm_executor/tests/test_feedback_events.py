@@ -319,6 +319,60 @@ def test_other_client_joint_space_trajectory_is_a_conflict(write_traj):
     assert transport.count("stop") == 1
 
 
+def test_cartesian_arc_type_is_accepted_during_streaming(write_traj):
+    """透传期间控制器上报**笛卡尔圆弧**（RM_CARTESIAN_ARC_PLANNING_E）→ 不算抢轨迹。
+
+    回归（2026-11-19 真机实测）：同一段 CANFD 透传里，控制器先后上报过 spline 与
+    cartesian-arc —— 它在曲线拟合下会切换内部形态，单次采样不能判定"被抢"。
+    """
+    path = write_traj(_traj_payload())
+    transport = FakeTransport(script={
+        "current_trajectory_type": {
+            "status": "ok", "reason": "笛卡尔圆弧（canfd 真机行为）",
+            "type": 3, "type_name": "RM_CARTESIAN_ARC_PLANNING_E",
+        }
+    })
+    feedback = ScriptedFeedback(script=_script(transport), speed_deg_s=0.0,
+                                period_s=0.010)
+    executor = _make_executor(transport, feedback)
+    rep = executor.run(path)
+
+    assert not _events_of(rep, "controller_trajectory_conflict"), rep["events"]
+    assert transport.count("stop") == 0
+
+
+def test_transient_conflict_does_not_stop_the_arm(write_traj):
+    """**单次**外部轨迹类型（瞬态）不得急停 —— 需连续确认才算抢轨迹。
+
+    回归（2026-11-19 真机实测）：控制器在透传期间会短暂上报其它形态。
+    """
+    path = write_traj(_traj_payload())
+
+    class _OneShotConflictTransport(FakeTransport):
+        """只有第一次查询返回外部轨迹类型，之后恢复透传态。"""
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._queries = 0
+
+        def current_trajectory_type(self):
+            self._queries += 1
+            if self._queries == 1:
+                return {"status": "ok", "reason": "瞬态",
+                        "type": 1, "type_name": "RM_JOINT_SPACE_PLANNING_E"}
+            return {"status": "ok", "reason": "", "type": 0,
+                    "type_name": "RM_NO_PLANNING_E"}
+
+    transport = _OneShotConflictTransport()
+    feedback = ScriptedFeedback(script=_script(transport), speed_deg_s=0.0,
+                                period_s=0.010)
+    executor = _make_executor(transport, feedback)
+    rep = executor.run(path)
+
+    assert not _events_of(rep, "controller_trajectory_conflict"), rep["events"]
+    assert transport.count("stop") == 0
+
+
 def test_preposition_planning_state_is_not_a_controller_conflict(write_traj):
     """阶段 B（预就位，控制器规划态）**不得**报抢轨迹。"""
     path = write_traj(_traj_payload())

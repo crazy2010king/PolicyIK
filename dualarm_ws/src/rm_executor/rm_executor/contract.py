@@ -47,6 +47,7 @@ __all__ = [
     "PRE_POSITION_HOLD_MS",
     "PRE_POSITION_TOL_DEG",
     "SCHEMA_VERSION",
+    "PROTECTION_GRACE_MS",
     "STREAM_STOP_MS",
     "STREAM_WARN_MS",
     "STRICT_REQUIRED_FIELDS",
@@ -157,6 +158,15 @@ FOLLOW_STOP_DEG = 5.0
 STREAM_WARN_MS = 50
 #: 反馈断流停机阈值（毫秒）
 STREAM_STOP_MS = 200
+
+#: 控制器「停止态」的**宽限时长**（毫秒）—— 见 rm_safety.policy 的保护停判据。
+#:
+#: 真机实测（2026-11-19）：RM-API2 的 UDP 状态 ``RM_STOP_E(9)`` 是**普通停止态**
+#: （空闲时、预就位刚结束、透传刚下发时都会短暂出现），**不等于**保护停。
+#: 若仅凭状态就判 L4 急停，真机执行层会在正常透传刚开始时被误停（实测 ticks=2 即停）。
+#: 因此：状态进入停止态后必须**持续超过本宽限**、且我们**正在下发运动指令**，
+#: 才判为"保护停"；若同时有非零错误码，则**立即**判保护停（不等宽限）。
+PROTECTION_GRACE_MS = 100.0
 #: 到位角误差阈值（度）
 ARRIVAL_TOL_DEG = 0.1
 #: 到位角速度阈值（度/秒）

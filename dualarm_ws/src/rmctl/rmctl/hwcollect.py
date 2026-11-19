@@ -835,11 +835,19 @@ def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
               "derivative_method": "rmctl.retime.derivatives",
               "envelope": "min over trials（保守下界）"}
     started = _now_iso()
+    # 关节号：参数是 **1 基**（joint1..joint7）→ 内部 0 基数组下标
+    joint_indices = []
+    for item in (joints if joints is not None else tuple(range(1, 8))):
+        idx = int(item) - 1
+        if not 0 <= idx < 7:
+            raise HwCollectError("joints 含非法关节号 %r（允许 1..7）" % (item,))
+        joint_indices.append(idx)
+
     if dry_run:
         acc_env, jerk_env = {}, {}
         acc_max, jerk_max = {}, {}
         samples = []
-        for j in range(7):
+        for j in joint_indices:
             peaks_a, peaks_j = [], []
             for (times, points) in _ladder_profile(list(range(trials)), j, dt, duration_s):
                 a, jj = _ladder_peak(times, points, j)
@@ -867,6 +875,15 @@ def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
                         samples, summary,
                         _synthetic_evidence("ladder_acc_jerk", "合成阶梯轨迹"), started)
 
+    # 关节号：参数是 **1 基**（joint1..joint7）→ 内部 0 基数组下标
+    joint_indices = []
+    for item in (joints if joints is not None else tuple(range(1, 8))):
+        idx = int(item) - 1
+        if not 0 <= idx < 7:
+            raise HwCollectError("joints 含非法关节号 %r（允许 1..7）" % (item,))
+        joint_indices.append(idx)
+    params["joints"] = [i + 1 for i in joint_indices]
+
     link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib, link=link)
     if failure is not None:
         failure["experiment"] = "ladder_acc_jerk"
@@ -877,10 +894,14 @@ def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
     summary = {"trials": trials, "envelope": "min over trials（保守下界）",
                "derivative_method": "rmctl.retime.derivatives",
                "scope": "acc/jerk 上限的保守下界（多次采样包络），非单次极值",
-               "unit_acceleration": "rad/s^2", "unit_jerk": "rad/s^3"}
+               "unit_acceleration": "rad/s^2", "unit_jerk": "rad/s^3",
+               "step_deg": LADDER_STEP_DEG, "return_to_origin": True}
     samples = []
     try:
-        for j in range(7):
+        # **只动 joints 指定的关节**（参数是 1 基关节号）。
+        # 历史缺陷：真机路径曾忽略 ``joints``、对**全部 7 个关节**各走一段 10°，
+        # 且不回原位 —— 与"单关节阶梯"的实验语义完全不符，风险面大得多。
+        for j in joint_indices:
             peaks_a, peaks_j = [], []
             for t in range(trials):
                 rc, base = _joint_degrees(link)
@@ -914,9 +935,15 @@ def ladder_acc_jerk(arm="left", joints=tuple(range(1, 8)),
                 a, jj = _ladder_peak(times, q, j)
                 peaks_a.append(a)
                 peaks_j.append(jj)
+                # **回原位**（安全收尾）：测完这一档就把臂送回起始位姿，
+                # 净位移为 0 —— 避免多档叠加成大角度。
+                back = link.preposition_movej(base, speed=speed, block=1)
+                if back.get("status") != "ok":
+                    raise HwCollectError(back.get("reason") or "回原位失败")
                 samples.append({"joint": "joint%d" % (j + 1), "trial": t,
                                 "speed": speed, "acc_peak_rad_s2": a,
-                                "jerk_peak_rad_s3": jj})
+                                "jerk_peak_rad_s3": jj,
+                                "returned_to_origin": True})
             summary.setdefault("acceleration_rad_s2", {})["joint%d" % (j + 1)] = float(min(peaks_a))
             summary.setdefault("jerk_rad_s3", {})["joint%d" % (j + 1)] = float(min(peaks_j))
     except HwCollectError as exc:
@@ -1084,6 +1111,26 @@ def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
     summary = fk_cross.fk_recheck_fields(report)
     summary["ok"] = bool(report["ok"])
     summary["violations"] = report["violations"]
+    # **归因分析**（fk_cross 已实现，见 rmctl.fk_cross._attribution）：
+    # 区分「系统性平移」（零位漂移 / TCP 工具偏置）与「离散偏差」（个别关节异常）。
+    # 只看标量 max_mm 会把两者混为一谈 → 必须带上归因。
+    attribution = report.get("attribution") or {}
+    summary["attribution"] = attribution
+    details = report.get("samples_detail") or []
+    vectors = [list(d.get("dev_vector_mm") or []) for d in details]
+    vectors = [v for v in vectors if len(v) == 3]
+    summary["dev_vectors_mm"] = vectors
+    if vectors:
+        arr = np.asarray(vectors, dtype=float)
+        mean_vec = arr.mean(axis=0)
+        spread = float(np.max(np.linalg.norm(arr - mean_vec, axis=1)))
+        summary["mean_dev_vector_mm"] = [float(v) for v in mean_vec]
+        summary["mean_dev_norm_mm"] = float(np.linalg.norm(mean_vec))
+        summary["dev_spread_mm"] = spread
+        summary["dev_interpretation"] = (
+            "恒定偏置（TCP 未标定 / 零位整体漂移的典型特征）：偏差向量几乎不随位形变化"
+            if spread < 1.0 else
+            "偏差随位形变化：自研模型或零位需要复核（不是单纯的工具偏置）")
     return _result("fk_cross", arm, "hardware", STATUS_OK, params, samples, summary,
                    [{"kind": "sdk", "detail": "SDK 路径: %s" % (sdk_path(ws=ws) or "<injected>")},
                     {"kind": "fk_report", "ok": report["ok"]}], started)

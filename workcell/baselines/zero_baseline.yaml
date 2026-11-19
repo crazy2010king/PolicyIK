@@ -5,7 +5,7 @@
 #   - 控制器位姿来自厂商运动学输出，仅用于 FK 交叉校验，不得作为规划真值（设计 §1.4 / R003）。
 kind: zero_baseline
 schema_version: 1
-version: 3                  # 基线修订号（单调递增）
+version: 4                  # 基线修订号（单调递增）
 status: blocked            # pending / measured / blocked
 captured_at: null           # 采集时间（ISO8601）；未实测写 null
 arm: left                   # 本基线所属臂（left / right）——零位按臂独立
@@ -25,7 +25,8 @@ blocked:
     - "门禁4 UDP 端口：ss -ulnp 未见 8091/8092 占用（本机侧无冲突，非阻塞原因）"
     - "门禁5 环境可导入：rmctl.hwcollect 正常导入并成功装载 SDK（SDK 不再是阻塞点）"
     - "真机路径实跑：zero_capture / fk_cross 落盘 status=error，证据 rm_get_joint_degree 返回码 -1"
-    - "2026-11-19 复测（远端主机）：连通性恢复，rmctl connect 读到 7 轴关节角；rm75_safe_probe 最小动作（0.3°/去程回程）通过 —— 但零位照片、固件/示教器版本、FK 一致性复测**未执行**"
+    - "2026-11-19 复测（远端主机）：连通性恢复，rmctl connect 读到 7 轴关节角；rm75_safe_probe 最小动作（0.3°/去程回程）通过 —— 但零位照片、固件/示教器版本**未执行**"
+    - "2026-11-19 真机实测：FK 一致性复测（rmctl.hwcollect fk_cross，20 组位形）→ 最大位置偏差 75.0314 mm（阈值 1 mm）、归因 systematic_translation（偏差方向一致 = 整体平移）、姿态项控制器未提供（不参与判定）；见 partial_observations"
   next_action: >-
     取得真机窗口后按 docs/code_doc/真机基线与实测限值归档说明.md 第 3 节执行：
     示教器受控流程对齐凹槽 → 照片取证 → python3 -m rmctl.hwcollect zero_capture →
@@ -59,6 +60,20 @@ joints:
     zero_deg: null
     unit: deg
     groove_photo: null
+# 已实测但**尚未进入基线值字段**的观测（status 仍是 blocked → 值字段必须为 null）。
+partial_observations:
+  captured_at: "2026-11-19"
+  arm: left
+  note: "以下为真机实测观测，**不是**基线值（status=blocked 时基线值字段必须为 null）"
+  fk_recheck:
+    method: "rmctl.hwcollect fk_cross（自研 FK vs 控制器位姿交叉校验，20 组位形）"
+    samples: 20
+    max_pos_dev_mm: 75.03142324748
+    max_ori_dev_deg: null
+    conclusion: "FAIL：最大位置偏差 75.0314 mm（阈值 1 mm）；归因 systematic_translation（偏差方向一致 → 整体平移）；控制器未提供姿态 → 姿态项不参与判定"
+    attribution_pattern: systematic_translation
+    root_cause_hypothesis: "TCP 未标定（workcell/rm_workcell.yaml::calibration.tcp = null）：自研 FK 算的是 Link7 系、控制器报的是 TCP 系，两者本就差一个恒定工具偏置；该偏差不能当作模型精度结论。按 fk_cross 的排查顺序：零位 → 工具系 → MDH 偏置"
+    next_checks: ["标定 TCP 后复测", "示教器受控流程确认零位", "fk_cross --samples 20 复测"]
 groove_photos: []           # 凹槽对齐照片 + 示教器截图引用列表
 fk_recheck:
   method: null              # 复测方法（如 rmctl.fk_cross，20 组随机位形）

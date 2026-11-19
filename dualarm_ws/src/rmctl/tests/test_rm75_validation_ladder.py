@@ -464,3 +464,124 @@ def test_stage_blocks_when_connection_cannot_be_established(ladder, tmp_path):
     stage = report["stages"][0]
     assert stage["status"] == ladder.STATUS_BLOCKED
     assert "连接数" in stage["reason"]
+
+
+# ------------------------------------------------------------------ 判据修正
+def test_v6_judges_on_fk_conclusion_not_collect_status(ladder, tmp_path):
+    """fk_cross 的**结论**不合格时，即使采集 status=ok 也必须判不合格。
+
+    回归（2026-11-19 真机实测）：FK 交叉校验最大位置偏差 78.1 mm（阈值 1 mm），
+    但采集层 status 仍是 "ok" —— 只看 status 会把不合格误报成通过。
+    """
+    def hwcollect(name, **kwargs):
+        return {"status": "ok", "reason": "", "summary": {
+            "samples": 20, "max_pos_dev_mm": 78.12588158244492,
+            "max_ori_dev_deg": None, "ok": False, "violations": list(range(20)),
+            "mean_dev_norm_mm": 78.1, "dev_spread_mm": 0.8,
+            "dev_interpretation": "恒定偏置（TCP 未标定的典型特征）",
+            "conclusion": "FAIL：最大位置偏差 78.1259 mm（阈值 1.0000 mm）"}}
+
+    ctx = _ctx(ladder, tmp_path, hwcollect=hwcollect)
+    report = ladder.run_ladder(ctx, stage_ids=["V6"])
+    stage = report["stages"][0]
+    assert stage["status"] == ladder.STATUS_FAILED
+    assert "78.12" in stage["reason"]
+    assert "TCP" in stage["reason"]
+
+
+def test_v6_passes_when_fk_conclusion_ok(ladder, tmp_path):
+    def hwcollect(name, **kwargs):
+        return {"status": "ok", "reason": "", "summary": {
+            "samples": 20, "max_pos_dev_mm": 0.4, "max_ori_dev_deg": 0.01,
+            "ok": True, "violations": []}}
+
+    ctx = _ctx(ladder, tmp_path, hwcollect=hwcollect)
+    report = ladder.run_ladder(ctx, stage_ids=["V6"])
+    assert report["stages"][0]["status"] == ladder.STATUS_PASS
+
+
+def test_v5_fails_when_cc2_thresholds_breached(ladder, tmp_path):
+    """CC2：到位误差 < 0.1°、跟随误差 RMS ≤ 0.3° —— 超限即不合格。"""
+    def executor(**kwargs):
+        return {"status": "ok", "metrics": {"ticks": 501, "arrival_err_deg": 0.35,
+                                            "follow_err_rms_deg": 0.8,
+                                            "tick_jitter_p99_ms": 0.19}}
+
+    ctx = _ctx(ladder, tmp_path, executor=executor)
+    report = ladder.run_ladder(ctx, stage_ids=["V5"])
+    stage = report["stages"][0]
+    assert stage["status"] == ladder.STATUS_FAILED
+    assert "0.35" in stage["reason"]
+
+
+def test_v5_passes_within_cc2_thresholds(ladder, tmp_path):
+    def executor(**kwargs):
+        return {"status": "ok", "metrics": {"ticks": 501, "arrival_err_deg": 0.004,
+                                            "follow_err_rms_deg": 0.05,
+                                            "tick_jitter_p99_ms": 0.19}}
+
+    ctx = _ctx(ladder, tmp_path, executor=executor)
+    report = ladder.run_ladder(ctx, stage_ids=["V5"])
+    assert report["stages"][0]["status"] == ladder.STATUS_PASS
+
+
+def test_v7_fails_when_spread_exceeds_nominal(ladder, tmp_path):
+    def hwcollect(name, **kwargs):
+        return {"status": "ok", "reason": "", "summary": {
+            "max_deviation_mm": 0.2, "nominal_repeatability_mm": 0.05,
+            "within_nominal": False}}
+
+    ctx = _ctx(ladder, tmp_path, hwcollect=hwcollect)
+    report = ladder.run_ladder(ctx, stage_ids=["V7"])
+    assert report["stages"][0]["status"] == ladder.STATUS_FAILED
+
+
+def test_selected_stages_are_labelled_correctly(ladder, tmp_path):
+    """只跑部分阶段时，报告里的阶段号/名称必须与实际执行的阶段对应。
+
+    回归：曾用全局 STAGES 去 zip 部分结果 → 报告把 "V5 执行层" 显示成 "V0"。
+    """
+    ctx = _ctx(ladder, tmp_path)
+    report = ladder.run_ladder(ctx, stage_ids=["V5", "V6"])
+    assert [s["stage"] for s in report["stages"]] == ["V5", "V6"]
+    assert report["stages"][0]["title"] == ladder.STAGE_INDEX["V5"].title
+    assert report["stages"][1]["title"] == ladder.STAGE_INDEX["V6"].title
+
+
+def test_evidence_artifact_drops_volatile_paths(ladder, tmp_path):
+    """证据工件必须去掉易变路径（trajectory 绝对路径等），保留判据与数值。"""
+    ctx = _ctx(ladder, tmp_path)
+    report = ladder.run_ladder(ctx, stage_ids=["V1"])
+    evidence = ladder.build_evidence(report)
+    assert evidence["schema"] == "rmctl.rm75_validation_evidence/1"
+    assert evidence["stages"][0]["id"] == "V1"
+    assert "trajectory" not in (evidence["stages"][0].get("data") or {})
+    # 可 JSON 化（入库前的硬要求）
+    json.dumps(evidence, ensure_ascii=False)
+
+
+# ------------------------------------------------------------------ 证据合并
+def test_evidence_merge_keeps_last_run_per_stage(ladder, tmp_path):
+    """同一阶段多次执行 → 保留最后一次，并记执行次数。"""
+    merge_path = os.path.join(REPO_ROOT, "scripts", "rm75_evidence_merge.py")
+    spec = importlib.util.spec_from_file_location("rm75_evidence_merge", merge_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    def _report(status, reason):
+        return {"arm": "left", "endpoint": {"ip": "192.168.1.18", "port": 8080},
+                "status": status, "finished_at": "2026-11-19T10:00:00",
+                "params": {}, "coverage": {},
+                "stages": [{"id": "V1", "title": "连接与状态快照", "status": status,
+                            "risk": "none", "moves_arm": False, "reason": reason,
+                            "evidence": [], "data": {"trajectory": "/tmp/x.json"}}]}
+
+    merged = module.merge([_report("error", "第一次失败"), _report("pass", "第二次通过")],
+                          ["a.json", "b.json"])
+    stage = merged["stages"][0]
+    assert stage["status"] == "pass"
+    assert stage["reason"] == "第二次通过"
+    assert stage["runs"] == 2
+    assert "trajectory" not in stage["data"]
+    json.dumps(merged, ensure_ascii=False)

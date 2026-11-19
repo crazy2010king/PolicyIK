@@ -488,3 +488,66 @@ def test_run_experiment_rejects_unknown_name():
     """负例：run_experiment 未知名字抛 HwCollectError（可读错误）。"""
     with pytest.raises(hwcollect.HwCollectError):
         hwcollect.run_experiment("no_such_experiment")
+
+
+# --------------------------------------------------------------- 阶梯实验：只动指定关节 + 回原位
+def test_ladder_dry_run_honors_joints_parameter():
+    """``joints`` 必须真的生效（只出指定关节的结果）。"""
+    res = _run("ladder_acc_jerk", dry_run=True, trials=1, joints=(2,))
+    s = res["summary"]
+    assert set(s["acceleration_rad_s2"]) == {"joint2"}
+    assert set(s["jerk_rad_s3"]) == {"joint2"}
+
+
+class _FakeLadderLink(object):
+    """假句柄：记录被下发的目标角（用于断言"只动指定关节 + 回原位"）。"""
+
+    def __init__(self):
+        import types
+        self._pos = [0.0] * 7
+        self.moves = []
+        self.handle = None
+        binding = types.SimpleNamespace(rm_get_joint_degree=self._read)
+        self.bridge = types.SimpleNamespace(binding=binding)
+
+    def _read(self, handle, joints):
+        for i, v in enumerate(self._pos):
+            joints[i] = float(v)
+        return 0
+
+    def preposition_movej(self, deg7, speed=10, radius=0, block=0,
+                          trajectory_connect=0):
+        self.moves.append([float(v) for v in deg7])
+        self._pos = [float(v) for v in deg7]
+        return {"status": "ok", "reason": ""}
+
+    def current_trajectory_type(self):
+        return {"status": "ok", "planning": False}
+
+
+def test_ladder_hardware_path_moves_only_requested_joint_and_returns(monkeypatch):
+    """真机路径：**只动指定关节**，且每档测完**回原位**（净位移 0）。
+
+    回归（2026-11-19 真机）：真机路径曾忽略 ``joints``、对全部 7 个关节各走 10°
+    且不回原位 —— 风险面远大于"单关节阶梯"的实验语义。
+    """
+    from rmctl import hwcollect
+
+    link = _FakeLadderLink()
+    res = hwcollect.ladder_acc_jerk(arm="left", joints=(3,), trials=1, link=link)
+    assert res["status"] == "ok", res.get("reason")
+
+    # 只有 joint3（索引 2）被抬过 10°，其余关节没动过
+    moved = [i for i in range(7)
+             if any(abs(m[i] - link._pos[i]) > 1e-9 for m in link.moves)]
+    assert len(link.moves) >= 2          # 至少：抬一步 + 回原位
+    step_goals = link.moves[:-1]
+    back_goal = link.moves[-1]
+    for goal in step_goals:
+        assert abs(goal[2] - 10.0) < 1e-6
+        assert all(abs(goal[i]) < 1e-9 for i in range(7) if i != 2)
+    assert all(abs(v) < 1e-9 for v in back_goal)      # 回到原位
+
+    # 汇总里也只有 joint3
+    assert set(res["summary"]["acceleration_rad_s2"]) == {"joint3"}
+    assert res["summary"]["return_to_origin"] is True

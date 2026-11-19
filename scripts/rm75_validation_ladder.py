@@ -151,6 +151,30 @@ class LadderContext(object):
         self._shared_link = link
         return link, None
 
+    def tool_calibration(self):
+        """读工位配置里的 TCP 标定值（``calibration.tcp``；null = 未标定）。
+
+        FK 交叉校验的偏差性质判定要用它：**未标定 TCP** 时，自研 FK（Link7 系）
+        与控制器位姿（TCP 系）之间本就存在恒定偏置，偏差不能当成模型精度结论。
+        """
+        import yaml
+        candidates = []
+        if self.ws:
+            candidates.append(os.path.join(self.ws, "workcell", "rm_workcell.yaml"))
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(os.path.abspath(os.path.join(
+            here, "..", "workcell", "rm_workcell.yaml")))
+        for path in candidates:
+            if not os.path.exists(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = yaml.safe_load(fh) or {}
+            except Exception:
+                return None
+            return ((data.get("calibration") or {}).get("tcp"))
+        return None
+
     def shared_link_factory(self):
         """给探针用的 link_factory（复用共享句柄，且**不关闭**它）。"""
         def _factory(**kwargs):
@@ -509,7 +533,23 @@ def _stage_v5(ctx: LadderContext) -> Dict[str, Any]:
         if key in metrics:
             evidence.append("%s = %s" % (key, metrics[key]))
     if status == "ok":
-        return _result("V5", STATUS_PASS, "执行层 live 闭环通过（10 ms 透传 + 反馈到位判定）",
+        # CC2 的两条可量化门限：到位误差 < 0.1°、跟随误差 RMS ≤ 0.3°
+        arrival = metrics.get("arrival_err_deg")
+        rms = metrics.get("follow_err_rms_deg")
+        breaches = []
+        if isinstance(arrival, (int, float)) and arrival > 0.1:
+            breaches.append("到位误差 %.4f° > 0.1°" % arrival)
+        if isinstance(rms, (int, float)) and rms > 0.3:
+            breaches.append("跟随误差 RMS %.4f° > 0.3°" % rms)
+        if breaches:
+            return _result("V5", STATUS_FAILED,
+                           "执行层 live 闭环跑完，但 CC2 门限未达标：%s"
+                           % "；".join(breaches), evidence,
+                           {"metrics": metrics, "trajectory": traj_path})
+        return _result("V5", STATUS_PASS,
+                       "执行层 live 闭环通过（10 ms 透传 + 反馈到位判定；"
+                       "到位误差 %s°，跟随误差 RMS %s°，抖动 p99 %s ms）"
+                       % (arrival, rms, metrics.get("tick_jitter_p99_ms")),
                        evidence, {"metrics": metrics, "trajectory": traj_path})
     mapped = {"blocked": STATUS_BLOCKED}.get(status, STATUS_ERROR)
     return _result("V5", mapped, (report or {}).get("reason") or "执行层 live 未通过",
@@ -528,15 +568,47 @@ def _stage_v6(ctx: LadderContext) -> Dict[str, Any]:
     status = (result or {}).get("status")
     summary = (result or {}).get("summary") or {}
     evidence = ["fk_cross status=%s" % status]
-    for key in ("max_position_error_mm", "max_orientation_error_deg", "samples"):
+    for key in ("samples", "max_pos_dev_mm", "max_ori_dev_deg", "mean_dev_norm_mm",
+                "dev_spread_mm", "dev_interpretation", "conclusion"):
         if key in summary:
             evidence.append("%s = %s" % (key, summary[key]))
-    if status == "ok":
-        return _result("V6", STATUS_PASS,
-                       "FK 交叉校验通过（位置 %s mm / 姿态 %s°）"
-                       % (summary.get("max_position_error_mm"),
-                          summary.get("max_orientation_error_deg")),
+    attribution = summary.get("attribution") or {}
+    if attribution:
+        evidence.append("attribution.pattern = %s" % attribution.get("pattern"))
+        for hint in (attribution.get("hints") or [])[:3]:
+            evidence.append("attribution.hint: %s" % hint)
+    # **判据是 fk_cross 的结论（summary.ok）**，不是采集层 status ——
+    # 采集成功但交叉校验不合格（偏差超阈值）同样是不合格。
+    if status != "ok":
+        mapped = {"dry_run": STATUS_PASS, "NEEDS_HUMAN": STATUS_BLOCKED,
+                  "blocked": STATUS_BLOCKED}.get(status, STATUS_ERROR)
+        return _result("V6", mapped, (result or {}).get("reason") or "FK 交叉校验未完成",
                        evidence, summary)
+    if not summary.get("ok", False):
+        tcp = ctx.tool_calibration()
+        attribution = summary.get("attribution") or {}
+        pattern = attribution.get("pattern")
+        if pattern == "systematic_translation" and not tcp:
+            cause = ("偏差是**系统性平移**且 TCP 未标定：自研 FK 算的是 Link7 系、"
+                     "控制器报的是 TCP 系，两者本就差一个工具偏置 —— "
+                     "该偏差**不能**当作模型精度结论")
+        elif pattern == "systematic_translation":
+            cause = ("偏差是**系统性平移**（零位整体漂移或工具偏置）："
+                     "按 fk_cross 的排查顺序先查零位 → 工具系 → MDH 偏置")
+        elif pattern == "scattered":
+            cause = "偏差**随位形变化**（离散型）：优先查个别关节/零位与 URDF 清洗结果"
+        else:
+            cause = summary.get("dev_interpretation") or "偏差性质未知"
+        return _result("V6", STATUS_FAILED,
+                       "FK 交叉校验不合格：最大位置偏差 %s mm（阈值 1 mm）；%s；"
+                       "工具标定 calibration.tcp=%s"
+                       % (summary.get("max_pos_dev_mm"), cause,
+                          tcp if tcp else "null（未标定）"),
+                       evidence, summary)
+    return _result("V6", STATUS_PASS,
+                   "FK 交叉校验通过（位置 %s mm / 姿态 %s°）"
+                   % (summary.get("max_pos_dev_mm"), summary.get("max_ori_dev_deg")),
+                   evidence, summary)
     mapped = {"dry_run": STATUS_PASS, "NEEDS_HUMAN": STATUS_BLOCKED,
               "blocked": STATUS_BLOCKED}.get(status, STATUS_ERROR)
     return _result("V6", mapped, (result or {}).get("reason") or "FK 交叉校验未通过",
@@ -571,9 +643,16 @@ def _stage_v7(ctx: LadderContext) -> Dict[str, Any]:
         if key in summary:
             evidence.append("%s = %s" % (key, summary[key]))
     if status == "ok":
+        if summary.get("within_nominal") is False:
+            return _result("V7", STATUS_FAILED,
+                           "重复性：最大散布 %s mm **超过**标称 ±%s mm"
+                           % (summary.get("max_deviation_mm"),
+                              summary.get("nominal_repeatability_mm")),
+                           evidence, summary)
         return _result("V7", STATUS_PASS,
-                       "重复性：最大散布 %s mm（标称 ±0.05 mm）"
-                       % summary.get("max_deviation_mm"), evidence, summary)
+                       "重复性：最大散布 %s mm（标称 ±%s mm）"
+                       % (summary.get("max_deviation_mm"),
+                          summary.get("nominal_repeatability_mm")), evidence, summary)
     mapped = {"dry_run": STATUS_PASS, "NEEDS_HUMAN": STATUS_BLOCKED,
               "blocked": STATUS_BLOCKED}.get(status, STATUS_ERROR)
     return _result("V7", mapped, (result or {}).get("reason") or "重复性实验未通过",
@@ -800,12 +879,13 @@ def run_ladder(ctx: LadderContext, stage_ids: Optional[Sequence[str]] = None,
                 and not continue_on_failure:
             stopped = True
 
-    report = _build_report(ctx, results, started, allow_risky, dry_run)
+    report = _build_report(ctx, results, started, allow_risky, dry_run, selected)
     return report
 
 
 def _build_report(ctx: LadderContext, results: List[Dict[str, Any]], started: float,
-                  allow_risky: bool, dry_run: bool) -> Dict[str, Any]:
+                  allow_risky: bool, dry_run: bool,
+                  selected: Optional[List[Stage]] = None) -> Dict[str, Any]:
     executed = [r for r in results if r["status"] not in (STATUS_SKIPPED,)]
     passed = [r for r in results if r["status"] == STATUS_PASS]
     failed = [r for r in results if r["status"] == STATUS_FAILED]
@@ -865,7 +945,10 @@ def _build_report(ctx: LadderContext, results: List[Dict[str, Any]], started: fl
             "fk_samples": ctx.fk_samples, "repeats": ctx.repeats,
             "target_deg": ctx.target_deg, "trials": ctx.trials,
         },
-        "stages": [dict(stage.to_dict(), **r) for stage, r in zip(STAGES, results)],
+        # 阶段元数据必须与**本次实际执行的阶段**一一对应（按位置配对），
+        # 不能拿全局 STAGES 去 zip 部分结果 —— 否则报告里阶段号会张冠李戴。
+        "stages": [dict(stage.to_dict(), **r)
+                   for stage, r in zip(selected or STAGES, results)],
         "summary": {
             "total": len(results), "passed": len(passed), "failed": len(failed),
             "blocked": len(blocked), "errored": len(errored),
@@ -886,6 +969,42 @@ def write_report(report: Dict[str, Any], out_dir: str) -> Tuple[str, str]:
     with open(md_path, "w", encoding="utf-8") as fh:
         fh.write(render_markdown(report))
     return json_path, md_path
+
+
+def build_evidence(report: Dict[str, Any]) -> Dict[str, Any]:
+    """把报告压成**可入库**的证据工件（去掉易变路径，保留判据与数值）。
+
+    为什么需要它：``build/`` 被 gitignore，阶梯报告默认落在 ``build/`` 里，
+    **不进版本库**；而里程碑验证要引用的是"哪一版代码、在哪台臂上、测到什么数"，
+    因此必须有一份**可追溯**的证据文件（``workcell/baselines/evidence/``）。
+    """
+    stages = []
+    for stage in report.get("stages") or []:
+        stages.append({
+            "id": stage.get("id"),
+            "title": stage.get("title"),
+            "status": stage.get("status"),
+            "risk": stage.get("risk"),
+            "moves_arm": stage.get("moves_arm"),
+            "reason": stage.get("reason"),
+            "duration_s": stage.get("duration_s"),
+            "evidence": [str(e) for e in (stage.get("evidence") or [])],
+            "data": {k: v for k, v in (stage.get("data") or {}).items()
+                     if k not in ("trajectory",)},
+        })
+    return {
+        "schema": "rmctl.rm75_validation_evidence/1",
+        "generated_at": report.get("finished_at"),
+        "arm": report.get("arm"),
+        "endpoint": report.get("endpoint"),
+        "status": report.get("status"),
+        "params": report.get("params"),
+        "summary": report.get("summary"),
+        "coverage": report.get("coverage"),
+        "stages": stages,
+        "note": "本文件由 scripts/rm75_validation_ladder.py 生成（--evidence-out）；"
+                "数值均来自真机读数，未做任何人工填写。",
+    }
 
 
 def render_markdown(report: Dict[str, Any]) -> str:
@@ -956,6 +1075,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="V7 重复性目标角（度，逗号分隔 7 个）；缺省=当前位姿（安全默认）")
     p.add_argument("--trials", type=int, default=1, help="V8 阶梯实验档数")
     p.add_argument("--out-dir", dest="out_dir", default="build/reports/validation")
+    p.add_argument("--evidence-out", dest="evidence_out", default=None,
+                   help="额外写一份**可入库**的证据工件（如 "
+                        "workcell/baselines/evidence/rm75_validation_ladder_<日期>.json）")
     p.add_argument("--ws", default=None, help="工作区根目录")
     p.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="只列计划，不连真机")
@@ -996,6 +1118,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     json_path, md_path = write_report(report, ctx.out_dir)
+    if args.evidence_out:
+        evidence_path = os.path.abspath(args.evidence_out)
+        os.makedirs(os.path.dirname(evidence_path), exist_ok=True)
+        with open(evidence_path, "w", encoding="utf-8") as fh:
+            json.dump(build_evidence(report), fh, ensure_ascii=False, indent=2)
+        if not args.json:
+            print("证据工件: %s" % evidence_path)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

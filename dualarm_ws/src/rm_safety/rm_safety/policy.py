@@ -120,6 +120,8 @@ class SafetyThresholds:
     follow_stop_deg: float
     stream_warn_ms: float
     stream_stop_ms: float
+    #: 控制器停止态的宽限时长（毫秒）—— 唯一真值 = rm_executor.contract.PROTECTION_GRACE_MS
+    protection_grace_ms: float = 100.0
     l1_speed_scale: float = 0.5
     enable_l1_slowdown: bool = True
     enable_l2_pause_on_stream_lag: bool = False
@@ -298,7 +300,27 @@ def evaluate(signals: Mapping[str, Any], thresholds: SafetyThresholds) -> Decisi
     evidences: List[Dict[str, Any]] = []
     levels_by_kind: Dict[str, str] = {}
 
+    # ----------------------------------------------- 控制器错误码（解析）
+    # 错误码在**保护停判据**里也要用（"有非零错误码 → 立即保护停"），因此先解析
+    # 出 `err_codes_all`；下面的错误码分类再用**过滤掉 0** 的 `err_codes`
+    # （厂商约定 0 = 无错误）。
+    raw_err = signals.get("arm_err")
+    err_codes_all: List[int] = []
+    if isinstance(raw_err, (list, tuple)):
+        for item in raw_err:
+            value = _num(item)
+            if value is not None:
+                err_codes_all.append(int(value))
+
     # ---------------------------------------------------------- 保护停（L4）
+    # 判据（2026-11-19 真机实测修订）：
+    #   状态 ∈ {9, 10}（RM_STOP_E / RM_SLOW_STOP_E）**只是"处于停止态"**，
+    #   真机在空闲、预就位刚结束、透传刚下发时都会短暂出现 —— 单看状态会把
+    #   **正常透传**误判成保护停（L4 急停，实测 ticks=2 即停）。
+    #   因此升级为 L4 需要**佐证**：
+    #     ① 有非零错误码（真机保护/碰撞/越限都会置错误码）→ **立即**判保护停；
+    #     ② 或停止态**持续超过宽限**且我们**正在下发运动指令**（我们被卡住了）。
+    #   否则只记 advisory，不升级（但证据里写明观察到停止态）。
     status = signals.get("arm_current_status")
     status_num = _num(status)
     self_triggered = bool(signals.get("self_triggered_stop", False))
@@ -312,15 +334,40 @@ def evaluate(signals: Mapping[str, Any], thresholds: SafetyThresholds) -> Decisi
                 note="控制器处于停机状态，但该停机由本进程发起 → 不判保护停",
             ))
         else:
-            detected.append(FAULT_KIND_PROTECTION_STOP)
-            levels_by_kind[FAULT_KIND_PROTECTION_STOP] = _levels.LEVEL_L4
-            evidences.append(_ev(
-                FAULT_KIND_PROTECTION_STOP, _levels.LEVEL_L4,
-                "arm_current_status ∈ {9, 10} 且非本进程发起",
-                int(status_num),
-                None,
-                note="控制器保护停（非本进程发起）",
-            ))
+            err_codes = [c for c in err_codes_all if c != 0]
+            stop_ms = _num(signals.get("protection_stop_ms"))
+            grace = float(getattr(thresholds, "protection_grace_ms", 0.0) or 0.0)
+            commanding = bool(signals.get("commanding_motion", False))
+            if err_codes:
+                detected.append(FAULT_KIND_PROTECTION_STOP)
+                levels_by_kind[FAULT_KIND_PROTECTION_STOP] = _levels.LEVEL_L4
+                evidences.append(_ev(
+                    FAULT_KIND_PROTECTION_STOP, _levels.LEVEL_L4,
+                    "arm_current_status ∈ {9, 10} 且存在非零错误码",
+                    int(status_num),
+                    None,
+                    note="控制器保护停（错误码 %s）" % (err_codes,),
+                ))
+            elif commanding and stop_ms is not None and stop_ms >= grace:
+                detected.append(FAULT_KIND_PROTECTION_STOP)
+                levels_by_kind[FAULT_KIND_PROTECTION_STOP] = _levels.LEVEL_L4
+                evidences.append(_ev(
+                    FAULT_KIND_PROTECTION_STOP, _levels.LEVEL_L4,
+                    "arm_current_status ∈ {9, 10} 且停止态持续 %.0f ms ≥ 宽限 %.0f ms"
+                    "（正在下发运动指令）",
+                    int(status_num),
+                    stop_ms,
+                    note="控制器保护停（无错误码，但持续停止且我们正在下发指令）",
+                ))
+            else:
+                evidences.append(_ev(
+                    "advisory", "",
+                    "arm_current_status ∈ {9, 10}（无错误码，按普通停止态处理）",
+                    int(status_num),
+                    stop_ms,
+                    note="停止态无错误码佐证 → 不升级为保护停"
+                         "（停止持续 %s ms；正在下发指令=%s）" % (stop_ms, commanding),
+                ))
 
     # ------------------------------------------------------------ 断流（L4/L2）
     age = _num(signals.get("stream_age_ms"))
@@ -401,19 +448,11 @@ def evaluate(signals: Mapping[str, Any], thresholds: SafetyThresholds) -> Decisi
             violations=[v for v in violations][:20],
         ))
 
-    # ----------------------------------------------- 控制器错误码（L3 保守）
-    raw_err = signals.get("arm_err")
-    err_codes: List[int] = []
-    if isinstance(raw_err, (list, tuple)):
-        for item in raw_err:
-            value = _num(item)
-            if value is not None:
-                err_codes.append(int(value))
     # **码 0 = 无错误**（厂商 ``rm_current_arm_state_t.err[]`` 约定）：0 不是故障码，
     # 必须排除在分类之外 —— 否则会把"无错误"当成"未知码"并保守升级到 L3 缓停
     # （2026-11-19 真机实测：真机常态上报 arm_err=[0]，执行层因此被误判为
     # unknown_error_code → L3 缓停，整条轨迹只跑了 2 拍就被停掉）。
-    err_codes = [code for code in err_codes if code != 0]
+    err_codes = [code for code in err_codes_all if code != 0]
     error_code_map = signals.get("error_code_map")
     if err_codes:
         collision_codes: List[int] = []
