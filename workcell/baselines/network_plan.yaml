@@ -5,25 +5,36 @@
 #   - 同一 ip:port 只能被一个客户端占用；上一个进程未退干净会静默失败（采集前先确认端口空闲）。
 kind: network_plan
 schema_version: 1
-version: 2                  # 基线修订号（单调递增）
+version: 3                  # 基线修订号（单调递增）
 status: blocked
 captured_at: null
 blocked:
   reason: >-
-    端口规划值来自官方 RX75 左右臂配置（设计 §5.1），本机侧端口 8091/8092 无占用，但**实连确认**
-    未完成：ping 192.168.1.18 与 192.168.1.19 均 100% 丢包，TCP 8080 连接超时，SDK 侧
-    rm_set_realtime_push 报 "invaild ip"、rm_get_robot_info 报 "handle is NULL"。
-    因此本表**未实测确认**，status 保持 blocked，不得声称连通性已验证。
+    **连通性已实测确认**（2026-11-19，远端主机 172.16.119.199）：ping 192.168.1.18 正常
+    （0.49 ms）、TCP 8080 可连、RM-API2 1.1.7 握手成功（rm_create_robot_arm 得到有效
+    handle，handle.id != -1），状态快照可读（控制器 RM_NO_PLANNING_E / RM_IDLE_E，
+    7 轴全部使能、关节错误码全 0），最小动作验证通过（0.3° 微动 + 回程）。
+    但**本表仍未标 measured**：UDP 主动上报只取到个位数帧（快照时刻的 frames=1~2），
+    尚未做 10 分钟级的 `rmctl.hwcollect udp_stability` 长跑，
+    实时上报周期/丢包率/抖动三项**没有实测数据**；右臂 192.168.1.19 本轮完全未接触。
+    因此 status 保持 blocked —— 连通性已通 ≠ 上报质量已实测。
   attempted_actions:
     - "本机端口占用核查：ss -ulnp | grep -E '8091|8092' 无输出（本机侧无冲突）"
-    - "网络连通：ping -c 2 192.168.1.18 → 100% packet loss；ping -c 2 192.168.1.19 → 100% packet loss"
-    - "TCP 连通：/dev/tcp/192.168.1.18/8080 连接超时（5 s 超时，退出码 124）"
-    - "远程主机复核：ssh 172.16.119.199:2224 → REMOTE_OK，但同一网段内 ping 192.168.1.18 同样 100% 丢包"
-    - "真机路径实跑：udp_stability status=error（frames=0，set_realtime_push 失败）、tcp_repeatability status=error（rm_movej 报'机械臂已断开'）"
+    - "网络连通（2026-11-13 首次窗口）：ping -c 2 192.168.1.18 → 100% packet loss；ping -c 2 192.168.1.19 → 100% packet loss"
+    - "TCP 连通（2026-11-13 首次窗口）：/dev/tcp/192.168.1.18/8080 连接超时（5 s 超时，退出码 124）"
+    - "远程主机复核（2026-11-13）：ssh 172.16.119.199:2224 → REMOTE_OK，但同一网段内 ping 192.168.1.18 同样 100% 丢包"
+    - "真机路径实跑（2026-11-13）：udp_stability status=error（frames=0，set_realtime_push 失败）、tcp_repeatability status=error（rm_movej 报'机械臂已断开'）"
+    - "2026-11-19 复测（远端主机）：ping -c 2 192.168.1.18 → 0% packet loss（rtt 0.456/0.516 ms）；/dev/tcp/192.168.1.18/8080 → 连接成功"
+    - "2026-11-19 RM-API2 实连（远端主机，RM-API2 1.1.7 x86-64）：rmctl doctor 的 hw:sdk / hw:symbols（22 核心 + 21 支持）/ hw:contract 三项全 PASS"
+    - "2026-11-19 rmctl connect --arm left --ip 192.168.1.18 --json → status=ok，状态快照全字段可读（控制器位姿 scope=cross_check_only）"
+    - "2026-11-19 最小动作验证（scripts/rm75_safe_probe.py，0.3°/2% 速度/单关节/去程回程）：movej 通道到位误差 0.046°、回程偏差 0.042°；canfd 通道到位误差 0.167°、回程偏差 0.159° —— 两条通道均判定通过"
+    - "2026-11-19 未做：udp_stability 10 分钟长跑（上报周期/丢包/抖动实测）、右臂 192.168.1.19 的任何接触"
   next_action: >-
-    真机窗口内依次执行 ping 192.168.1.18、TCP 8080 连通性检查、ss -ulnp | grep 8091，
-    再跑 python3 -m rmctl.hwcollect udp_stability --arm left --duration-s 600；
+    连通性已确认，本表只差"上报质量"这一项实测：在真机窗口内依次执行
+    ss -ulnp | grep 8091（确认端口空闲），再跑
+    python3 -m rmctl.hwcollect udp_stability --arm left --duration-s 600；
     收到非零帧数且周期落在 5 ms 倍数上后，把 status 改为 measured 并填 captured_at
+    （右臂 192.168.1.19 未验证，一并补测或明确标注"未接触"）。
 arms:
   left:
     ip: "192.168.1.18"
@@ -44,4 +55,5 @@ constraints:
 notes:
   - "UDP 8092 为第二臂预留；单臂窗口不得占用"
   - "端口占用/单客户端约束导致静默失败，采集前用 ss -ulnp 确认端口空闲"
-  - "本次窗口结论：规划值来自官方配置（未经实连验证），status=blocked"
+  - "2026-11-13 首次窗口结论：规划值来自官方配置（未经实连验证），status=blocked"
+  - "2026-11-19 复测结论：左臂 192.168.1.18 连通性与最小动作控制**已验证**（见 attempted_actions）；上报质量与右臂仍未实测，status 仍为 blocked"

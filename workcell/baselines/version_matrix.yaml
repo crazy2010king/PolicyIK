@@ -6,13 +6,15 @@
 #   - status=measured 表示该矩阵已冻结（每一条都非 null）。
 kind: version_matrix
 schema_version: 1
-version: 2                  # 基线修订号（单调递增）
+version: 3                  # 基线修订号（单调递增）
 status: blocked
 captured_at: null
 blocked:
   reason: >-
-    控制器固件与示教器版本只能在真机窗口现场读取（示教器界面 / 控制器查询），本次窗口不可用
-    （192.168.1.18 与 192.168.1.19 均 ping 100% 丢包、TCP 8080 超时），故这两个条目仍为 null，
+    控制器固件与示教器版本只能在真机窗口现场读取（示教器界面 / 控制器查询）；
+    2026-11-13 窗口不可用（192.168.1.18 与 192.168.1.19 均 ping 100% 丢包、TCP 8080 超时），
+    2026-11-19 连通性已恢复（远端主机 ping 正常、TCP 8080 可连、RM-API2 握手成功），
+    但**本轮未读取控制器固件与示教器版本**，这两个条目仍为 null，
     整张矩阵**未冻结**（status 保持 blocked，不得声称已冻结）。工具链侧与 SDK 版本已在本机核实并回填。
   attempted_actions:
     - "本机实测：rm_api_version() 返回 b'1.1.7'（RM-API2 1.1.7 到位，.deps/rm_api2/libapi_c.so，sha256 396913cc1a839e948ca58e02525f9098e86026e5b0f62d2561acc3de53105aac）"
@@ -20,7 +22,8 @@ blocked:
     - "本机实测：python3 -V = 3.10.12；/etc/os-release = Ubuntu 22.04.4 LTS；uname -r = 5.15.0-139-generic x86_64"
     - "本机实测：.deps/libstdcxx/libstdc++.so.6.0.33 导出最高 GLIBCXX_3.4.33（满足 nanobind 0.35 需要的 3.4.31+）"
     - "上游复核：/tmp/rmrepo（ros2_rm_robot humble 分支）git describe = humble1.7.1"
-    - "门禁3 网络连通：ping 192.168.1.18 / 192.168.1.19 均 100% 丢包 → 无法读取控制器固件与示教器版本"
+    - "门禁3 网络连通（2026-11-13）：ping 192.168.1.18 / 192.168.1.19 均 100% 丢包 → 无法读取控制器固件与示教器版本"
+    - "2026-11-19 复测（远端主机）：连通性恢复（ping 正常 / TCP 8080 可连 / RM-API2 握手成功），但**控制器固件与示教器版本仍未读取**（需示教器界面或 rm_get_arm_software_info）"
   next_action: >-
     真机窗口内读取控制器固件版本（示教器"系统信息"或 rm_get_arm_software_info）与示教器版本，
     回填本文件并把 status 改为 measured（届时全部 9 个条目都必须非 null）
