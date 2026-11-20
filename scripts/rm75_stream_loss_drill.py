@@ -163,9 +163,12 @@ def main(argv: Optional[list] = None) -> int:
         try:
             res = link.set_realtime_push_enabled(False)
             cut_at[0] = time.time()
+            # 与执行器主时钟**同一时钟域**（perf_counter）：用于计算
+            # 「关主动上报 → 判流」时延（编排器 scripts/rm75_window_run.py 读取）。
             cut_result[0] = {"status": res.get("status"),
                               "reason": res.get("reason"),
-                              "sdk_calls": res.get("sdk_calls")}
+                              "sdk_calls": res.get("sdk_calls"),
+                              "cut_at_perf": time.perf_counter()}
         finally:
             try:
                 link.close()
@@ -184,6 +187,19 @@ def main(argv: Optional[list] = None) -> int:
 
     events = report.get("events") or []
     stream_lost = [e for e in events if e.get("type") == "feedback_stream_lost"]
+    safety_events = [e for e in events
+                     if str(e.get("type") or "").startswith("safety_")]
+    l4_action = None
+    for e in safety_events:
+        if str(e.get("type") or "") == "safety_l4_emergency_stop":
+            l4_action = "rm_set_arm_stop"
+            break
+    stop_latency_ms = None
+    cut_perf = (cut_result[0] or {}).get("cut_at_perf")
+    if cut_perf is not None and stream_lost:
+        lost_t = stream_lost[0].get("t")
+        if isinstance(lost_t, (int, float)) and not isinstance(lost_t, bool):
+            stop_latency_ms = round((float(lost_t) - float(cut_perf)) * 1000.0, 3)
     evidence = {
         "schema": SCHEMA,
         "mode": _evidence_mode(executor_cli),
@@ -196,6 +212,9 @@ def main(argv: Optional[list] = None) -> int:
         "events": [e.get("type") for e in events],
         "stream_lost": bool(stream_lost),
         "stream_lost_evidence": stream_lost[:2],
+        "safety_events": safety_events[:4],
+        "l4_action": l4_action,
+        "stop_latency_ms": stop_latency_ms,
         "wall_s": round(time.time() - t0, 3),
         "trajectory": traj_path,
         "expectation": "关闭主动上报后，反馈龄期越过 STREAM_STOP_MS(200 ms) → L4 断流 → rm_set_arm_stop",
