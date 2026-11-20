@@ -1,10 +1,16 @@
 {
-  "abi_spec_sha256": "55db9ea39fc02e0b1a3b52a4946cf10fb38958eac4e02a225e442c8e95cf2327",
+  "abi_spec_sha256": "66a6549109d98765142ff5cb35ec50223de6a02c94bdf3bbbdf7097cbd60607d",
   "sdk": {
     "name": "RM-API2",
     "version": "1.1.7"
   },
   "structs": {
+    "rm_algorithm_version_t": {
+      "fields": {
+        "version": 0
+      },
+      "size": 20
+    },
     "rm_arm_all_state_t": {
       "fields": {
         "err": 140,
@@ -16,6 +22,19 @@
       },
       "size": 240
     },
+    "rm_arm_software_version_t": {
+      "fields": {
+        "algorithm_info": 30,
+        "com_info": 135,
+        "ctrl_info": 50,
+        "dynamic_info": 90,
+        "plan_info": 95,
+        "product_version": 0,
+        "program_info": 175,
+        "robot_controller_version": 20
+      },
+      "size": 215
+    },
     "rm_current_arm_state_t": {
       "fields": {
         "err": 68,
@@ -23,6 +42,12 @@
         "pose": 0
       },
       "size": 168
+    },
+    "rm_dynamic_version_t": {
+      "fields": {
+        "model_version": 0
+      },
+      "size": 5
     },
     "rm_err_t": {
       "fields": {
@@ -206,6 +231,13 @@
         "robot_controller_version": 12
       },
       "size": 16
+    },
+    "rm_software_build_info_t": {
+      "fields": {
+        "build_time": 0,
+        "version": 20
+      },
+      "size": 40
     },
     "rm_udp_aloha_state_t": {
       "fields": {

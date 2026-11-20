@@ -107,11 +107,12 @@ CORE_SYMBOLS = (
     "rm_set_self_collision_enable",
 )
 
-#: 支持层符号（21 个，不计入 22）
+#: 支持层符号（22 个，不计入 22）
 SUPPORT_SYMBOLS = (
     "rm_set_log_call_back",
     "rm_set_timeout",
     "rm_get_robot_info",
+    "rm_get_arm_software_info",
     "rm_get_realtime_push",
     "rm_realtime_arm_state_call_back",
     # --- 夹爪快路径
@@ -340,7 +341,7 @@ def test_codegen_regenerate_is_byte_identical(spec_path, pkg_root, tmp_path):
 
 
 def test_symbol_table_contains_core_and_support_symbols(generated_module):
-    """22 核心符号 + 21 支持符号必须全部在符号表里。"""
+    """22 核心符号 + 22 支持符号必须全部在符号表里。"""
     symbols = generated_module.SYMBOLS
     for name in CORE_SYMBOLS:
         assert name in symbols, "符号表缺少核心符号 %s" % name

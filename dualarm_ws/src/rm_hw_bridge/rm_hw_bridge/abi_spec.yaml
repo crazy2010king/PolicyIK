@@ -348,6 +348,36 @@ structs:
       - {name: force_type, type: rm_force_type_e}
       - {name: robot_controller_version, type: uint8}
 
+  # ---- 机械臂软件信息（版本矩阵读数；厂商头文件 rm_define.h 逐字一致）----
+  # 全部成员都是 char 数组 ⇒ 天然对齐 1，结构体无填充字节。
+  rm_algorithm_version_t:
+    doc: 算法库版本信息（厂商头文件 rm_define.h）
+    fields:
+      - {name: version, type: char, count: 20, doc: "算法库版本号"}
+
+  rm_software_build_info_t:
+    doc: 软件构建信息（编译时间 + 版本号；厂商头文件 rm_define.h）
+    fields:
+      - {name: build_time, type: char, count: 20, doc: "编译时间"}
+      - {name: version, type: char, count: 20, doc: "版本号"}
+
+  rm_dynamic_version_t:
+    doc: 动力学模型版本信息（厂商头文件 rm_define.h）
+    fields:
+      - {name: model_version, type: char, count: 5, doc: "动力学模型版本号"}
+
+  rm_arm_software_version_t:
+    doc: 机械臂软件信息（厂商头文件 rm_define.h，字段顺序逐字一致；全 char 数组 ⇒ size 215）
+    fields:
+      - {name: product_version, type: char, count: 20, doc: "机械臂型号"}
+      - {name: robot_controller_version, type: char, count: 10, doc: "机械臂控制器版本（四代控制器为 4.0）"}
+      - {name: algorithm_info, type: rm_algorithm_version_t, doc: "算法库信息"}
+      - {name: ctrl_info, type: rm_software_build_info_t, doc: "ctrl 层软件信息"}
+      - {name: dynamic_info, type: rm_dynamic_version_t, doc: "动力学版本（三代）"}
+      - {name: plan_info, type: rm_software_build_info_t, doc: "plan 层软件信息（三代）"}
+      - {name: com_info, type: rm_software_build_info_t, doc: "communication 模块软件信息（四代）"}
+      - {name: program_info, type: rm_software_build_info_t, doc: "流程图编程模块软件信息（四代）"}
+
 # ---------------------------------------------------------------------------
 # 回调函数指针类型
 # ---------------------------------------------------------------------------
@@ -532,6 +562,14 @@ functions:
     args:
       - {name: handle, type: "rm_robot_handle*"}
       - {name: state, type: bool}
+
+  # ---- 版本矩阵读数（**纯查询**符号：只读控制器返回的结构体字符串）
+  rm_get_arm_software_info:
+    doc: 获取机械臂软件信息（产品/控制器/算法/ctrl/动力学/plan/com/流程图 版本与编译时间）
+    ret: int
+    args:
+      - {name: handle, type: "rm_robot_handle*"}
+      - {name: software_info, type: "rm_arm_software_version_t*"}
 
   # ------------------------------------------------------------------ 夹爪快路径
   # 厂商头文件 rm_interface.h 的 GripperControl 组：手爪控制协议与末端 modbus 互斥。

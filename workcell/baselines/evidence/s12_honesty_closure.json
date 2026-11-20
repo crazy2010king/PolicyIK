@@ -38,20 +38,20 @@
           "kind": "requirement_notes",
           "id": "R004",
           "status": "active",
-          "detail": "R004 requirement notes（gsd_requirement_get R004 / .gsd/state-manifest.json requirements[R004].notes）保留「真机可达路径（真实快照数值 / 下发后驱动器读回）因本窗口真机不可达仍未实证，R004 保持 active，待真机窗口按 S02/S03 验收口径补齐」的未闭合口径；status=active 未被改写为 validated。",
-          "command": "gsd_requirement_get R004",
+          "detail": "R004 requirement notes 保留「真机可达路径（真实快照数值 / 下发后驱动器读回）因本窗口真机不可达仍未实证，R004 保持 active，待真机窗口按 S02/S03 验收口径补齐」的未闭合口径；status=active 未被改写为 validated。切片收尾阶段（closeout）另用 gsd_requirement_update 把「电子围栏能力缺口」显式补进 R004 notes（厂商 SDK 有 fence 符号但 rm_hw_bridge/contract.yaml 三段零绑定 → 当前实现无法下发电子围栏；归属 M002-o62zc6 技术债），status 仍为 active。",
+          "command": "gsd_requirement_get R004；gsd_requirement_update R004（notes 追加电子围栏能力缺口声明）",
           "exit_code": 0
         },
         {
           "kind": "requirement_notes",
           "id": "R008",
           "status": "active",
-          "detail": "R008 requirement notes 末句为「未实证：真机版崩溃隔离（rm_runtime 执行中 kill -9 rm_planner）属真机窗口，留待 S06/S09 回填」；status=active，validation=mapped 未改写。",
-          "command": "gsd_requirement_get R008",
+          "detail": "R008 requirement notes 末句为「未实证：真机版崩溃隔离（rm_runtime 执行中 kill -9 rm_planner）属真机窗口，留待 S06/S09 回填」；status=active，validation=mapped 未改写。切片收尾阶段（closeout）另用 gsd_requirement_update 把该未闭合项的归属与回填位置（docs §7 该行 + 真机窗口 kill -9 演练）写实，status/validation 未改。",
+          "command": "gsd_requirement_get R008；gsd_requirement_update R008（notes 写实未闭合归属与回填位置）",
           "exit_code": 0
         }
       ],
-      "caveat": "docs §7 与需求 notes 均只做**声明**；R004 电子围栏能力缺口与 R008 真机崩溃隔离**未实证**（见 honesty_statement）。需求 notes 的电子围栏缺口细节以 docs §7 第 360 行为准（notes 侧记述为「真机可达路径未实证」的总口径）。"
+      "caveat": "docs §7 与需求 notes 均只做**声明**；R004 电子围栏能力缺口与 R008 真机崩溃隔离**未实证**（见 honesty_statement）。需求 notes 与 docs §7 现采用同一套措辞：R004 notes 已显式写入电子围栏能力缺口与 M002-o62zc6 归属，R008 notes 已显式写入「未实证（保持 active）」与真机窗口 kill -9 演练的回填位置。"
     },
 
     {
@@ -118,6 +118,14 @@
           "detail": "顶层键：evidence / exit_code / mode / next_action / problem_segments / reason / segments / status / verdict。汇总键 problem_segments 内容仅 1 项且为 blocked 段 baselines，每项含 id / verdict / reason / next_action。",
           "command": "python3 scripts/s12_honesty_assert.py",
           "exit_code": 0
+        },
+        {
+          "kind": "report",
+          "file": "build/reports/s09_regression.json",
+          "detail": "切片收尾阶段（closeout）重跑一键回归并落盘到规范路径：顶层键同样含 problem_segments（内容仅 baselines 一项，verdict=blocked），status=blocked、exit_code=3、reason「有段因外部条件未满足被阻塞（blocked 段 1 个：baselines）」——证明汇总键由 aggregate → run_regression → CLI 落盘链路自然传导（T3 要求），且未改段结论去凑 0。",
+          "command": "python3 scripts/rm_regression.py --out build/reports/s09_regression.json",
+          "exit_code": 3,
+          "duration_ms": 53612
         },
         {
           "kind": "assertion",

@@ -1,7 +1,7 @@
 """RM-API2 ctypes 绑定（**自动生成，请勿手改**）。
 
 源头: rm_hw_bridge/abi_spec.yaml
-abi_spec.yaml sha256: 55db9ea39fc02e0b1a3b52a4946cf10fb38958eac4e02a225e442c8e95cf2327
+abi_spec.yaml sha256: 66a6549109d98765142ff5cb35ec50223de6a02c94bdf3bbbdf7097cbd60607d
 SDK: RM-API2 1.1.7
 
 重新生成: python3 -m rm_hw_bridge.codegen --spec <abi_spec.yaml> --out <dir>
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import ctypes
 
-SPEC_SHA256 = "55db9ea39fc02e0b1a3b52a4946cf10fb38958eac4e02a225e442c8e95cf2327"
+SPEC_SHA256 = "66a6549109d98765142ff5cb35ec50223de6a02c94bdf3bbbdf7097cbd60607d"
 SDK_NAME = "RM-API2"
 SDK_VERSION = "1.1.7"
 
@@ -372,6 +372,42 @@ class rm_robot_info_t(ctypes.Structure):
         ("robot_controller_version", ctypes.c_uint8),
     ]
 
+class rm_algorithm_version_t(ctypes.Structure):
+    """算法库版本信息（厂商头文件 rm_define.h）"""
+
+    _fields_ = [
+        ("version", (ctypes.c_char * 20)),  # 算法库版本号
+    ]
+
+class rm_software_build_info_t(ctypes.Structure):
+    """软件构建信息（编译时间 + 版本号；厂商头文件 rm_define.h）"""
+
+    _fields_ = [
+        ("build_time", (ctypes.c_char * 20)),  # 编译时间
+        ("version", (ctypes.c_char * 20)),  # 版本号
+    ]
+
+class rm_dynamic_version_t(ctypes.Structure):
+    """动力学模型版本信息（厂商头文件 rm_define.h）"""
+
+    _fields_ = [
+        ("model_version", (ctypes.c_char * 5)),  # 动力学模型版本号
+    ]
+
+class rm_arm_software_version_t(ctypes.Structure):
+    """机械臂软件信息（厂商头文件 rm_define.h，字段顺序逐字一致；全 char 数组 ⇒ size 215）"""
+
+    _fields_ = [
+        ("product_version", (ctypes.c_char * 20)),  # 机械臂型号
+        ("robot_controller_version", (ctypes.c_char * 10)),  # 机械臂控制器版本（四代控制器为 4.0）
+        ("algorithm_info", rm_algorithm_version_t),  # 算法库信息
+        ("ctrl_info", rm_software_build_info_t),  # ctrl 层软件信息
+        ("dynamic_info", rm_dynamic_version_t),  # 动力学版本（三代）
+        ("plan_info", rm_software_build_info_t),  # plan 层软件信息（三代）
+        ("com_info", rm_software_build_info_t),  # communication 模块软件信息（四代）
+        ("program_info", rm_software_build_info_t),  # 流程图编程模块软件信息（四代）
+    ]
+
 # ---------------------------------------------------------------- 回调类型
 # 日志回调（va_list 在 x86-64 SysV 上以寄存器保存，ctypes 侧按 void* 近似传递）
 rm_log_callback_ptr = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
@@ -399,6 +435,10 @@ SYMBOLS = {
     },
     "rm_get_arm_current_trajectory": {
         "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_float)],
+        "restype": ctypes.c_int,
+    },
+    "rm_get_arm_software_info": {
+        "argtypes": [ctypes.POINTER(rm_robot_handle), ctypes.POINTER(rm_arm_software_version_t)],
         "restype": ctypes.c_int,
     },
     "rm_get_current_arm_state": {

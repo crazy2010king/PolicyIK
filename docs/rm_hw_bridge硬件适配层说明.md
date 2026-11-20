@@ -21,7 +21,7 @@
 | 跑夹爪离线证据链（三段断言，mode=fake） | `python3 scripts/gripper_offline_evidence.py --out build/reports/s05_offline_gripper.json` |
 | 复核白/黑名单静态审计 | `python3 -m rm_hw_bridge.audit --repo`（退出码 0 = 零违规，3 = 有违规） |
 | 看 ABI 唯一真值 | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/abi_spec.yaml` |
-| 看符号契约唯一真值（22 核心 + 21 支持 + 黑名单） | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml` |
+| 看符号契约唯一真值（22 核心 + 22 支持 + 黑名单） | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml` |
 | 看生成物（ctypes 绑定 / 布局黄金表） | `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/generated/` |
 | 重新生成绑定（改了 abi_spec.yaml 之后） | `python3 -m rm_hw_bridge.codegen --spec dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/abi_spec.yaml --out dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/generated` |
 | 检查生成物是否漂移 | 同上加 `--check`（漂移时 stderr 打印「生成物漂移:」清单） |
@@ -89,13 +89,13 @@ rmctl（体验层：规划 / 基线 / CLI）
 
 ---
 
-## 3. 符号清单（22 核心 + 21 支持）
+## 3. 符号清单（22 核心 + 22 支持）
 
 > **以 `rm_hw_bridge/contract.yaml` 为唯一真值**（下表是它的人类可读快照；
 > 代码里不硬编码任何符号名，装载器与审计器都只读契约文件）。
-> 契约自带自校验：`limits.core_count = 22`、`limits.support_count = 21`。
+> 契约自带自校验：`limits.core_count = 22`、`limits.support_count = 22`。
 > **core 22 个与黑名单 13 个一字未动**（R003 结论原样成立）；本次扩容只动
-> **支持层**（5 → 21）：夹爪快路径 6 + Modbus 主路径 6 + RM Plus 2 + 工具端电压 2。
+> **支持层**（5 → 22）：夹爪快路径 6 + Modbus 主路径 6 + RM Plus 2 + 工具端电压 2 + 版本矩阵读数 1。
 
 ### 3.1 核心符号（恰好 22 个，缺一即契约破损）
 
@@ -124,13 +124,14 @@ rmctl（体验层：规划 / 基线 / CLI）
 | 21 | `rm_set_collision_state` | 碰撞检测分级（**安全开关**，0=不检测，8=最灵敏） | 0..8 |
 | 22 | `rm_set_self_collision_enable` | 自碰撞检测使能（**安全开关**） | bool |
 
-### 3.2 支持层符号（21 个，不计入 22，但同样受白名单约束）
+### 3.2 支持层符号（22 个，不计入 22，但同样受白名单约束）
 
 | 符号 | 为什么必须允许 |
 |---|---|
 | `rm_set_log_call_back` | 接管 SDK 的 printf 噪声，避免污染 `rmctl` 输出与日志 |
 | `rm_set_timeout` | SDK 通信超时：真机不可达时**可控地快速失败**，而不是无限挂住 |
 | `rm_get_robot_info` | 版本矩阵 / 机型（判定控制器固件与机型是否匹配） |
+| `rm_get_arm_software_info` | 控制器/软件版本矩阵读数（产品/控制器/算法库/ctrl/动力学/plan/com/流程图 版本与编译时间；**纯查询**） |
 | `rm_get_realtime_push` | 主动上报配置回读（下发后确认真的生效） |
 | `rm_realtime_arm_state_call_back` | UDP 主动上报回调注册（**进程级全局单例**，见 §8） |
 | **夹爪快路径** | |

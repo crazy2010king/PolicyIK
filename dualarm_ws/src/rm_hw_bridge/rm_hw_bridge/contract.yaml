@@ -11,7 +11,7 @@
 #
 # 三个分区的语义：
 #   core     —— **恰好 22** 个核心符号，计入 limits.core_count；缺一即契约破损。
-#   support  —— 工程必需但**不计入 22**（共 21 个），必须显式标注理由；同样受白名单约束。
+#   support  —— 工程必需但**不计入 22**（共 22 个），必须显式标注理由；同样受白名单约束。
 #   blacklist—— **禁止调用**（静态审计按「调用形态」拦截）。
 #
 # forbidden_imports 的 scope 语义：
@@ -139,6 +139,10 @@ support:
     reason: 版本矩阵 / 机械臂型号（判定控制器固件与机型是否匹配）
     unit: "-"
     argtypes: "handle: rm_robot_handle*, robot_info: rm_robot_info_t* -> int"
+  - name: rm_get_arm_software_info
+    reason: 控制器/软件版本矩阵读数（产品版本/控制器版本/算法库/ctrl/动力学/plan/com/流程图 版本与编译时间）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, software_info: rm_arm_software_version_t* -> int"
   - name: rm_get_realtime_push
     reason: 主动上报配置回读（下发后确认真的生效）
     unit: "-"
@@ -297,4 +301,4 @@ rules:
 # ---------------------------------------------------------------------------
 limits:
   core_count: 22
-  support_count: 21
+  support_count: 22

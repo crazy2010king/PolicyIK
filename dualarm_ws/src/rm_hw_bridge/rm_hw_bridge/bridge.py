@@ -406,6 +406,28 @@ def _normalize_deg7(deg7: Any) -> Any:
     return values, None
 
 
+def _decode_version_text(raw: Any) -> Optional[str]:
+    """版本字段解码：``char[]`` → ``str``；**空串 → None**。
+
+    SDK 返回的版本字符串是定长 ``char`` 数组（ctypes 读出为 ``bytes``，
+    已按第一个 NUL 截断）。**空串一律转 ``None``** —— 绝不以 ``""``
+    或编造值冒充版本（诚实降级硬约束）。
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", errors="replace")
+    elif isinstance(raw, str):
+        text = raw
+    else:
+        try:
+            text = bytes(raw).decode("utf-8", errors="replace")
+        except Exception:  # pragma: no cover - 防御
+            return None
+    text = text.strip()
+    return text or None
+
+
 def _find_sdk(ws: Optional[str] = None, env: Optional[Dict[str, str]] = None):
     """找 SDK；找不到返回 ``(None, 候选路径列表)``。"""
     candidates = loader.sdk_candidates(ws=ws, env=env)
@@ -1288,6 +1310,108 @@ class ArmLink:
             arm_err=arm_err,
             arm_current_status=(int(status_code) if status_code is not None else None),
             arm_current_status_name=status_name,
+        )
+
+    # ------------------------------------------------- 固件/软件版本读数（只读）
+    def arm_software_info(self) -> Dict[str, Any]:
+        """读取控制器/软件版本矩阵（**纯查询**，不运动、不下发）。
+
+        数据源：``rm_get_arm_software_info``（**support 名单**，非 core 22）——
+        厂商头文件 ``rm_interface.h`` 的真实导出符号。
+
+        返回::
+
+            {
+              "status": "ok" | "error",
+              "product_version": str | None,
+              "robot_controller_version": str | None,
+              "algorithm_version": str | None,
+              "ctrl_version": str | None,
+              "ctrl_build_time": str | None,
+              "dynamic_model_version": str | None,
+              "plan_version": str | None,
+              "plan_build_time": str | None,
+              "com_version": str | None,
+              "program_version": str | None,
+              "reason": str, "next_action": str,
+            }
+
+        **诚实降级**：SDK 返回的**空字符串一律转 ``None``**
+        （绝不以 ``""`` 或编造值冒充版本）；任何失败路径都不返回版本字段。
+        """
+        empty = {
+            "product_version": None,
+            "robot_controller_version": None,
+            "algorithm_version": None,
+            "ctrl_version": None,
+            "ctrl_build_time": None,
+            "dynamic_model_version": None,
+            "plan_version": None,
+            "plan_build_time": None,
+            "com_version": None,
+            "program_version": None,
+        }
+        if not self.connected:
+            res = self._not_connected("arm_software_info")
+            res.update(empty)
+            return res
+
+        sym = "rm_get_arm_software_info"
+        fn = getattr(self._bridge.binding, sym, None)
+        if fn is None:
+            res = errors.error(
+                "契约清单缺少符号 %s，无法读取控制器/软件版本" % sym,
+                "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep %s`），"
+                "重新物化 SDK 后重跑" % sym,
+                [], symbol=sym, sdk_calls=0,
+            )
+            res.update(empty)
+            return res
+
+        info = gen.rm_arm_software_version_t()
+        try:
+            rc = int(fn(self._handle, ctypes.pointer(info)) or 0)
+        except Exception as exc:  # noqa: BLE001 - SDK 调用异常统一转 error
+            res = errors.error(
+                "%s 调用异常：%s" % (sym, exc),
+                "确认控制器在线、句柄有效后重跑 `rmctl connect --arm %s --json`" % (
+                    self.endpoint.get("arm", "left"),
+                ),
+                [repr(exc)], symbol=sym, rc=None, sdk_calls=1,
+            )
+            res.update(empty)
+            return res
+        if rc != 0:
+            res = errors.error(
+                "%s 返回 %d（未连接到控制器 / 通信失败）" % (sym, rc),
+                "确认控制器在线、句柄有效后重跑 `rmctl connect --arm %s --json`" % (
+                    self.endpoint.get("arm", "left"),
+                ),
+                ["%s rc=%d" % (sym, rc)], symbol=sym, rc=rc, sdk_calls=1,
+            )
+            res.update(empty)
+            return res
+
+        payload = {
+            "product_version": _decode_version_text(info.product_version),
+            "robot_controller_version": _decode_version_text(
+                info.robot_controller_version),
+            "algorithm_version": _decode_version_text(info.algorithm_info.version),
+            "ctrl_version": _decode_version_text(info.ctrl_info.version),
+            "ctrl_build_time": _decode_version_text(info.ctrl_info.build_time),
+            "dynamic_model_version": _decode_version_text(
+                info.dynamic_info.model_version),
+            "plan_version": _decode_version_text(info.plan_info.version),
+            "plan_build_time": _decode_version_text(info.plan_info.build_time),
+            "com_version": _decode_version_text(info.com_info.version),
+            "program_version": _decode_version_text(info.program_info.version),
+        }
+        known = sorted(k for k, v in payload.items() if v)
+        return errors.ok(
+            "控制器/软件版本读取成功（%d 个版本字段非空）" % len(known),
+            "",
+            ["%s rc=0" % sym, "非空版本字段: %s" % (", ".join(known) or "无")],
+            symbol=sym, rc=0, sdk_calls=1, **payload
         )
 
     # ------------------------------------------------- 主动上报开关（窄接口）

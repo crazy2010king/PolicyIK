@@ -356,7 +356,7 @@ def test_safety_package_has_no_reverse_dependency(repo_root):
 
 
 def test_symbol_lists_unchanged_after_safety_layer_added():
-    """新增安全层后，22 核心 / 21 支持符号名单与黑名单一律不变。"""
+    """新增安全层后，22 核心 / 22 支持符号名单与黑名单一律不变。"""
     from rm_hw_bridge import loader
 
     contract = audit._load_contract()

@@ -11,7 +11,7 @@
 * **建连期接线** —— ``connect()`` 后 ``rm_set_timeout`` 被调用**一次**且传入
   ``1.0 s``（对外秒 → SDK 毫秒，换算只在 ``rm_hw_bridge.bridge`` 一处）；
   超时设置**失败不阻断连接**（但必须留下证据）；
-* **22 + 21 名单与黑名单**（直接读 ``contract.yaml`` 断言；core 22 / 黑名单 13 不变）。
+* **22 + 22 名单与黑名单**（直接读 ``contract.yaml`` 断言；core 22 / 黑名单 13 不变）。
 
 只用**注入的假 SDK**，不依赖 ``.deps/``（gitignored）里的真实 ``.so``。
 """
@@ -126,7 +126,7 @@ def link(fake_lib):
     return link_obj
 
 
-# ------------------------------------------------------- 契约名单（22 + 21）
+# ------------------------------------------------------- 契约名单（22 + 22）
 EXPECTED_CORE = {
     "rm_init",
     "rm_create_robot_arm",
@@ -156,6 +156,7 @@ EXPECTED_SUPPORT = {
     "rm_set_log_call_back",
     "rm_set_timeout",
     "rm_get_robot_info",
+    "rm_get_arm_software_info",
     "rm_get_realtime_push",
     "rm_realtime_arm_state_call_back",
     # --- 夹爪快路径（S05 扩容）
@@ -198,7 +199,7 @@ EXPECTED_BLACKLIST = {
 
 
 def test_contract_core_support_blacklist_unchanged():
-    """**22 核心 + 21 支持 + 13 黑名单符号 + rm_algo_ 前缀**（核心/黑名单不变）。"""
+    """**22 核心 + 22 支持 + 13 黑名单符号 + rm_algo_ 前缀**（核心/黑名单不变）。"""
     contract = loader.load_contract()
     core = loader.core_symbols(contract)
     support = loader.support_symbols(contract)
