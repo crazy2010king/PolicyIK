@@ -1,0 +1,117 @@
+{
+  "schema": "rmctl.rm75_s13_versions_connectivity/1",
+  "status": "blocked",
+  "executed_on": "2026-11-20T11:14:11+00:00",
+  "arm": "left",
+  "controller_software": {
+    "product_version": null,
+    "robot_controller_version": null,
+    "algorithm_version": null,
+    "ctrl_version": null,
+    "ctrl_build_time": null,
+    "dynamic_model_version": null,
+    "plan_version": null,
+    "plan_build_time": null,
+    "com_version": null,
+    "program_version": null
+  },
+  "robot_info": {
+    "arm_dof": null,
+    "arm_model": null,
+    "force_type": null,
+    "robot_controller_version": null
+  },
+  "left_connectivity": {
+    "ip": "192.168.1.18",
+    "port": 8080,
+    "reachable": false,
+    "definition": "reachable = (ping 成功 或 TCP 握手成功)；只判定网络可达性，不据此推断任何其它结论",
+    "ping": {
+      "command": "ping -c 3 -W 1 192.168.1.18",
+      "ok": false,
+      "returncode": 1,
+      "summary": "PING 192.168.1.18 (192.168.1.18) 56(84) bytes of data.\n\n--- 192.168.1.18 ping statistics ---\n3 packets transmitted, 0 received, 100% packet loss, time 2028ms"
+    },
+    "tcp": {
+      "ok": false,
+      "timeout_s": 2.0,
+      "summary": "TCP 连接失败 192.168.1.18:8080（超时 2.0 s）：timed out"
+    }
+  },
+  "right_connectivity": {
+    "ip": "192.168.1.19",
+    "port": 8080,
+    "reachable": false,
+    "definition": "reachable = (ping 成功 或 TCP 握手成功)；只判定网络可达性，不据此推断任何其它结论",
+    "ping": {
+      "command": "ping -c 3 -W 1 192.168.1.19",
+      "ok": false,
+      "returncode": 1,
+      "summary": "PING 192.168.1.19 (192.168.1.19) 56(84) bytes of data.\n\n--- 192.168.1.19 ping statistics ---\n3 packets transmitted, 0 received, 100% packet loss, time 2052ms"
+    },
+    "tcp": {
+      "ok": false,
+      "timeout_s": 2.0,
+      "summary": "TCP 连接失败 192.168.1.19:8080（超时 2.0 s）：timed out"
+    }
+  },
+  "container_image": "172.16.119.20:5000/rwthika/ros2-cuda:humble-desktop-full-v25.08_conda_sonnic_20261110_1124",
+  "source": "远端真机窗口 172.16.119.199:2224 → 容器 ros_dev；脚本 scripts/rm75_s13_versions_probe.py",
+  "method": "rm_hw_bridge.ArmLink 只读读数（rm_get_arm_software_info + rm_get_robot_info，均在 support 名单内）；连通性用 ping -c 3 -W 1 与 TCP 握手（超时 2.0 s）；容器镜像由宿主机 docker inspect 取",
+  "gates": [
+    {
+      "name": "controller_link",
+      "ok": false,
+      "detail": "rm_create_robot_arm 返回无效句柄 id=-1：控制器 192.168.1.18:8080 不可达（控制器离线 / 网络不通）"
+    },
+    {
+      "name": "software_version_read",
+      "ok": false,
+      "detail": "非空版本字段 0 个：无"
+    },
+    {
+      "name": "robot_info_read",
+      "ok": false,
+      "detail": "arm_dof=None, arm_model=None, robot_controller_version=None"
+    },
+    {
+      "name": "left_connectivity_probed",
+      "ok": true,
+      "detail": "left 192.168.1.18 reachable=False"
+    },
+    {
+      "name": "right_connectivity_probed",
+      "ok": true,
+      "detail": "right 192.168.1.19 reachable=False"
+    },
+    {
+      "name": "container_image_captured",
+      "ok": true,
+      "detail": "172.16.119.20:5000/rwthika/ros2-cuda:humble-desktop-full-v25.08_conda_sonnic_20261110_1124"
+    }
+  ],
+  "next_action": "ssh -p 2224 -o ConnectTimeout=8 -o BatchMode=yes zy@172.16.119.199 'docker exec -i ros_dev bash -lc \"cd /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40 && source scripts/rmenv.sh && export RM_API2_LIB=$PWD/../../.deps/rm_api2/libapi_c.so && python3 scripts/rm75_s13_versions_probe.py --arm %s --ip %s --out build/reports/s13_versions\"'\n（远端窗口不可达 / 控制器不可达时，先在远端容器内执行 `ping -c 3 -W 1 192.168.1.18` 与 `python3 scripts/rmctl.py connect --arm left --ip 192.168.1.18 --json` 复核；仍不通则记录为 blocked，**不得**用 dry-run 或合成数据顶替真实读数。）",
+  "honesty": {
+    "no_motion_command_issued": true,
+    "motion_commands_sent": 0,
+    "teachpendant_version_read": false,
+    "notes": [
+      "本轮未读取示教器版本（示教器无自动读数路径，只能人工读屏）。",
+      "本轮未下发任何运动指令（零运动是不可协商的红线）。",
+      "连链时未下发 UDP 主动上报配置，仅读取版本 / 机型信息。",
+      "SDK 版本串逐字来自 rm_get_arm_software_info 读数；SDK 返回空串一律记为 null，未做任何编造或推测。",
+      "容器镜像标签取自宿主机 docker inspect（容器内无 docker CLI）。"
+    ]
+  },
+  "dry_run": false,
+  "link_status": "error",
+  "link_reason": "rm_create_robot_arm 返回无效句柄 id=-1：控制器 192.168.1.18:8080 不可达（控制器离线 / 网络不通）",
+  "evidence": [
+    "sdk: /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.deps/rm_api2/libapi_c.so",
+    "rm_create_robot_arm handle.id=-1",
+    "tcp_reachable=False"
+  ],
+  "operator_notes": [
+    "远端主机侧诊断（只读，2026-11-20）：172.16.119.199 的机器人网段 USB 网卡 enx98fc84e3177a（NM 配置 有线连接 2 = 静态 192.168.1.198/24）当前 NO-CARRIER，宿主机无 192.168.1.0/24 路由 → 容器内 ping/TCP 到 192.168.1.18 与 192.168.1.19 均 100% 丢包 / 连接超时；宿主机的 enp8s0(192.168.123.199) 与 192.168.123.18/.19 亦无 ARP 应答。该网卡链路中断是本轮左右臂均不可达的直接原因。"
+  ]
+}

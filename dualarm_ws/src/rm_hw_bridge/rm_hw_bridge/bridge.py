@@ -1414,6 +1414,88 @@ class ArmLink:
             symbol=sym, rc=0, sdk_calls=1, **payload
         )
 
+    # ------------------------------------------------- 机型 / 控制器代数（只读）
+    def arm_robot_info(self) -> Dict[str, Any]:
+        """读取机械臂基本信息（机型 / 自由度 / 控制器代数）。
+
+        数据源：``rm_get_robot_info``（**support 名单**，非 core 22）。
+
+        返回::
+
+            {
+              "status": "ok" | "error",
+              "arm_dof": int | None,          # 自由度（RM75 = 7）
+              "arm_model": int | None,        # 机型编号（厂商枚举）
+              "force_type": int | None,       # 力传感器类型
+              "robot_controller_version": int | None,  # 控制器代数（3 = 三代）
+              "reason": str, "next_action": str,
+            }
+
+        **纯查询**：不运动、不下发；任何失败路径都不返回数值（字段为 ``None``）。
+        """
+        empty = {
+            "arm_dof": None,
+            "arm_model": None,
+            "force_type": None,
+            "robot_controller_version": None,
+        }
+        if not self.connected:
+            res = self._not_connected("arm_robot_info")
+            res.update(empty)
+            return res
+
+        sym = "rm_get_robot_info"
+        fn = getattr(self._bridge.binding, sym, None)
+        if fn is None:
+            res = errors.error(
+                "契约清单缺少符号 %s，无法读取机型/控制器代数" % sym,
+                "确认所用 .so 为 RM-API2 1.1.7（`nm -D <so> | grep %s`），"
+                "重新物化 SDK 后重跑" % sym,
+                [], symbol=sym, sdk_calls=0,
+            )
+            res.update(empty)
+            return res
+
+        info = gen.rm_robot_info_t()
+        try:
+            rc = int(fn(self._handle, ctypes.pointer(info)) or 0)
+        except Exception as exc:  # noqa: BLE001 - SDK 调用异常统一转 error
+            res = errors.error(
+                "%s 调用异常：%s" % (sym, exc),
+                "确认控制器在线、句柄有效后重跑 `rmctl connect --arm %s --json`" % (
+                    self.endpoint.get("arm", "left"),
+                ),
+                [repr(exc)], symbol=sym, rc=None, sdk_calls=1,
+            )
+            res.update(empty)
+            return res
+        if rc != 0:
+            res = errors.error(
+                "%s 返回 %d（未连接到控制器 / 通信失败）" % (sym, rc),
+                "确认控制器在线、句柄有效后重跑 `rmctl connect --arm %s --json`" % (
+                    self.endpoint.get("arm", "left"),
+                ),
+                ["%s rc=%d" % (sym, rc)], symbol=sym, rc=rc, sdk_calls=1,
+            )
+            res.update(empty)
+            return res
+
+        payload = {
+            "arm_dof": int(info.arm_dof),
+            "arm_model": int(info.arm_model),
+            "force_type": int(info.force_type),
+            "robot_controller_version": int(info.robot_controller_version),
+        }
+        return errors.ok(
+            "机型/控制器代数读取成功（arm_dof=%s, arm_model=%s, "
+            "robot_controller_version=%s）" % (
+                payload["arm_dof"], payload["arm_model"],
+                payload["robot_controller_version"]),
+            "",
+            ["%s rc=0" % sym],
+            symbol=sym, rc=0, sdk_calls=1, **payload
+        )
+
     # ------------------------------------------------- 主动上报开关（窄接口）
     def set_realtime_push_enabled(self, enabled: bool,
                                   port: Optional[int] = None,
