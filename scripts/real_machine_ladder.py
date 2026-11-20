@@ -63,7 +63,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -344,20 +343,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _safe_exit(code: int) -> None:
-    """退出进程（**绕开解释器清理阶段**）。
+    """退出进程（**绕开解释器清理阶段**）——实现见 :mod:`rm75_drake.device.teardown`。"""
+    from rm75_drake.device.teardown import safe_exit
 
-    ⚠️ 真机实测：厂商 SDK 的 UDP 接收线程是**原生线程**，在解释器退出阶段
-    仍可能回调已释放的 Python 对象 ⇒ ``Fatal Python error: Segmentation fault``，
-    且崩溃时机随机（可能发生在报告写盘之前 ⇒ 证据丢失）。
-    ⇒ 报告与输出都已 flush 之后，用 ``os._exit`` 直接退出：
-    句柄、socket、线程全部由内核回收（不会段错误，也不会丢证据）。
-    """
-    try:
-        sys.stdout.flush()
-        sys.stderr.flush()
-    except Exception:  # pragma: no cover - 收尾尽力而为
-        pass
-    os._exit(int(code))
+    safe_exit(code)
 
 
 def _covered_metrics(results: Sequence[Any]) -> List[str]:

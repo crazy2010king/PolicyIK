@@ -28,6 +28,7 @@ cycle 非 5 的倍数」。真机实测（RM75-B / 192.168.1.18 / 控制器代�
 
 from __future__ import annotations
 
+import socket
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from .state_source import StateSource
 
 __all__ = [
     "REALTIME_PUSH_CYCLE_UNIT_MS",
+    "detect_local_ip",
     "RealtimePushSettings",
     "RealtimePeriodStats",
     "decode_realtime_state",
@@ -53,6 +55,26 @@ __all__ = [
 #: ``cycle=1`` ⇒ 实测 4.998 ms；``cycle=5`` ⇒ 实测 24.954 ms。
 #: ⇒ 期望上报周期（ms）= ``cycle × 5``。
 REALTIME_PUSH_CYCLE_UNIT_MS = 5.0
+
+
+def detect_local_ip(target_ip: str, target_port: int = 8080) -> str:
+    """探测本机在 ``target_ip`` 所在网段上的**源地址**。
+
+    做法：建一个 UDP socket 并 ``connect`` 到机械臂（不真正发包），
+    再读 ``getsockname()`` ⇒ 内核选出的源地址就是机械臂看到的本机地址。
+    这是 UDP 主动上报**必填**的「上报目标 IP」（填机械臂自己的 IP 是经典坑）。
+
+    异常
+    ----
+    OSError
+        探测失败（调用方应显式报错，不静默兜底）。
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect((str(target_ip), int(target_port)))
+        return str(probe.getsockname()[0])
+    finally:
+        probe.close()
 
 
 @dataclass(frozen=True)

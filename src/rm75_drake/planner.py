@@ -185,6 +185,15 @@ class PlanOptions:
         IK 阶段参数（语义见 :func:`rm75_drake.planning.ik.solve_ik`）。
     ik_initial_posture:
         IK 的显式种子位形；``None`` → 用 IK 模块的抬肘名义姿态。
+    acceleration_limits:
+        重定时用的**逐轴加速度上限**（rad/s²，7 维）。
+        ``None`` ⇒ 用 :data:`rm75_drake.planning.trajectory.DEFAULT_ACCELERATION_LIMITS_RAD_S2`
+        （J1/J2 6.0、J3–J7 8.0；自研默认，真机实测后应收紧）。
+
+        ⚠️ **单一真相源纪律**：真机路径应把它与 ``devices/*.yaml`` 的
+        ``accel_limits`` 保持一致——否则安全闸 G3 会与规划结果打架
+        （真机实测：规划用 6.0/8.0、安全闸用 2.0/2.5 ⇒ 一次 53 点轨迹被
+        钳位 87 次，跟踪误差与规划预期完全脱节）。
     region_options:
         IRIS 旋钮字典（键取自
         :data:`rm75_drake.planning.regions.OVERRIDABLE_OPTIONS`），
@@ -208,8 +217,20 @@ class PlanOptions:
     ik_initial_posture: Optional[Tuple[float, ...]] = None
     region_options: Mapping[str, Any] = field(default_factory=dict)
     collision_edge_step_size: float = 0.01
+    acceleration_limits: Optional[Tuple[float, ...]] = None
 
     def __post_init__(self) -> None:
+        if self.acceleration_limits is not None:
+            values = tuple(float(v) for v in self.acceleration_limits)
+            if len(values) != 7 or not all(
+                math.isfinite(v) and v > 0.0 for v in values
+            ):
+                raise PlannerError(
+                    "acceleration_limits 必须是 7 维正有限序列（rad/s²），实际："
+                    f"{self.acceleration_limits!r}",
+                    reason="invalid_config",
+                )
+            object.__setattr__(self, "acceleration_limits", values)
         if not math.isfinite(self.region_spacing) or self.region_spacing <= 0.0:
             raise PlannerError(
                 f"region_spacing 必须是正有限值，实际：{self.region_spacing!r}",
@@ -705,6 +726,7 @@ class Planner:
                 robot_name=opts.robot_name,
                 gripper_schedule=opts.gripper_schedule,
                 duration_limit=opts.duration_limit,
+                acceleration_limits=opts.acceleration_limits,
             )
         except _retime.RetimeError as exc:
             reason = _extract_tag(str(exc), "parameterization")

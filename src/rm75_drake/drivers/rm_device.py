@@ -47,6 +47,7 @@ from ..device.metrics import JitterHistogram
 from ..device.safety import (
     ACTION_SLOW_STOP,
     ACTION_STOP,
+    REASON_CURRENT,
     SafetyLimits,
     SafetyState,
     SafetyViolation,
@@ -93,6 +94,15 @@ class RmDeviceDriverConfig:
         是否在每拍末尾对齐到理想节拍栅格（5 ms 透传节拍）。
     max_violations:
         最多保留多少条安全违规（超出后**停止追加**并计数，不静默丢弃）。
+    current_stop_after_ticks:
+        G5 电流闸的**去抖拍数**：连续多少拍电流越限才停机。
+
+        真机实测（RM75-B）：控制器在轨迹起步瞬间会给出**单拍尖峰**
+        （J1 实测 -900 / -2802 mA，个别采样达 10 A 量级，而相邻拍只有几百 mA），
+        瞬时停机会打断正常轨迹 ⇒ 电流闸改为「连续 N 拍越限才停机」
+        （默认 3 拍 = 15 ms，与看门狗的「3 周期告警」同量级）。
+        纯函数安全层（:func:`rm75_drake.device.safety.apply_safety`）语义**不变**，
+        去抖只发生在**驱动层**（谁决定停机的那一层）。
     """
 
     follow: bool = True
@@ -100,6 +110,7 @@ class RmDeviceDriverConfig:
     period_s: float = PERIOD_S
     pace: bool = True
     max_violations: int = 256
+    current_stop_after_ticks: int = 3
 
     def __post_init__(self) -> None:
         period = float(self.period_s)
@@ -117,6 +128,15 @@ class RmDeviceDriverConfig:
         if self.max_violations < 1:
             raise ValueError(
                 f"max_violations 必须 ≥ 1，实际是 {self.max_violations}"
+            )
+        if (
+            isinstance(self.current_stop_after_ticks, bool)
+            or not isinstance(self.current_stop_after_ticks, int)
+            or int(self.current_stop_after_ticks) < 1
+        ):
+            raise ValueError(
+                "current_stop_after_ticks 必须是 ≥ 1 的整数，实际是 "
+                f"{self.current_stop_after_ticks!r}"
             )
 
 
@@ -183,6 +203,7 @@ class RmDeviceDriver(Driver):
         self._jitter = JitterHistogram()
         self._prev_tick_ns: Optional[int] = None
         self._deadline_ns: int = 0
+        self._current_streak = 0
 
     # -- 观测 ------------------------------------------------------------
     @property
@@ -255,6 +276,7 @@ class RmDeviceDriver(Driver):
         self._errors = []
         self._jitter = JitterHistogram()
         self._prev_tick_ns = None
+        self._current_streak = 0
 
     def close(self) -> None:
         """关闭传输层（幂等）。"""
@@ -327,6 +349,37 @@ class RmDeviceDriver(Driver):
             dt_s=self._config.period_s,
         )
         self._record_violations(verdict.violations)
+        command = verdict.command
+
+        # G5 电流闸**去抖**：连续 N 拍越限才停机（抗控制器单拍尖峰）。
+        # 只在「停机原因**仅**来自电流」时去抖；其它停机原因立即停机。
+        stop_violations = [
+            v for v in verdict.violations if v.action == ACTION_STOP
+        ]
+        current_only = bool(stop_violations) and all(
+            v.reason == REASON_CURRENT for v in stop_violations
+        )
+        if current_only:
+            self._current_streak += 1
+            if self._current_streak < int(self._config.current_stop_after_ticks):
+                # 只记录违规，**继续下发本拍指令**（尖峰不算故障）。
+                self._last_velocity = tuple(
+                    (command[i] - self._last_command[i]) / float(self._config.period_s)
+                    for i in range(JOINT_COUNT)
+                )
+                self._last_command = command
+                self._index = index + 1
+                if self._index >= len(samples):
+                    self._phase = PHASE_DONE
+                self._record_tick()
+                self._pace()
+                return DriverState(
+                    joint_positions=command,
+                    seq=int(sample.seq),
+                    t_abs=float(sample.t_abs),
+                )
+        else:
+            self._current_streak = 0
 
         if verdict.action in (ACTION_STOP, ACTION_SLOW_STOP):
             reason = self._worst_reason(verdict.violations)
@@ -339,7 +392,6 @@ class RmDeviceDriver(Driver):
                 f"安全闸触发停机（reason={reason}）", reason=reason
             )
 
-        command = verdict.command
         try:
             self.transport.move_j_canfd(command, follow=self._config.follow)
         except TransportError as exc:

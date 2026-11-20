@@ -33,6 +33,7 @@ from typing import Any, Deque, List, Optional, Sequence, Tuple
 from ..planning.trajectory import JOINT_COUNT
 from .binding import RM_TRIPLE_MODE_E, ArmBinding
 from .config import DeviceConfig
+from .hardware_lock import hardware_lock
 from .sdk import NotAvailableError, SdkAudit, deg_to_rad, rad_to_deg
 
 __all__ = [
@@ -374,6 +375,17 @@ class SdkTransport(ArmTransport):
         self._owns_binding = binding is None
         self._arm: Any = None
         self._state_source: Any = None
+        self._lock: Any = None
+
+    # -- 属性 ------------------------------------------------------------
+    @property
+    def binding(self) -> ArmBinding:
+        """SDK 绑定（已连接时可用；未连接返回 ``None`` 包装前会显式报错）。"""
+        if self._binding is None:
+            raise TransportError(
+                "传输层未初始化 SDK 绑定（先调用 open()）", reason=REASON_NOT_OPEN
+            )
+        return self._binding
 
     # -- 生命周期 --------------------------------------------------------
     def open(self) -> None:
@@ -392,19 +404,34 @@ class SdkTransport(ArmTransport):
         """
         if self._open:
             return
+        # 真机互斥：同一 IP+port 只能一个进程占用（厂商约束）。
+        # 真机实测（2026-11-20）：并发跑第二个控制进程 ⇒ 前一个的
+        # rm_movej_canfd 立刻返回 -2（发送失败）⇒ 长稳作废。
+        # ⇒ 在**建连接**这一步就上锁，覆盖所有真机入口。
+        self._lock = hardware_lock(
+            self.config.arm_ip, holder="rm75_drake SdkTransport"
+        )
+        try:
+            self._lock.__enter__()
+        except Exception:
+            self._lock = None
+            raise
         binding = self._binding
         if binding is None:
             binding = ArmBinding(self.config, sdk=self._sdk, audit=self.audit)
         try:
             report = binding.open()
         except NotAvailableError:
+            self._release_lock()
             raise
         except Exception as exc:
+            self._release_lock()
             raise TransportError(
                 f"SDK 初始化失败：{exc!r}", reason=REASON_SDK_UNAVAILABLE
             ) from exc
         if not report.connected:
             # 连接失败（含「替身没有建连接方法」）⇒ 明确报错，不假装已连上。
+            self._release_lock()
             reason = (
                 REASON_LINK_DOWN
                 if "句柄" in report.detail or "连接" in report.detail
@@ -425,6 +452,7 @@ class SdkTransport(ArmTransport):
         self._closed = True
         self._arm = None
         binding = self._binding
+        self._release_lock()
         if binding is None:
             return
         if self._owns_binding:
@@ -571,6 +599,17 @@ class SdkTransport(ArmTransport):
         )
 
     # -- 内部工具 --------------------------------------------------------
+    def _release_lock(self) -> None:
+        """释放真机互斥锁（幂等；异常吞掉——收尾不应掩盖主错误）。"""
+        lock = self._lock
+        self._lock = None
+        if lock is None:
+            return
+        try:
+            lock.__exit__(None, None, None)
+        except Exception:  # pragma: no cover - 收尾尽力而为
+            pass
+
     def _require_binding(self) -> ArmBinding:
         if self._binding is None:
             raise TransportError(

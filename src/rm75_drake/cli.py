@@ -88,6 +88,7 @@ from .calibration.pipeline import (
     REASON_CALIBRATION_NOT_MEASURED as _REASON_CALIBRATION_NOT_MEASURED,
     UNVERIFIED_CALIBRATION_METRICS as _UNVERIFIED_CALIBRATION_METRICS,
 )
+from .device.sdk import rad_to_deg
 from .device.hardware_gate import (
     SKIP_REASON_HARDWARE_UNREACHABLE,
     UNVERIFIED_HARDWARE_METRICS as _UNVERIFIED_HARDWARE_METRICS,
@@ -262,6 +263,18 @@ def _add_planning_options(parser: argparse.ArgumentParser) -> None:
         help="起点位形（rad，7 项）；默认用场景当前位形",
     )
     parser.add_argument("--output", default=None, help="录制文件输出路径（JSON）")
+    parser.add_argument(
+        "--accel-limits",
+        type=float,
+        nargs=7,
+        metavar=("A1", "A2", "A3", "A4", "A5", "A6", "A7"),
+        default=None,
+        help=(
+            "重定时用的逐轴加速度上限（rad/s²，7 项）——不给则用自研默认"
+            "（J1/J2 6.0、J3–J7 8.0）。**真机路径应与 devices/*.yaml 的"
+            " accel_limits 一致**，否则安全闸 G3 会与规划打架"
+        ),
+    )
     parser.add_argument(
         "--region-spacing",
         type=float,
@@ -1713,6 +1726,16 @@ def _cmd_exec(args: argparse.Namespace) -> int:
         if not probe["reachable"]:
             return _emit_exec_skipped(args, device_config, probe)
 
+    # ── 单一真相源：真机路径的**规划加速度上限**默认取设备配置的 accel_limits
+    #    （否则规划按 6.0/8.0 重定时、安全闸按 2.0/2.5 钳位 ⇒ 两者打架，
+    #      真机实测一次 53 点轨迹被钳位 87 次，跟踪误差与规划预期完全脱节）。
+    if (
+        getattr(args, "accel_limits", None) is None
+        and not args.dry_run
+        and args.recording is None
+    ):
+        args.accel_limits = tuple(float(v) for v in device_config.accel_limits_rad_s2)
+
     # ── 轨迹来源：Planner 或录制文件 ──
     if args.recording is not None:
         trajectory = _exec_trajectory_from_recording(args.recording)
@@ -1725,9 +1748,51 @@ def _cmd_exec(args: argparse.Namespace) -> int:
         trajectory = plan["trajectory"]
         trajectory_source = "planner"
 
-    result = _exec_run_driver(args, device_config, trajectory)
+    # 真机互斥：同一 IP+port 只能一个进程占用（厂商约束）。
+    # 真机实测：并发跑第二个控制进程 ⇒ 前一个的 rm_movej_canfd 立刻 -2。
+    if args.dry_run:
+        result = _exec_run_driver(args, device_config, trajectory)
+    else:
+        from .device.hardware_lock import HardwareLockBusy, hardware_lock
+
+        try:
+            with hardware_lock(
+                device_config.arm_ip, holder="rm75_drake.cli exec"
+            ):
+                result = _exec_run_driver(args, device_config, trajectory)
+        except HardwareLockBusy as exc:
+            print(f"cli: {exc}", file=sys.stderr)
+            return EXIT_FAILURE
     result["trajectory_source"] = trajectory_source
     return _emit_exec_result(args, device_config, result)
+
+
+def _wait_settled(source: Any, timeout_s: float = 5.0, quiet_deg: float = 0.05) -> bool:
+    """等机械臂**停下来**（反馈逐帧变化 < ``quiet_deg``）。
+
+    真机实测：控制器在上一个目标到达前会持续运动；此时下发新轨迹会被
+    **忽略**（旧轨迹仍在跑）⇒ 指令与反馈错位 ⇒ 跟踪误差失真。
+
+    返回
+    ----
+    ``True`` 停稳；``False`` 超时未停稳（调用方据此决定是否继续）。
+    """
+    deadline = time.monotonic() + float(timeout_s)
+    previous = source.latest()
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+        current = source.latest()
+        if current is None or previous is None:
+            previous = current
+            continue
+        delta = max(
+            abs(current.joint_positions_rad[i] - previous.joint_positions_rad[i])
+            for i in range(min(7, len(current.joint_positions_rad)))
+        )
+        previous = current
+        if rad_to_deg(delta) < float(quiet_deg):
+            return True
+    return False
 
 
 def _exec_trajectory_from_recording(path: str) -> Any:
@@ -1816,7 +1881,68 @@ def _exec_run_driver(
     num_commands = 0
     num_samples = 0
     final_phase = "idle"
+
+    # ── 真机：接上 UDP 主动上报（唯一状态回读通道）──────────────────
+    # 真机实测：没有状态帧 ⇒ 驱动的 require_state=True 会把「无状态」
+    # 当成「状态超时」⇒ 第一拍就 G7 停机 ⇒ 轨迹根本跑不起来。
+    # ⇒ 真机路径必须**开启主动上报**并把状态源挂到传输层。
+    # （注意：传输层要先 open() 才有 SDK 绑定 ⇒ 顺序不能颠倒。）
+    receiver = None
     driver.open()
+    if not dry_run:
+        from .device.realtime import (
+            RealtimePushSettings,
+            RealtimeStateReceiver,
+            detect_local_ip,
+        )
+        from .device.state_source import StateSource
+
+        source = StateSource()
+        receiver = RealtimeStateReceiver(
+            transport.binding,
+            source,
+            RealtimePushSettings(
+                ip=detect_local_ip(device_config.arm_ip, device_config.tcp_port),
+                port=int(device_config.udp_port),
+                cycle=int(device_config.udp_cycle),
+            ),
+        )
+        receiver.start()
+        transport.attach_state_source(source)
+        # 等第一帧到达再开跑：安全闸 G7 把「没有状态帧」当成「状态超时」
+        # ⇒ 第一拍就停机（真机实测）。⇒ 先等状态源有帧（带超时）。
+        wait_s = float(getattr(args, "state_wait_timeout", 2.0) or 2.0)
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline and source.latest() is None:
+            time.sleep(0.005)
+        if source.latest() is None:
+            raise _UsageError(
+                f"等待 UDP 状态帧超时（{wait_s:.1f} s）——UDP 主动上报未就绪"
+                f"（检查三线程模式与上报目标 IP）"
+            )
+        # 起点一致性守卫：真机实测——上一次轨迹结束后机械臂仍在向目标运动，
+        # 此时直接下发新轨迹 ⇒ 控制器忽略新指令（旧轨迹在跑），
+        # 指令-反馈错位可达 30 mm（末端误差完全失真）。
+        # ⇒ 先等机械臂**停下来**，再校验「实测位形 ≈ 轨迹起点」。
+        settle_s = float(getattr(args, "settle_timeout", 5.0) or 5.0)
+        tolerance_deg = float(getattr(args, "start_tolerance_deg", 2.0) or 2.0)
+        first = source.latest()
+        start_q = tuple(float(v) for v in trajectory.samples[0].q)
+        if first is not None:
+            _wait_settled(source, settle_s)
+            measured = source.latest()
+            if measured is not None:
+                delta_deg = max(
+                    abs(rad_to_deg(measured.joint_positions_rad[i] - start_q[i]))
+                    for i in range(min(7, len(start_q)))
+                )
+                if delta_deg > tolerance_deg:
+                    raise _UsageError(
+                        f"起点位形不匹配：实测与轨迹起点相差 {delta_deg:.2f}°"
+                        f"（阈值 {tolerance_deg:.2f}°）——机械臂可能还在执行上一条"
+                        f"轨迹；请等待停稳后重试，或重新从**实测位形**规划"
+                    )
+
     try:
         driver.submit_trajectory(trajectory)
         builder.append(
@@ -1894,6 +2020,8 @@ def _exec_run_driver(
         final_phase = driver.phase
     finally:
         driver.close()
+        if receiver is not None:
+            receiver.stop()
 
     jitter = driver.jitter.summary()
     return {
@@ -2260,6 +2388,11 @@ def _plan_once(
         region_spacing=float(args.region_spacing),
         gripper_schedule=tuple(gripper_schedule),
         region_options=region_options,
+        acceleration_limits=(
+            tuple(float(v) for v in args.accel_limits)
+            if getattr(args, "accel_limits", None)
+            else None
+        ),
     )
     planner = Planner(scenario, scene=scene, options=options)
 

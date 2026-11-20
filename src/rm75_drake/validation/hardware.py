@@ -22,7 +22,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..device.binding import ArmBinding
 from ..device.config import DeviceConfig
-from ..device.realtime import RealtimePushSettings, RealtimeStateReceiver
+from ..device.realtime import (
+    RealtimePushSettings,
+    RealtimeStateReceiver,
+    detect_local_ip,
+)
 from ..device.safety import (
     ACTION_PROCEED,
     SafetyLimits,
@@ -32,7 +36,7 @@ from ..device.safety import (
     safety_limits_from_sources,
 )
 from ..device.state_source import StateSource
-from ..device.sdk import rad_to_deg
+from ..device.sdk import deg_to_rad, rad_to_deg
 from ..device.transport import SdkTransport, TransportError
 from ..kinematics.mdh import link7_position
 from ..limits import load_joint_limits
@@ -51,26 +55,6 @@ TCP_TIMEOUT_S = 2.0
 
 #: 网页探测超时（s）。
 HTTP_TIMEOUT_S = 5.0
-
-
-def detect_local_ip(target_ip: str, target_port: int = 8080) -> str:
-    """探测本机在 ``target_ip`` 所在网段上的**源地址**。
-
-    做法：建一个 UDP socket 并 ``connect`` 到机械臂（不真正发包），
-    再读 ``getsockname()`` ⇒ 内核选出的源地址就是机械臂看到的本机地址。
-    这是 UDP 主动上报**必填**的「上报目标 IP」（填机械臂自己的 IP 是经典坑）。
-
-    异常
-    ----
-    OSError
-        探测失败（调用方应显式报错，不静默兜底）。
-    """
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        probe.connect((str(target_ip), int(target_port)))
-        return str(probe.getsockname()[0])
-    finally:
-        probe.close()
 
 
 def probe_tcp(host: str, port: int, timeout: float = TCP_TIMEOUT_S) -> Dict[str, Any]:
@@ -186,6 +170,31 @@ class HardwareExecutor:
         return safety_limits_from_sources(
             load_joint_limits(), self.context.device_config
         )
+
+    def ensure_realtime(self, wait_s: float = 2.0) -> RealtimeStateReceiver:
+        """确保 UDP 主动上报**已开启**（幂等；返回接收器）。
+
+        运动级别（点动 / 抖动）需要**实测反馈**（UDP 帧）来判定到位误差
+        ⇒ 若上一级（L3）没跑过，这里**按需开启**（只配置上报，不动机械臂）。
+        """
+        if self._receiver is not None:
+            return self._receiver
+        config = self.context.device_config
+        target_ip = self.context.option("push_target_ip") or detect_local_ip(
+            config.arm_ip, config.tcp_port
+        )
+        settings = RealtimePushSettings(
+            ip=str(target_ip),
+            port=int(config.udp_port),
+            cycle=int(config.udp_cycle),
+        )
+        receiver = RealtimeStateReceiver(self.binding, self.source, settings)
+        receiver.start()
+        self._receiver = receiver
+        deadline = time.monotonic() + float(wait_s)
+        while time.monotonic() < deadline and self.source.latest() is None:
+            time.sleep(0.02)
+        return receiver
 
     # -- L0：链路 --------------------------------------------------------
     def _stage_network(self, context: LadderContext) -> Dict[str, Any]:
@@ -375,12 +384,13 @@ class HardwareExecutor:
         """L6：单轴 5° 点动 → 反馈校验 → 回原位（**会让机械臂动**）。"""
         transport = self.transport
         limits = self.limits()
+        self.ensure_realtime()
         frame = self.source.latest()
         if frame is None:
             raise RuntimeError("没有状态帧（先跑 L3）")
         origin = tuple(float(v) for v in frame.joint_positions_rad)
         axis = int(context.option("jog_axis", 0))
-        delta = float(context.option("jog_delta_rad", rad_to_deg(5.0)))
+        delta = float(context.option("jog_delta_rad", deg_to_rad(5.0)))
         hold_s = float(context.option("jog_hold_s", 0.8))
         target = list(origin)
         target[axis] = origin[axis] + delta
@@ -433,13 +443,17 @@ class HardwareExecutor:
         pose = tuple(float(v) for v in pose)
         limits = self.limits()
         transport = self.transport
+        # 真机测量**必须** require_state=True：否则安全层的电流闸拿到的是
+        # 「全零电流」的假状态（真机实测：J2 静态保持电流已达 -1.7 A，
+        # 若不喂真实状态，G5 等于没开）。
+        self.ensure_realtime()
         result = run_hold_measurement(
             transport=transport,
             joint_rad=pose,
             limits=limits,
             period_s=float(context.option("period_s", 0.005)),
             duration_s=float(context.option("jitter_duration_s", 10.0)),
-            require_state=False,
+            require_state=True,
         )
         summary = measurement_summary(
             result, joint_rad=pose, period_s=float(context.option("period_s", 0.005))
@@ -466,9 +480,11 @@ class HardwareExecutor:
         close_target = int(context.option("gripper_close", 0))
         transport.command_gripper_position(open_target)
         time.sleep(float(context.option("gripper_settle_s", 1.0)))
+        open_raw = self.binding.call("rm_get_gripper_state")
         open_state = transport.read_gripper()
         transport.command_gripper_position(close_target)
         time.sleep(float(context.option("gripper_settle_s", 1.0)))
+        close_raw = self.binding.call("rm_get_gripper_state")
         close_state = transport.read_gripper()
         return {
             "gripper_online": bool(open_state.online and close_state.online),
@@ -478,6 +494,8 @@ class HardwareExecutor:
             "close_target": close_target,
             "close_readback": int(close_state.position),
             "close_error": abs(int(close_state.position) - close_target),
+            "open_raw": _gripper_payload(open_raw),
+            "close_raw": _gripper_payload(close_raw),
         }
 
     # -- L10：安全七闸逐闸验证 -------------------------------------------
@@ -522,6 +540,25 @@ class HardwareExecutor:
 
 
 # ── 工具函数 ────────────────────────────────────────────────────────────
+def _gripper_payload(raw: Any) -> Dict[str, Any]:
+    """把 ``rm_get_gripper_state`` 的返回压成可 JSON 化的字典（诊断用）。"""
+    payload = raw
+    if isinstance(raw, tuple) and len(raw) == 2:
+        payload = raw[1]
+    if not isinstance(payload, dict):
+        return {"raw": str(payload)}
+    keys = (
+        "enable_state",
+        "status",
+        "error",
+        "mode",
+        "current_force",
+        "temperature",
+        "actpos",
+    )
+    return {key: payload.get(key) for key in keys if key in payload}
+
+
 def _hold(transport: SdkTransport, target: Sequence[float], seconds: float) -> None:
     """持续下发保持位姿（透传 + follow），持续 ``seconds`` 秒。
 
