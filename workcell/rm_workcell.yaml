@@ -48,6 +48,22 @@ gripper:                   # 夹爪唯一配置来源（换机型 = 换这份文
   force_threshold: null        # 夹到判定阈值（源力度单位，来源：真机实测回填）
   grasp_position_window: null  # 夹持位置窗口 [lo, hi]（mm，来源：真机实测回填）
 calibration:
+  # ---- 标定偏置的结构化 schema（详见 rmctl.calibration.OFFSET_FIELDS）----
+  # 两处**未标定时一律写 null**，禁止伪造数值。字段口径（坐标系不可互换）：
+  #
+  #   frame:  "tip_link7"（tcp 专用）| "base"（base_to_base 专用）
+  #   x/y/z:  平移（m）
+  #   rpy:    [rx, ry, rz]（rad，Rz*Ry*Rx）
+  #   method: 标定方法（人类可读）
+  #   source: 数据来源（工件路径 / 现场记录）
+  #   captured_at: 采集时间（ISO8601）
+  #   uncertainty_mm: 不确定度（mm）
+  #
+  # tcp = 法兰→工具偏置，在 **tip(Link7) 系**表达
+  #      （控制器 TCP 保持默认法兰 → 控制器上报的是法兰系位姿）
+  #      施加：T_corrected = T_link7 · T_tool（位置与姿态同时修正）
+  # base_to_base = 基座/世界系刚体偏置，在 **base 系**表达
+  #      施加：T_corrected = T_base · T_link7
   tcp: null               # 未标定：不得伪造
   base_to_base: null      # 未标定：不得伪造
   # 四类真机基线（相对 workcell/ 目录；文件本体在 baselines/）

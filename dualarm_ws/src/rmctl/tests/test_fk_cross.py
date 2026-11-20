@@ -274,6 +274,182 @@ def test_cli_synthesize_mode(urdf, tmp_path):
     assert rep["ok"] is False
 
 
+# ---------------------------------------------------------------- 标定偏置
+def _samples_with_ctrl_transform(urdf, n=8, seed=5, left=None, right=None):
+    """合成样本：控制器位姿 = left · T_link7 · right（left/right 为 4x4）。
+
+    ``right`` 模拟**tip 系**偏置（法兰→工具），``left`` 模拟**base 系**偏置。
+    """
+    model = fk_cross.UrdfModel(urdf)
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(n):
+        q = []
+        for j in model.rev:
+            lo, hi = j["lower"], j["upper"]
+            span = max(hi - lo, 1e-6)
+            q.append(float(rng.uniform(lo + 0.05 * span, hi - 0.05 * span)))
+        q = np.asarray(q, dtype=float)
+        T = model.fk(q, "Link7")
+        if left is not None:
+            T = left @ T
+        if right is not None:
+            T = T @ right
+        pose = {"x": float(T[0, 3]), "y": float(T[1, 3]), "z": float(T[2, 3])}
+        pose["quat"] = fk_cross._matrix_to_quat(np.asarray(T[:3, :3], dtype=float))
+        out.append({"joint_deg": [float(v) for v in q * fk_cross.RAD2DEG],
+                    "controller_pose": pose})
+    return out
+
+
+def _translation(x, y, z):
+    T = np.eye(4)
+    T[:3, 3] = [x, y, z]
+    return T
+
+
+def test_tip_frame_offset_is_removed_by_tool_offset(urdf):
+    """tip 系固定偏置 → 施加对应 tool_offset 后残差回到 ~1e-9 mm 量级。"""
+    d = np.array([0.010, -0.004, 0.002])       # 10 mm / -4 mm / 2 mm
+    samples = _samples_with_ctrl_transform(urdf, n=8, seed=5, right=_translation(*d))
+
+    raw = fk_cross.cross_check(samples, urdf)
+    assert raw["ok"] is False
+    assert raw["position"]["max_mm"] > 1.0
+    assert raw["corrections"]["any_applied"] is False
+
+    tool = {"x": float(d[0]), "y": float(d[1]), "z": float(d[2]),
+            "frame": "tip_link7", "method": "unit-test", "source": "test:tip"}
+    rep = fk_cross.cross_check(samples, urdf, tool_offset=tool)
+
+    # 校正后残差回到数值噪声量级（1e-9 mm ≈ 1e-12 m）
+    assert rep["corrections"]["corrected"]["max_pos_dev_mm"] < 1e-9
+    assert rep["corrections"]["corrected"]["ok"] is True
+    assert rep["ok_corrected"] is True
+    # raw 侧仍记录未校正的偏差（不因施加偏置而篡改历史量）
+    assert rep["corrections"]["raw"]["max_pos_dev_mm"] > 1.0
+    assert rep["corrections"]["improved"] is True
+
+
+def test_base_frame_offset_cannot_be_cancelled_by_tool_offset(urdf):
+    """base 系偏置不能被 tip 偏置抵消（反证坐标系口径写反的风险）。"""
+    samples = _samples_with_ctrl_transform(urdf, n=8, seed=9,
+                                           left=_translation(0.0, 0.005, 0.0))
+    tool = {"x": 0.010, "y": 0.0, "z": 0.0, "frame": "tip_link7"}
+    rep = fk_cross.cross_check(samples, urdf, tool_offset=tool)
+    # 施加 tip 偏置后残差仍然很大 → 口径没被写反
+    assert rep["corrections"]["corrected"]["max_pos_dev_mm"] > 1.0
+    assert rep["ok_corrected"] is False
+
+    # 对照：base 系偏置能被 base_offset 正确抵消
+    base = {"x": 0.0, "y": 0.005, "z": 0.0, "frame": "base"}
+    rep2 = fk_cross.cross_check(samples, urdf, base_offset=base)
+    assert rep2["corrections"]["corrected"]["max_pos_dev_mm"] < 1e-9
+    assert rep2["ok_corrected"] is True
+
+
+def test_reversed_offset_makes_residual_worse(urdf):
+    """防呆：偏置方向取反 → 残差变大。"""
+    d = np.array([0.010, 0.0, 0.0])
+    samples = _samples_with_ctrl_transform(urdf, n=8, seed=13,
+                                           right=_translation(*d))
+    raw = fk_cross.cross_check(samples, urdf)
+    rep = fk_cross.cross_check(samples, urdf,
+                               tool_offset={"x": -float(d[0]), "y": 0.0, "z": 0.0})
+    assert rep["corrections"]["corrected"]["max_pos_dev_mm"] > \
+        raw["position"]["max_mm"]
+    assert rep["ok_corrected"] is False
+
+
+def test_corrections_echo_source_and_values(urdf):
+    """report.corrections 回显偏置来源与数值。"""
+    samples = _samples_with_ctrl_transform(urdf, n=4, seed=17,
+                                           right=_translation(0.010, 0.0, 0.0))
+    tool = {"x": 0.010, "y": 0.0, "z": 0.0, "frame": "tip_link7",
+            "method": "四点标定", "source": "workcell/rm_workcell.yaml::calibration.tcp",
+            "captured_at": "2026-11-20T00:00:00", "uncertainty_mm": 0.2}
+    rep = fk_cross.cross_check(samples, urdf, tool_offset=tool)
+    applied = rep["corrections"]["applied"]["tool_offset"]
+    assert applied["x"] == pytest.approx(0.010)
+    assert applied["frame"] == "tip_link7"
+    assert applied["method"] == "四点标定"
+    assert applied["source"].endswith("calibration.tcp")
+    assert applied["captured_at"] == "2026-11-20T00:00:00"
+    assert applied["uncertainty_mm"] == pytest.approx(0.2)
+    assert rep["corrections"]["applied"]["base_offset"] is None
+
+
+def test_fk_recheck_fields_include_corrections(urdf):
+    """fk_recheck_fields 增加 corrections 段（既有键保持不变）。"""
+    samples = _samples_with_ctrl_transform(urdf, n=4, seed=19,
+                                           right=_translation(0.010, 0.0, 0.0))
+    rep = fk_cross.cross_check(samples, urdf,
+                               tool_offset={"x": 0.010, "y": 0.0, "z": 0.0})
+    fields = fk_cross.fk_recheck_fields(rep)
+    assert set(["method", "samples", "max_pos_dev_mm", "max_ori_dev_deg",
+                "conclusion"]) <= set(fields)
+    assert "corrections" in fields
+    c = fields["corrections"]
+    assert c["tool_offset"]["x"] == pytest.approx(0.010)
+    assert c["raw_max_pos_dev_mm"] > 1.0
+    assert c["corrected_max_pos_dev_mm"] < 1e-9
+    assert c["improved"] is True
+    assert c["ok_corrected"] is True
+
+
+def test_invalid_offsets_raise_clear_error(urdf):
+    """负例：非法偏置（缺字段 / frame 口径不符）→ 明确错误。"""
+    samples = _synth(urdf, n=2, seed=1)
+    with pytest.raises(FkCrossError) as exc:
+        fk_cross.cross_check(samples, urdf, tool_offset={"x": 0.01})
+    assert "tool_offset" in str(exc.value)
+
+    with pytest.raises(FkCrossError) as exc:
+        fk_cross.cross_check(samples, urdf, base_offset={"x": 0.0, "y": 0.0,
+                                                        "z": 0.0, "frame": "tip_link7"})
+    assert "frame" in str(exc.value)
+
+
+def test_cli_accepts_offset_string_and_calibration_file(urdf, tmp_path):
+    """CLI：--tool-offset 字符串 / --base-offset / --calibration 都能生效。"""
+    samples_file = tmp_path / "samples.json"
+    samples = _samples_with_ctrl_transform(urdf, n=6, seed=23,
+                                           right=_translation(0.010, 0.0, 0.0))
+    samples_file.write_text(json.dumps(samples), encoding="utf-8")
+    out = tmp_path / "rep.json"
+
+    rc = fk_cross.main(["--samples", str(samples_file), "--urdf", urdf,
+                        "--tool-offset", "0.010,0,0", "--out", str(out)])
+    assert rc == 3          # raw 仍超限（判定看 raw）
+    rep = json.loads(out.read_text(encoding="utf-8"))
+    assert rep["ok_corrected"] is True
+    assert rep["corrections"]["applied"]["tool_offset"]["source"] == "cli:--tool-offset"
+
+    # --calibration 直接读 workcell yaml 的 calibration 段
+    wc = tmp_path / "rm_workcell.yaml"
+    wc.write_text(
+        "calibration:\n"
+        "  tcp:\n"
+        "    frame: tip_link7\n"
+        "    x: 0.010\n"
+        "    y: 0.0\n"
+        "    z: 0.0\n"
+        "    source: unit-test\n"
+        "  base_to_base: null\n", encoding="utf-8")
+    rc = fk_cross.main(["--samples", str(samples_file), "--urdf", urdf,
+                        "--calibration", str(wc), "--out", str(out)])
+    assert rc == 3
+    rep = json.loads(out.read_text(encoding="utf-8"))
+    assert rep["ok_corrected"] is True
+    assert rep["corrections"]["applied"]["tool_offset"]["source"] == "unit-test"
+    assert rep["corrections"]["applied"]["base_offset"] is None
+
+    # 非法偏置 → 退出码 2（输入非法）
+    rc = fk_cross.main(["--samples", str(samples_file), "--urdf", urdf,
+                        "--tool-offset", "1,2"])
+    assert rc == 2
+
+
 # ---------------------------------------------------------------- 约束
 def _module_ast():
     import ast
@@ -297,9 +473,9 @@ def test_module_does_not_import_vendor_solver():
                 imported.add(node.module.split(".")[0])
     assert "tesseract" not in imported
     assert "tesseract_robotics" not in imported
-    # 只允许依赖自研运动学 + 标准库 + numpy
+    # 只允许依赖自研运动学 + 标准库 + numpy（calibration 为本包内的标定口径模块）
     assert imported <= {"argparse", "json", "math", "os", "sys", "numpy",
-                         "paths", "selfkin", "fk_cross"}
+                         "paths", "selfkin", "fk_cross", "calibration"}
 
 
 def test_module_has_no_controller_pose_writeback_path():
@@ -320,4 +496,9 @@ def test_module_has_no_controller_pose_writeback_path():
     src = open(os.path.join(os.path.dirname(fk_cross.__file__), "fk_cross.py"),
                encoding="utf-8").read()
     assert src.count("open(") == 2  # _load_samples 读 + 报告写
+    # 标定口径模块同样只读不写（不得写回轨迹/模型/基线）
+    cal_src = open(os.path.join(os.path.dirname(fk_cross.__file__), "calibration.py"),
+                   encoding="utf-8").read()
+    for forbidden in ("safe_dump", "write_text", "save_traj", "set_joints"):
+        assert forbidden not in cal_src, forbidden
     assert ast is not None

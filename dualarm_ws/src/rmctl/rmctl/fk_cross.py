@@ -30,7 +30,7 @@ import sys
 
 import numpy as np
 
-from . import paths
+from . import calibration, paths
 from .selfkin import UrdfModel
 
 # 判定阈值（设计 §5.3）
@@ -220,9 +220,39 @@ def _attribution(devs, tol_mm):
     }
 
 
+# ------------------------------------------------------------------ 偏置
+def _prepare_offset(spec, kind, name):
+    """把外部给的偏置规范成内部结构；非法输入抛 FkCrossError。"""
+    if spec is None:
+        return None
+    try:
+        return calibration.normalize_offset(spec, kind)
+    except calibration.CalibrationError as exc:
+        raise FkCrossError("%s 非法: %s" % (name, exc))
+
+
+def _offset_public(offset):
+    """偏置的公开回显（可 JSON 序列化）。"""
+    if offset is None:
+        return None
+    return {
+        "kind": offset["kind"],
+        "frame": offset["frame"],
+        "x": offset["x"],
+        "y": offset["y"],
+        "z": offset["z"],
+        "rpy": list(offset["rpy"]),
+        "method": offset["method"],
+        "source": offset["source"],
+        "captured_at": offset["captured_at"],
+        "uncertainty_mm": offset["uncertainty_mm"],
+    }
+
+
 # ------------------------------------------------------------------ 主流程
 def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
-                ori_tol_deg=DEFAULT_ORI_TOL_DEG, tip="Link7"):
+                ori_tol_deg=DEFAULT_ORI_TOL_DEG, tip="Link7",
+                tool_offset=None, base_offset=None):
     """自研 FK vs 控制器位姿交叉校验。
 
     参数
@@ -237,6 +267,12 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
         判定阈值（位置 mm / 姿态 deg）。
     tip : str
         FK 末端 link（默认 ``Link7``）。
+    tool_offset : dict | None
+        **法兰→工具偏置，在 tip(Link7) 系表达**（结构见
+        ``rmctl.calibration.OFFSET_FIELDS``）。施加 ``T = T_link7 · T_tool``：
+        位置与姿态**同时**被修正。
+    base_offset : dict | None
+        **基座/世界系刚体偏置，在 base 系表达**。施加 ``T = T_base · T_link7``。
 
     返回
     ----
@@ -246,7 +282,18 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
     异常
     ----
     FkCrossError：输入非法（空样本、缺字段、关节数不符等）。
+
+    判定口径
+    --------
+    ``position`` / ``orientation`` / ``ok`` 始终是**未校正（raw）**的量，
+    即"自研 FK vs 控制器位姿"的原始偏差；施加偏置后的量放在
+    ``corrections.corrected`` 与顶层 ``ok_corrected``。两者都摆在报告里，
+    便于一眼看出偏置是否真的把残差压下去了。
     """
+    tool_offset = _prepare_offset(tool_offset, "tool", "tool_offset（tip 系偏置）")
+    base_offset = _prepare_offset(base_offset, "base", "base_offset（base 系偏置）")
+    T_tool = calibration.offset_transform(tool_offset)
+    T_base = calibration.offset_transform(base_offset)
     if samples is None:
         raise FkCrossError("样本列表为 None")
     if isinstance(samples, dict):
@@ -271,7 +318,9 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
 
     details = []
     devs = []
+    dev_corrs = []
     ori_devs = []
+    ori_corr_devs = []
     ori_provided = False
     for i, sample in enumerate(samples):
         if not isinstance(sample, dict):
@@ -294,6 +343,26 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
             ori_devs.append(ori_deg)
             ori_state = "provided"
 
+        # ---- 施加标定偏置（raw → corrected）----
+        #   tool_offset: 法兰→工具在 **tip(Link7) 系** → T' = T_link7 · T_tool
+        #   base_offset: 基座/世界系在 **base 系** → T' = T_base · T_link7
+        # 左乘与右乘互可交换，同时施加时无先后歧义。
+        T_corr = np.asarray(T, dtype=float)
+        if T_base is not None:
+            T_corr = T_base @ T_corr
+        if T_tool is not None:
+            T_corr = T_corr @ T_tool
+        fk_corr_pos = np.asarray(T_corr[:3, 3], dtype=float)
+        dev_corr = (fk_corr_pos - ctrl_pos) * 1000.0
+        dev_corr_mm = float(np.linalg.norm(dev_corr))
+        dev_corrs.append(dev_corr)
+
+        ori_corr_deg = None
+        if ctrl_rot is not None:
+            ori_corr_deg = _rotation_angle_deg(np.asarray(T_corr[:3, :3], dtype=float),
+                                                ctrl_rot)
+            ori_corr_devs.append(ori_corr_deg)
+
         entry = {
             "index": i,
             "joint_deg": [float(v) for v in q * RAD2DEG],
@@ -304,6 +373,9 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
             "dev_direction": [float(v) for v in (dev / dev_mm if dev_mm > 1e-12 else dev * 0.0)],
             "dominant_axis": ("x", "y", "z")[int(np.argmax(np.abs(dev)))] if dev_mm > 1e-12 else None,
             "pos_ok": bool(dev_mm <= pos_tol_mm),
+            "corrected_dev_mm": dev_corr_mm,
+            "corrected_dev_vector_mm": [float(v) for v in dev_corr],
+            "corrected_orientation_dev_deg": ori_corr_deg,
             "orientation": {"state": ori_state, "source": ctrl_kind,
                             "dev_deg": ori_deg,
                             "ok": (None if ori_deg is None else bool(ori_deg <= ori_tol_deg))},
@@ -329,6 +401,47 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
 
     ok = (not violations) and (not ori_violations)
 
+    # ---- 校正后（corrected）指标 ----
+    corr_mags = [d["corrected_dev_mm"] for d in details]
+    corr_max = max(corr_mags)
+    corr_mean = float(np.mean(corr_mags))
+    corr_violations = [d["index"] for d in details
+                       if d["corrected_dev_mm"] > pos_tol_mm]
+    if ori_provided:
+        corr_max_ori = max(ori_corr_devs)
+        corr_mean_ori = float(np.mean(ori_corr_devs))
+        corr_ori_violations = [d["index"] for d in details
+                               if d["corrected_dev_mm"] > pos_tol_mm
+                               or (d["corrected_orientation_dev_deg"] is not None
+                                   and d["corrected_orientation_dev_deg"] > ori_tol_deg)]
+    else:
+        corr_max_ori, corr_mean_ori = None, None
+        corr_ori_violations = []
+    ok_corrected = (not corr_violations) and (not corr_ori_violations)
+
+    corrections = {
+        "applied": {
+            "tool_offset": _offset_public(tool_offset),
+            "base_offset": _offset_public(base_offset),
+        },
+        "raw": {
+            "max_pos_dev_mm": float(max_pos),
+            "mean_pos_dev_mm": float(mean_pos),
+            "max_ori_dev_deg": (None if max_ori is None else float(max_ori)),
+            "ok": bool(ok),
+        },
+        "corrected": {
+            "max_pos_dev_mm": float(corr_max),
+            "mean_pos_dev_mm": float(corr_mean),
+            "max_ori_dev_deg": (None if corr_max_ori is None else float(corr_max_ori)),
+            "ok": bool(ok_corrected),
+            "violations": corr_violations,
+            "orientation_violations": corr_ori_violations,
+        },
+        "improved": bool(corr_max < max_pos - 1e-12),
+        "any_applied": bool(tool_offset is not None or base_offset is not None),
+    }
+
     report = {
         "schema": "rmctl.fk_cross/1",
         "urdf": os.path.abspath(urdf_path),
@@ -352,6 +465,8 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
                      else CONTROLLER_POSE_USAGE),
         },
         "ok": bool(ok),
+        "ok_corrected": bool(ok_corrected),
+        "corrections": corrections,
         "violations": violations,
         "orientation_violations": ori_violations,
         "samples_detail": details,
@@ -447,6 +562,7 @@ def fk_recheck_fields(report):
     * ``max_pos_dev_mm``：最大位置偏差（mm，判定 < 1）
     * ``max_ori_dev_deg``：最大姿态偏差（deg，判定 < 0.05；未提供姿态时为 null）
     * ``conclusion``：结论文本
+    * ``corrections``：本次使用的标定偏置与 raw/corrected 对比（新增键）
 
     只做**格式转换**，不写盘、不改状态位（status 的 measured/blocked 判定属真机窗口）。
     """
@@ -461,7 +577,8 @@ def fk_recheck_fields(report):
                       % (pos["max_mm"], report["tolerances"]["pos_mm"],
                          report["violations"] or "无"))
     max_ori = ori["max_deg"]
-    return {
+    corr = report.get("corrections") or {}
+    fields = {
         "method": ("rmctl.fk_cross（自研 FK vs 控制器位姿交叉校验，%d 组位形）"
                    % report["samples"]),
         "samples": int(report["samples"]),
@@ -470,6 +587,19 @@ def fk_recheck_fields(report):
         "conclusion": conclusion,
         "controller_pose_usage": CONTROLLER_POSE_USAGE,
     }
+    if corr:
+        applied = corr.get("applied") or {}
+        fields["corrections"] = {
+            "tool_offset": applied.get("tool_offset"),
+            "base_offset": applied.get("base_offset"),
+            "raw_max_pos_dev_mm": (corr.get("raw") or {}).get("max_pos_dev_mm"),
+            "corrected_max_pos_dev_mm": (corr.get("corrected") or {}).get("max_pos_dev_mm"),
+            "raw_max_ori_dev_deg": (corr.get("raw") or {}).get("max_ori_dev_deg"),
+            "corrected_max_ori_dev_deg": (corr.get("corrected") or {}).get("max_ori_dev_deg"),
+            "improved": bool(corr.get("improved")),
+            "ok_corrected": bool(report.get("ok_corrected", report["ok"])),
+        }
+    return fields
 
 
 # ------------------------------------------------------------------ CLI
@@ -499,17 +629,38 @@ def main(argv=None):
                     help="不读文件：合成 N 组样本（离线自测）")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--offset-mm", type=float, default=0.0)
+    ap.add_argument("--tool-offset", default=None,
+                    help="法兰→工具偏置（tip/Link7 系）：JSON 文件路径或 "
+                         "\"x,y,z[,rx,ry,rz]\"（m / rad）")
+    ap.add_argument("--base-offset", default=None,
+                    help="基座/世界系刚体偏置（base 系）：JSON 文件路径或 "
+                         "\"x,y,z[,rx,ry,rz]\"（m / rad）")
+    ap.add_argument("--calibration", default=None,
+                    help="workcell yaml 路径：直接读其 calibration 段（tcp / base_to_base）")
     args = ap.parse_args(argv)
 
     try:
+        tool_offset = None
+        base_offset = None
+        if args.calibration:
+            cal = calibration.load_workcell_calibration(args.calibration)
+            tool_offset = cal.get("tcp")
+            base_offset = cal.get("base_to_base")
+        if args.tool_offset:
+            tool_offset = calibration.parse_offset_spec(
+                args.tool_offset, "tool", source="cli:--tool-offset")
+        if args.base_offset:
+            base_offset = calibration.parse_offset_spec(
+                args.base_offset, "base", source="cli:--base-offset")
         if args.synthesize is not None:
             samples = synthesize_samples(n=args.synthesize, seed=args.seed,
                                          offset_mm=args.offset_mm,
                                          urdf_path=args.urdf)["samples"]
         else:
             samples = _load_samples(args.samples)
-        report = cross_check(samples, args.urdf, args.pos_tol_mm, args.ori_tol_deg)
-    except FkCrossError as exc:
+        report = cross_check(samples, args.urdf, args.pos_tol_mm, args.ori_tol_deg,
+                             tool_offset=tool_offset, base_offset=base_offset)
+    except (FkCrossError, calibration.CalibrationError) as exc:
         print("输入非法: %s" % exc, file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 —— 顶层兜底，给出可读错误
@@ -534,6 +685,14 @@ def main(argv=None):
              if report["orientation"]["status"] == "provided" else "not_provided"))
     if report["violations"]:
         print("越界样本: %s" % ", ".join(str(i) for i in report["violations"]))
+    corr = report.get("corrections") or {}
+    if corr.get("any_applied"):
+        print("已施加标定偏置: tip=%s base=%s" % (
+            "有" if (corr["applied"] or {}).get("tool_offset") else "无",
+            "有" if (corr["applied"] or {}).get("base_offset") else "无"))
+        print("位置偏差 raw max=%.4g mm → corrected max=%.4g mm（ok_corrected=%s）"
+              % (corr["raw"]["max_pos_dev_mm"], corr["corrected"]["max_pos_dev_mm"],
+                 report["ok_corrected"]))
     for hint in report["attribution"]["hints"]:
         print("提示: %s" % hint)
     return 0 if report["ok"] else 3
