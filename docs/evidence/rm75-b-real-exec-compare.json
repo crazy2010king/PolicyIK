@@ -1,0 +1,8 @@
+{
+  "num_points": 131,
+  "num_axes": 7,
+  "max_joint_diff_rad": 0.0,
+  "worst_point_index": -1,
+  "tolerance_rad": 1e-09,
+  "pointwise_identical": true
+}

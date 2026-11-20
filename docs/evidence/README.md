@@ -24,6 +24,7 @@
 | 5 | `S09-upstream-archive.md` | **R019** | 上游归档物化与**字节级校验**闭合：`--verify` 退出码 0、两条 sha256 与 MANIFEST / versions.lock 三方逐字一致；归档**不入 git**、入库凭据与**可复现配方** | `python3 tools/fetch_upstream.py --verify` |
 | 6 | `rm75-b-real-arm-ladder.md` | 真机验证阶梯（L0–L14）首轮实测 | 现场 RM75-B（192.168.1.18）**两轮**实测：只读级别 L0–L5/L10 与运动级别 L6/L7/L8/L9/L12/L14 全部 PASS；L4 因机械臂处于**急停态**（`arm_current_status=9`）判 FAIL ⇒ 运动级被门禁拦截；`cycle` 读法实测定为 **5 ms 的倍数**（P50=4.998 ms）；**末端跟踪误差 2.56 mm**（加速度上限须收紧到 1.0/1.2 rad/s²）；**修掉 14 个真机缺陷**；未验证指标逐条列出 | `python3 scripts/real_machine_ladder.py --to L5 --device-config devices/rm75_b_192_168_1_18.yaml --json` |
 | 7 | `rm75-b-ladder-2026-11-19.json` | 真机验证阶梯第一轮**原始报告** | L0–L10 的逐级 PASS/FAIL/BLOCKED、判据实测值与未验证指标清单（机器可读） | `python3 scripts/real_machine_ladder.py --to L10 --device-config devices/rm75_b_192_168_1_18.yaml --json` |
+| 8 | `rm75-b-real-exec-runlog.json` / `rm75-b-real-exec-recording.json` / `rm75-b-real-exec-compare.json` | **一次真机运行**的全链路运行日志 + 其录制 + 逐点一致性比较 | 真机 131 点实际下发序列与离线录制**逐点一致**（max diff 0.0 rad）；同一条录制离线重放：131 点、逃逸 0、最大单步 0.001521 rad ⇒ SC3 真机口径闭合 | `python3 scripts/compare_exec_vs_recording.py --run-log docs/evidence/rm75-b-real-exec-runlog.json --recording docs/evidence/rm75-b-real-exec-recording.json --json` |
 
 机器可读产物（与 `S02-rerun.md` 配套）：`s02-rerun.json`
 （`schema_version=1`，`generator=scripts/collect_evidence.py`，逐项命令 / 退出码 / 耗时 / 摘要）。
