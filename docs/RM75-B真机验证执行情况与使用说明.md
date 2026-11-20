@@ -147,7 +147,7 @@ $ python3 -m rm_hw_bridge.audit --repo
 
 | 设计判据（§7） | 本轮结果 | 证据 / 差距 |
 |---|---|---|
-| **P0** 单臂 UDP 上报连续 10 分钟无中断，周期实测符合 5 ms 倍数设定 | ✅ **达成** | 600 s 长跑：24002 帧、**断流窗口 0**、最大空窗 0.0 ms、**实测周期 24.998 ms**（配置的 5 倍，仍是 5 ms 的整数倍） |
+| **P0** 单臂 UDP 上报连续 10 分钟无中断，周期实测符合 5 ms 倍数设定 | ✅ **达成**（**仅限 UDP 上报通道**的采集，**不是**执行层长跑） | 600 s 长跑：24002 帧、**断流窗口 0**、最大空窗 0.0 ms、**实测周期 24.998 ms**（配置的 5 倍，仍是 5 ms 的整数倍） |
 | **P0** 夹爪开合 100 次无超时，`mode`/`actpos`/`error` 可稳定读出 | ⛔ 未覆盖 | 本轮不含夹爪（单臂运动链路） |
 | **P0** 硬件急停演练：触发后两臂立即停，SDK 返回明确错误码 | ✅ **达成（单臂）** | V9：软停 + 急停 rc=0、状态快照留档（`drill_performed=true`）；"两臂"需第二台臂可达 |
 | **P0** 版本矩阵与零位基线入档（文档 + 照片） | ❌ **未达成** | 控制器固件 / 示教器版本未读取；零位照片未取证 → `version_matrix` / `zero_baseline` 仍 `blocked` |
@@ -171,11 +171,11 @@ $ python3 -m rm_hw_bridge.audit --repo
 | 条款 | 内容 | 本轮进展 | 仍缺 |
 |---|---|---|---|
 | **CC1** | 真机取放循环 50 次 + trace 可回放 + 失败 5 分钟复现 | — | 需夹爪 + 工艺场景（单臂阶梯不覆盖） |
-| **CC2** | 经四道校验轨迹真机连续 10 分钟无保护停；tick p99<2 ms；到位误差<0.1°；跟踪 RMS≤0.3° | ✅ **三条量化门限全部达标**（V5：p99 0.201 ms、到位 0.0030°、RMS 0.0506°）；V3/V4 微动 | "连续 10 分钟"的长跑未做（当前只 5.53 s） |
+| **CC2** | 经四道校验轨迹真机连续 10 分钟无保护停；tick p99<2 ms；到位误差<0.1°；跟踪 RMS≤0.3° | ✅ **三条量化门限全部达标**（V5：p99 0.201 ms、到位 0.0030°、RMS 0.0506°）；V3/V4 微动 | "连续 10 分钟"的**执行层**长跑未做（当前只 5.53 s）—— 2026-11-20 真机窗口门禁 blocked，详见 §6.2 与 `workcell/baselines/evidence/rm75_s10_window_outcome.json` |
 | **CC3** | 规划 p95≤1.0 s、成功率≥95%、常驻<500 MB；doctor ≥8 类；MTTR≤2 min | 离线项全达标（S08/S09） | `E3.mttr_human_s` 仍是人工项（pending） |
 | **CC4** | 不能被仿真替代：真实保护停 / 供电接地 / 零位 / 跟随误差与抖动 / 夹爪供电与协议时序 | ✅ 真实保护停与急停留档（V9）、真实跟随误差与抖动（V5）、真实重复性（V7）、真实 acc/jerk（V8，joint1）；600 s 真实上报长跑 | 供电接地、夹爪供电与协议时序、零位取证、joint2..7 的 acc/jerk |
 | **CC5** | Contract complete：清洗/ACM 报告、ctypes 黄金校验、四道校验 100% 拦截、CLI 退出码、同种子一致 | ✅ 离线全达标；**V6 FK 交叉本轮实测不合格**（75.03 mm） | V6 需标定 TCP 后复测 |
-| **CC6** | Integration complete：rmctl→rm_runtime→RM-API2→真机链路跑通（UDP 镜像 / 限值下发 / 10 ms 透传 / 反馈闭环到位判定 / 断流 200 ms 内停机） | ✅ **全链路真机跑通**（V1→V4→V5：建链、快照、透传、501 拍反馈闭环、到位判定 0.0030°） | "断流 200 ms 内停机"的**真机复现**未做（离线注入已覆盖） |
+| **CC6** | Integration complete：rmctl→rm_runtime→RM-API2→真机链路跑通（UDP 镜像 / 限值下发 / 10 ms 透传 / 反馈闭环到位判定 / 断流 200 ms 内停机） | ✅ **全链路真机跑通**（V1→V4→V5：建链、快照、透传、501 拍反馈闭环、到位判定 0.0030°） | "断流 200 ms 内停机"的**真机复现**未做（离线注入已覆盖）—— 2026-11-20 真机窗口门禁 blocked，详见 §6.2 与 `workcell/baselines/evidence/rm75_s10_window_outcome.json` |
 | **CC7** | Operational complete：急停演练留档；五类故障注入 L1–L4；取放真机 50 次；≤50 圈强制人工检查写进流程 | ✅ 急停演练留档（V9）；五类注入离线全过（L1/L2/L2/L3/L4/L4） | 取放真机 50 次；"≤50 圈强制人工检查"流程需写入工艺文件 |
 | **CC8** | S01–S09 各切片交付线 | ✅ 全部落地 | — |
 
@@ -315,8 +315,18 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | 工具 | 目的 | 真机结果 |
 |---|---|---|
 | `scripts/rm75_limit_downlink.py` | 驱动级限值下发留档（R004 剩余项） | **已完成**：28 次 SDK 调用（7 关节 × 速度/加速度/下限/上限）全部 rc=0；位置限值用**执行域**（机械范围），速度按 20% 起步收紧；白名单无读回符号 → 只以返回码 + diff 判定，不伪造读回值 |
-| `scripts/rm75_long_run.py` | 10 分钟连续执行长跑（S03/R001 字面要求） | **待执行**：需臂已使能（当前 7 轴掉使能） |
-| `scripts/rm75_stream_loss_drill.py` | UDP 断流 200 ms 内停机的真机复现 | **待执行**：需臂已使能 |
+| `scripts/rm75_long_run.py` | 10 分钟连续执行长跑（S03/R001 字面要求） | **blocked（未执行）**：2026-11-20 真机窗口门禁未通过 —— `ip_reachable` 100% 丢包、`tcp_reachable`（192.168.1.18:8080）timed out、`probe_precheck` 已跳过（未建链、零运动指令）→ **长跑未执行，无任何实测数字**。结案工件：`workcell/baselines/evidence/rm75_s10_window_outcome.json`（`status=blocked`、`long_run=null`） |
+| `scripts/rm75_stream_loss_drill.py` | UDP 断流 200 ms 内停机的真机复现 | **blocked（未执行）**：同上窗口门禁失败项（ip/TCP 不通）→ **断流演练未执行，无任何实测数字**。结案工件：`workcell/baselines/evidence/rm75_s10_window_outcome.json`（`status=blocked`、`stream_loss=null`） |
+
+> **诚实声明**：本节结论全部以机器可读的结案工件
+> `workcell/baselines/evidence/rm75_s10_window_outcome.json` 为唯一真值来源；
+> **未以离线/仿真结果替代真机结论** —— blocked 分支下未执行任何运动指令，
+> 也不含任何伪造的长跑/断流实测数字。
+>
+> **口径澄清（勿混为一谈）**：本表的「UDP 主动上报 600 s 长跑」= 只收控制器主动上报帧的
+> **反馈通道**采集（2026-11-19 已实测：24002 帧 / 周期 24.998 ms / 断流窗口 0）；
+> 「**执行层** 600 s 连续执行长跑」= `scripts/rm75_long_run.py` 走 rm_executor live 路径
+> **持续下发关节角指令**的闭环长跑。两者是**不同的事**，前者已实测，**后者本轮未执行**。
 
 ### 6.3 本轮暴露并修复的 7 个真机缺陷
 
@@ -342,10 +352,10 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | **零位基线** | 未取证（零位照片 + 固件/示教器版本） | 示教器受控流程对齐凹槽 → 照片 → `rmctl.hwcollect zero_capture` → 回填 `zero_baseline.yaml` |
 | **joint2..joint7 的 acc/jerk** | 只测了 joint1（3 档） | `rmctl.hwcollect ladder_acc_jerk --arm left --trials 3`（注意 `joints` 是 1 基关节号，每档自动回原位）→ 7 个关节测齐后 `measured_limits` 才能改 `status=measured` → 再用 `apply_measured_limits.py --dry-run` 走 conservative 回填 |
 | **基线状态位** | 四张基线仍 `blocked`（全表口径未测齐时值字段必须为 null） | 实测值已写在各表 `partial_observations` + 证据工件；测齐后再逐项搬进正式字段 |
-| **CC2 的"连续 10 分钟"** | 当前只有 5.53 s / 501 拍 | 用执行层跑一条 ≥600 s 的微动轨迹（周期 10 ms → 约 6 万拍） |
+| **CC2 的"连续 10 分钟"** | **blocked**：2026-11-20 真机窗口门禁未通过（ip 100% 丢包 / TCP 8080 timed out）→ 执行层 600 s 长跑**未执行、无任何实测数字**；现存最长真机执行仍只有 5.53 s / 501 拍（2026-11-19 V5）。结案工件：`workcell/baselines/evidence/rm75_s10_window_outcome.json` | 按结案工件的 `next_action` 依次执行：示教器重新使能 7 轴 → 清错误码复位 → `ss -ulnp \| grep -E '8091\|8092'` 确认端口空闲 → 重跑 `python3 scripts/rm75_window_run.py --out workcell/baselines/evidence/rm75_s10_window_outcome.json`（门禁通过后由该入口自动续跑 长跑 → 断流 → 阶梯） |
 | **CC1 取放 50 次 / 夹爪** | 未覆盖 | 需夹爪供电与协议时序打通后另开窗口 |
 | **双臂（P4/P5）** | 右臂 `192.168.1.19` 未接触 | 右臂网络可达后另开窗口；注意 UDP 端口 8092 预留 |
-| **里程碑验证重跑** | M001 仍是 `needs-attention` | 2026-11-20 已做**范围重划**：M001 收敛为单臂（验收条款、ROADMAP Success Criteria、CONTEXT、需求归属均已更新），夹爪/取放/现场人项移交新里程碑 **M002-o62zc6**（T01–T05）；M001 剩余未完成项为 10 分钟长跑与断流真机复现（需臂使能） |
+| **里程碑验证重跑** | M001 仍是 `needs-attention` | 2026-11-20 已做**范围重划**：M001 收敛为单臂（验收条款、ROADMAP Success Criteria、CONTEXT、需求归属均已更新），夹爪/取放/现场人项移交新里程碑 **M002-o62zc6**（T01–T05）；M001 剩余未完成项为 10 分钟长跑与断流真机复现（2026-11-20 窗口门禁 blocked，见 `workcell/baselines/evidence/rm75_s10_window_outcome.json`；需臂使能 + 网络可达） |
 | **臂的使能状态** | 急停演练后已清错复位（`RM_IDLE_E`），但 **7 轴仍掉使能**（`joint_en_flag` 全 0） | 需在示教器**重新使能**；在此之前探针的 7 项前置检查会拒绝任何运动指令（这是预期行为） |
 
 ---

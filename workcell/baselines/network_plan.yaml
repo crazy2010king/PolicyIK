@@ -5,7 +5,7 @@
 #   - 同一 ip:port 只能被一个客户端占用；上一个进程未退干净会静默失败（采集前先确认端口空闲）。
 kind: network_plan
 schema_version: 1
-version: 4                  # 基线修订号（单调递增）
+version: 5                  # 基线修订号（单调递增）
 status: blocked
 captured_at: null
 blocked:
@@ -19,6 +19,11 @@ blocked:
     然而"到达率 20%"的根因是**控制器实际以 25 ms 周期上报**（配置 5 ms 的 5 倍），
     不是随机丢包（丢包率实测为 0）。该结论目前**只有左臂**，
     右臂 192.168.1.19 本轮完全未接触 → 全表口径的 status 仍保持 blocked。
+    **2026-11-20 本机窗口补充**：从本机复跑只读门禁时 ip/TCP 均不通（100% 丢包 / TCP 8080 timed out），
+    这与 2026-11-19 远端主机 172.16.119.199 的可达结论**属不同执行环境**、两者并不矛盾，
+    但意味着「执行层 600 s 连续执行长跑」与「UDP 断流 200 ms 停机复现」必须在**远端主机的真机窗口内**执行；
+    本机跑不通**不得**被记为长跑/断流未达标的实测结论（结案工件见
+    workcell/baselines/evidence/rm75_s10_window_outcome.json）。
   attempted_actions:
     - "本机端口占用核查：ss -ulnp | grep -E '8091|8092' 无输出（本机侧无冲突）"
     - "网络连通（2026-11-13 首次窗口）：ping -c 2 192.168.1.18 → 100% packet loss；ping -c 2 192.168.1.19 → 100% packet loss"
@@ -33,13 +38,20 @@ blocked:
     - "2026-11-19 UDP 上报实测（60 s）：2400 帧、**实测周期 25.0 ms**（配置 5 ms 的 5 倍）、无断流窗口、到达率约 20% —— 周期虽落在 5 ms 的整数倍上，但到达率远低于标称，**不能据此把本表标 measured**"
     - "2026-11-19 UDP 上报 **600 s 长跑**（rmctl.hwcollect udp_stability --duration-s 600）：24002 帧 / 期望 120000、**实测周期 24.998 ms**、**断流窗口 0**、最大空窗 0.0 ms、period_multiple_ok=true → 结论：控制器实际以 25 ms 周期上报（配置的 5 倍），**无随机丢包**；见 partial_observations"
     - "2026-11-19 连接额度实测：同一进程连续建链 5 次成功，第 6 次起 rm_create_robot_arm 返回 NULL（换新进程同样 id=-1），>200 s 内未恢复（约 5~10 min 量级释放）"
-    - "2026-11-19 未做：udp_stability 600 s 长跑、右臂 192.168.1.19 的任何接触、V8 阶梯 acc/jerk（10°/档）、V9 急停演练"
+    - "2026-11-19 未做：右臂 192.168.1.19 的任何接触、V8 阶梯 acc/jerk（10°/档）、V9 急停演练"
+    - "2026-11-19 UDP 上报 600 s 长跑已完成（更正上方 2026-11-13/2026-11-19 的『未做』条目）：24002 帧 / 实测周期 24.998 ms / 断流窗口 0 —— 这是**反馈通道**采集（只收主动上报帧），**不是**执行层长跑"
+    - "2026-11-20 真机窗口尝试（S10，scripts/rm75_window_run.py 单一入口）：只读门禁 scripts/rm75_window_gate.py 实测 → ip_reachable 失败（ping -c 3 -W 1 192.168.1.18 → 3 packets transmitted, 0 received, 100% packet loss, time 2045ms）、tcp_reachable 失败（nc -vz 192.168.1.18 8080 → 连接失败: timed out）、udp_ports_free 通过（8091/8092 空闲）、sdk_loadable 通过、probe_precheck **已跳过**（未建立任何连接，零运动指令）→ 门禁 status=blocked，长跑 / 断流 / 阶梯**均未执行**，无任何实测数字"
+    - "2026-11-20 结案工件：workcell/baselines/evidence/rm75_s10_window_outcome.json（schema rmctl.rm75_s10_window_outcome/1，mode=blocked、status=blocked、long_run/stream_loss/ladder 全为 null，含门禁逐项结果与下一步命令）"
+    - "2026-11-20 口径澄清（必须区分，勿混为一谈）：**『执行层 600 s 连续执行长跑』** = scripts/rm75_long_run.py 走 rm_executor live 路径**持续下发关节角指令**的闭环长跑，本轮**未执行**（门禁 blocked）；**『UDP 主动上报 600 s 长跑』** = 只收控制器主动上报帧的**反馈通道**采集，2026-11-19 **已实测**（24002 帧 / 24.998 ms / 断流窗口 0）。前者未做**不能**由后者代偿"
   next_action: >-
-    连通性已确认，本表只差"上报质量"这一项实测：在真机窗口内依次执行
-    ss -ulnp | grep 8091（确认端口空闲），再跑
-    python3 -m rmctl.hwcollect udp_stability --arm left --duration-s 600；
-    收到非零帧数且周期落在 5 ms 倍数上后，把 status 改为 measured 并填 captured_at
-    （右臂 192.168.1.19 未验证，一并补测或明确标注"未接触"）。
+    本表仍为 blocked，两条未闭合项互不替代：① **右臂 192.168.1.19 未接触** —— 右臂网络可达后另开窗口实测；
+    ② **执行层 600 s 连续执行长跑与 UDP 断流 200 ms 停机复现未执行**（2026-11-20 窗口门禁 blocked，
+    见 workcell/baselines/evidence/rm75_s10_window_outcome.json）—— 按结案工件的 next_action 依次执行：
+    在示教器上重新使能 7 轴（joint_en_flag 全 1）→ 在示教器上清错误码复位（arm_err / joint_err_code 全 0）→
+    ss -ulnp | grep -E '8091|8092'（确认本地 UDP 端口未被占用）→ 重跑
+    python3 scripts/rm75_window_run.py --out workcell/baselines/evidence/rm75_s10_window_outcome.json
+    （门禁通过后由该入口自动续跑 长跑 → 断流 → 阶梯）。待右臂补测且全表口径实测完成后，
+    才把 status 改为 measured 并填 captured_at。
 # 已实测但**尚未进入全表基线状态**的观测（右臂未接触 → status 仍 blocked）。
 partial_observations:
   captured_at: "2026-11-19"
@@ -86,5 +98,5 @@ notes:
   - "UDP 8092 为第二臂预留；单臂窗口不得占用"
   - "端口占用/单客户端约束导致静默失败，采集前用 ss -ulnp 确认端口空闲"
   - "2026-11-13 首次窗口结论：规划值来自官方配置（未经实连验证），status=blocked"
-  - "2026-11-19 复测结论：左臂 192.168.1.18 连通性与最小动作控制**已验证**（见 attempted_actions）；上报到达率与右臂仍未实测，status 仍为 blocked"
+  - "2026-11-19 复测结论：左臂 192.168.1.18 连通性与最小动作控制**已验证**（见 attempted_actions）；**UDP 主动上报 600 s 长跑已实测**（见 partial_observations.udp_stability_600s）；**右臂 192.168.1.19 仍未接触**、**执行层 600 s 连续执行长跑与断流复现仍未执行**，status 仍为 blocked"
   - "2026-11-19 新增硬约束：控制器客户端连接数上限 ≈5（见 constraints）—— 一轮真机工作必须建一次链、全程复用"
