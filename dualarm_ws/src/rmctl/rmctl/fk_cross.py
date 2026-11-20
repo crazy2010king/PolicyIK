@@ -243,8 +243,10 @@ def _sample_diversity(joint_configs, positions, rotations):
           if rotations and rotations[i] is not None]
     if len(Rs) > 1:
         Rf = np.asarray([np.asarray(r, dtype=float) for r in Rs])
-        # tr(R_i^T R_j) = <R_i, R_j>_F（逐元素内积）
-        tr = np.einsum("ijk,ijk->ij", Rf, Rf)
+        # tr(R_i^T R_j) = <R_i, R_j>_F（逐元素内积，**必须对 j/k 两个下标求和**；
+        # 写成 "ijk,ijk->ij" 只对 k 求和，得到的是行内积而非 Frobenius 内积，
+        # 会让姿态展布恒为 ≥90°，多样性门槛形同虚设）
+        tr = np.einsum("ijk,ljk->il", Rf, Rf)
         cos_t = np.clip((tr - 1.0) / 2.0, -1.0, 1.0)
         ori_spread = float(np.arccos(cos_t).max()) * RAD2DEG
     reasons = []
@@ -552,6 +554,9 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
     fk_rotations = []
     joint_configs = []
     dev_corrs = []
+    tip_dev_corrs = []
+    corr_positions = []
+    corr_rotations = []
     ori_devs = []
     ori_corr_devs = []
     ori_provided = False
@@ -592,9 +597,14 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
         if T_tool is not None:
             T_corr = T_corr @ T_tool
         fk_corr_pos = np.asarray(T_corr[:3, 3], dtype=float)
+        fk_corr_rot = np.asarray(T_corr[:3, :3], dtype=float)
         dev_corr = (fk_corr_pos - ctrl_pos) * 1000.0
         dev_corr_mm = float(np.linalg.norm(dev_corr))
         dev_corrs.append(dev_corr)
+        # 校正后的 tip 系偏差（与 raw 同一口径：R^T · dev）
+        tip_dev_corrs.append(fk_corr_rot.T @ dev_corr)
+        corr_positions.append(fk_corr_pos)
+        corr_rotations.append(fk_corr_rot)
 
         ori_corr_deg = None
         if ctrl_rot is not None:
@@ -712,6 +722,11 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
         "attribution": _attribution(devs, pos_tol_mm, tip_devs=tip_devs,
                                     positions=fk_positions, rotations=fk_rotations,
                                     joint_configs=joint_configs),
+        # **校正后**残差的归因（施加标定偏置之后还剩下什么性质的问题）
+        "attribution_corrected": _attribution(
+            dev_corrs, pos_tol_mm, tip_devs=tip_dev_corrs,
+            positions=corr_positions, rotations=corr_rotations,
+            joint_configs=joint_configs),
         "controller_pose_usage": CONTROLLER_POSE_USAGE,
         "troubleshoot_order": list(TROUBLESHOOT_ORDER),
     }
@@ -761,6 +776,47 @@ def synthesize_samples(n=20, seed=42, offset_mm=0.0, offset_index=0,
             "offset_index": int(offset_index), "urdf": os.path.abspath(urdf_path),
             "tip": tip, "source": "synthetic（自研 FK，非真机数据）"}
     return {"samples": out, "meta": meta}
+
+
+def synthesize_samples_for_configs(configs_deg, urdf_path=None, tip="Link7"):
+    """按给定的关节位形列表生成合成样本（用于 dry-run 走通新采样器）。
+
+    合成样本的"控制器位姿" = 自研 FK 位姿，因此残差在数值噪声量级。
+    **不是真机读数**，只用于验证采样/落盘链路。
+
+    参数
+    ----
+    configs_deg : list[list[float]]
+        每个元素是一组 7 个关节角（度）。
+
+    返回
+    ----
+    list[dict]：可直接喂给 :func:`cross_check` 的样本列表。
+    """
+    urdf_path = urdf_path or paths.urdf_path()
+    if not os.path.exists(urdf_path):
+        raise FkCrossError("URDF 不存在: %s" % urdf_path)
+    urdf = UrdfModel(urdf_path)
+    out = []
+    for i, cfg in enumerate(configs_deg):
+        q = _to_rad(cfg, "deg")
+        if q.size != len(urdf.rev):
+            raise FkCrossError("样本 #%d 关节数 %d ≠ 模型关节数 %d"
+                               % (i, q.size, len(urdf.rev)))
+        try:
+            T = urdf.fk(q, tip)
+        except Exception as exc:
+            raise FkCrossError("样本 #%d 的 FK 计算失败: %r" % (i, exc))
+        pos = np.asarray(T[:3, 3], dtype=float)
+        R = np.asarray(T[:3, :3], dtype=float)
+        out.append({
+            "joint_deg": [float(v) for v in cfg],
+            "controller_pose": {
+                "x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2]),
+                "quat": _matrix_to_quat(R),
+            },
+        })
+    return out
 
 
 def _matrix_to_quat(R):

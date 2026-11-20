@@ -648,6 +648,42 @@ def test_diversity_spread_computation_is_capped(urdf):
     assert rep["attribution"]["residual_kind"] == "within_tolerance"
 
 
+def test_orientation_spread_matches_actual_pairwise_angle(urdf):
+    """姿态展布必须等于真实的两两最大夹角（回归：einsum 下标写错 → 恒为 90°）。
+
+    旧实现用 ``einsum("ijk,ijk->ij")``（只对 k 求和 = 行内积）代替 Frobenius
+    内积，导致姿态展布恒为 ≥90°，多样性门槛形同虚设。
+    """
+    urdf_model = fk_cross.UrdfModel(urdf)
+    base = np.zeros(7)
+    samples = []
+    rots = []
+    for k in range(6):
+        q = base.copy()
+        q[k % 7] = math.radians(4.0)     # 单关节小幅偏转（与真机采样同量级）
+        T = urdf_model.fk(q, "Link7")
+        R = np.asarray(T[:3, :3], dtype=float)
+        rots.append(R)
+        pos = np.asarray(T[:3, 3], dtype=float)
+        samples.append({
+            "joint_deg": [float(v) * fk_cross.RAD2DEG for v in q],
+            "controller_pose": {
+                "x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2]),
+                "quat": fk_cross._matrix_to_quat(R),
+            },
+        })
+    rep = fk_cross.cross_check(samples, urdf)
+    div = rep["attribution"]["diversity"]
+    worst = 0.0
+    for i in range(len(rots)):
+        for j in range(i + 1, len(rots)):
+            cos_t = (np.trace(rots[i].T @ rots[j]) - 1.0) / 2.0
+            worst = max(worst, math.degrees(math.acos(max(-1.0, min(1.0, cos_t)))))
+    assert div["orientation_spread_deg"] == pytest.approx(worst, abs=1e-6)
+    # 小幅偏转的真实姿态展布远小于 90°（旧实现恒为 90°）
+    assert div["orientation_spread_deg"] < 45.0
+
+
 # ---------------------------------------------------------------- 约束
 def _module_ast():
     import ast

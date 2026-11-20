@@ -19,7 +19,7 @@ V2    上报质量    只读（UDP 长跑）        无     S01/S02             
 V3    最小运动    运动 0.3°（规划通道）   低     S03/S04              CC2 / Operational
 V4    透传通道    运动 0.3°（canfd）      低     S03                  CC6 / Integration
 V5    执行层闭环  运动 0.3°（10 ms 流式）  低     S03/S04              CC2/CC6 / Integration
-V6    FK 交叉     只读（自研 vs 控制器）   无     S01                  CC5 / Contract
+V6    FK 交叉     有界多样位形（≤5°/关节） 低    S01                  CC5 / Contract
 V7    重复性      运动（默认目标=当前位姿）中   S01                  CC4 / Operational
 V8    阶梯 acc/jerk 运动 10°/档          **高**  S01/S04              CC4 / Operational
 V9    急停演练    触发急停                **高**  S04                  CC7 / Operational
@@ -30,6 +30,7 @@ V9    急停演练    触发急停                **高**  S04                  
 1. **顺序不可跳过**：默认按 V0→V9 顺序跑，前一阶段未通过则后续阶段标记 ``skipped``；
 2. **默认不动臂**：``--stages`` 不含运动阶段时，脚本只做只读验证；
 3. **高风险阶段需显式授权**：V8 / V9 必须加 ``--allow-risky``，否则标记 skipped；
+   （V6 的 FK 复测会做**有界运动**：单关节依次偏转 ≤5°、速度 ≤10%、每步回原位）；
 4. **运动幅度由探针封顶**：V3/V4/V5 一律走 ``rm75_safe_probe`` 的安全包络
    （单关节、≤1.0°、低速、去程回程对称、异常即急停）；
 5. **不伪造数值**：任何阶段失败都如实记 ``blocked`` / ``error`` + 证据，
@@ -152,10 +153,17 @@ class LadderContext(object):
         return link, None
 
     def tool_calibration(self):
-        """读工位配置里的 TCP 标定值（``calibration.tcp``；null = 未标定）。
+        """读工位配置里的标定偏置（``calibration.tcp`` / ``calibration.base_to_base``）。
+
+        返回**结构化 dict**（新 schema 口径）::
+
+            {"tcp": {...} | None, "base_to_base": {...} | None, "source": path}
+
+        两个键各自为 ``None`` 表示**未标定**（yaml 里写 null）——不得用默认值顶替。
 
         FK 交叉校验的偏差性质判定要用它：**未标定 TCP** 时，自研 FK（Link7 系）
-        与控制器位姿（TCP 系）之间本就存在恒定偏置，偏差不能当成模型精度结论。
+        与控制器位姿（法兰系）之间本就存在恒定偏置，偏差不能当成模型精度结论；
+        若是 **base 系**偏置，则不得往 ``calibration.tcp`` 里填。
         """
         import yaml
         candidates = []
@@ -168,12 +176,21 @@ class LadderContext(object):
             if not os.path.exists(path):
                 continue
             try:
+                from rmctl import calibration as _cal
+                cal = _cal.load_workcell_calibration(path)
+                return {"tcp": cal.get("tcp"), "base_to_base": cal.get("base_to_base"),
+                        "source": path}
+            except Exception:
+                pass
+            try:
                 with open(path, "r", encoding="utf-8") as fh:
                     data = yaml.safe_load(fh) or {}
             except Exception:
-                return None
-            return ((data.get("calibration") or {}).get("tcp"))
-        return None
+                return {"tcp": None, "base_to_base": None, "source": path}
+            section = data.get("calibration") or {}
+            return {"tcp": section.get("tcp"), "base_to_base": section.get("base_to_base"),
+                    "source": path}
+        return {"tcp": None, "base_to_base": None, "source": None}
 
     def shared_link_factory(self):
         """给探针用的 link_factory（复用共享句柄，且**不关闭**它）。"""
@@ -577,6 +594,13 @@ def _stage_v6(ctx: LadderContext) -> Dict[str, Any]:
         evidence.append("attribution.pattern = %s" % attribution.get("pattern"))
         for hint in (attribution.get("hints") or [])[:3]:
             evidence.append("attribution.hint: %s" % hint)
+    residual_kind = summary.get("residual_kind") or attribution.get("residual_kind")
+    if residual_kind:
+        evidence.append("residual_kind = %s" % residual_kind)
+    sampling = summary.get("sampling") or {}
+    if sampling:
+        evidence.append("sampling.distinct_configs = %s" % sampling.get("distinct_configs"))
+        evidence.append("sampling.amplitude_deg = %s" % sampling.get("amplitude_deg"))
     # **判据是 fk_cross 的结论（summary.ok）**，不是采集层 status ——
     # 采集成功但交叉校验不合格（偏差超阈值）同样是不合格。
     if status != "ok":
@@ -584,13 +608,37 @@ def _stage_v6(ctx: LadderContext) -> Dict[str, Any]:
                   "blocked": STATUS_BLOCKED}.get(status, STATUS_ERROR)
         return _result("V6", mapped, (result or {}).get("reason") or "FK 交叉校验未完成",
                        evidence, summary)
+    cal = ctx.tool_calibration()
+    tcp = cal.get("tcp") if isinstance(cal, dict) else cal
+    base_off = cal.get("base_to_base") if isinstance(cal, dict) else None
+    # **样本多样性不足 = 不能对偏置性质下结论 → blocked（不是 failed）**：
+    # 样本不足不是"不合格"，它只是"还不能判定"。
+    if residual_kind == "insufficient_diversity":
+        reasons = "; ".join(((attribution.get("diversity") or {}).get("reasons") or [])
+                            or ["位形/展布未达门槛"])
+        return _result("V6", STATUS_BLOCKED,
+                       "FK 交叉校验**样本多样性不足**（%s）：同一位形重复采样不能判定偏置性质；"
+                       "请用有界多样位形采样（--fk-amplitude-deg / --fk-joints）补采后复测"
+                       % reasons,
+                       evidence, summary)
     if not summary.get("ok", False):
-        tcp = ctx.tool_calibration()
-        attribution = summary.get("attribution") or {}
         pattern = attribution.get("pattern")
-        if pattern == "systematic_translation" and not tcp:
+        if residual_kind == "tool_frame_offset" and not tcp:
+            cause = ("残差是 **tip(Link7) 系恒定偏置**（工具/法兰偏置）："
+                     "**先标 calibration.tcp** 再复测；"
+                     "该偏差**不能**当作模型精度结论")
+        elif residual_kind == "tool_frame_offset":
+            cause = ("残差是 **tip(Link7) 系恒定偏置**（工具/法兰偏置）："
+                     "TCP 已标定但残差仍在 → 复核 calibration.tcp 的数值与不确定度")
+        elif residual_kind == "base_frame_offset":
+            cause = ("残差是 **base 系恒定偏置**（基座/世界系刚体偏置）："
+                     "查 URDF 清洗 / 基座安装，或改标 calibration.base_to_base；"
+                     "**禁止**写 calibration.tcp")
+        elif residual_kind == "orientation_dependent":
+            cause = ("残差**随位形变化**：查零位与 MDH 偏置（不写任何标定偏置）")
+        elif pattern == "systematic_translation" and not tcp:
             cause = ("偏差是**系统性平移**且 TCP 未标定：自研 FK 算的是 Link7 系、"
-                     "控制器报的是 TCP 系，两者本就差一个工具偏置 —— "
+                     "控制器报的是法兰系，两者本就差一个工具偏置 —— "
                      "该偏差**不能**当作模型精度结论")
         elif pattern == "systematic_translation":
             cause = ("偏差是**系统性平移**（零位整体漂移或工具偏置）："
@@ -601,17 +649,14 @@ def _stage_v6(ctx: LadderContext) -> Dict[str, Any]:
             cause = summary.get("dev_interpretation") or "偏差性质未知"
         return _result("V6", STATUS_FAILED,
                        "FK 交叉校验不合格：最大位置偏差 %s mm（阈值 1 mm）；%s；"
-                       "工具标定 calibration.tcp=%s"
+                       "工具标定 calibration.tcp=%s；基座偏置 calibration.base_to_base=%s"
                        % (summary.get("max_pos_dev_mm"), cause,
-                          tcp if tcp else "null（未标定）"),
+                          "已标定" if tcp else "null（未标定）",
+                          "已标定" if base_off else "null（未标定）"),
                        evidence, summary)
     return _result("V6", STATUS_PASS,
                    "FK 交叉校验通过（位置 %s mm / 姿态 %s°）"
                    % (summary.get("max_pos_dev_mm"), summary.get("max_ori_dev_deg")),
-                   evidence, summary)
-    mapped = {"dry_run": STATUS_PASS, "NEEDS_HUMAN": STATUS_BLOCKED,
-              "blocked": STATUS_BLOCKED}.get(status, STATUS_ERROR)
-    return _result("V6", mapped, (result or {}).get("reason") or "FK 交叉校验未通过",
                    evidence, summary)
 
 
@@ -726,10 +771,12 @@ STAGES: List[Stage] = [
           RISK_LOW, True, _stage_v5, slices=["S03", "S04"], requirements=["R012"],
           criteria=["CC2", "CC6"], vclass="Integration",
           prerequisites=["V4"], notes="rmctl→rm_runtime→RM-API2→真机 全链路"),
-    Stage("V6", "FK 交叉校验", "自研 FK 与控制器位姿偏差（只读）", RISK_NONE,
-          False, _stage_v6, slices=["S01"], requirements=["R011"],
-          criteria=["CC5"], vclass="Contract",
-          notes="需要 build/model 已物化（rmctl init）"),
+    Stage("V6", "FK 交叉校验", "自研 FK 与控制器位姿偏差（有界多样位形：单关节 ≤5°，测完回原位）",
+          RISK_LOW, True, _stage_v6, slices=["S01"], requirements=["R011"],
+          criteria=["CC5"], vclass="Contract", prerequisites=["V3"],
+          notes="需要 build/model 已物化（rmctl init）；采样会做**有界运动**"
+                "（单关节依次偏转 ≤5°、速度 ≤10%、每步测完回原位）——"
+                "同一位形重复采样不能判定偏置性质"),
     Stage("V7", "TCP 重复性", "多次回到同一点的散布（运动；默认目标=当前位姿）", RISK_MEDIUM,
           True, _stage_v7, slices=["S01"], requirements=["R012"],
           criteria=["CC4"], vclass="Operational",

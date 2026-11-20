@@ -25,6 +25,9 @@ udp_stability       实时上报稳定性（断流次数、周期是否落在 5 
 ladder_acc_jerk     阶梯速度反推 acceleration / jerk 上限（取多次采样包络）
 tcp_repeatability   TCP 位置重复性（明确区分重复性 ≠ 绝对精度）
 fk_cross            FK 与控制器位姿交叉校验（调用 rmctl.fk_cross）
+                    —— **有界多样位形采样**：单关节依次偏转 ≤5°、
+                       速度 ≤10%、每步测完回原位（同一位形重复采样
+                       不能判定偏置性质，见 S11）
 estop_drill         软停 / 急停演练（记录返回码、错误码、状态快照）
 zero_capture        零位读数与证据引用（零位只能走示教器受控流程）
 =================== =====================================================
@@ -39,6 +42,11 @@ zero_capture        零位读数与证据引用（零位只能走示教器受控
   的比对报告，不得写回轨迹/模型/基线。
 * **量级约束**：udp_stability 600 s @ 5 ms ≈ 12 万条上报，只保留**聚合统计**
   与**抽样原始帧**，不把全量数据堆内存、也不写进 git 跟踪目录。
+* **fk_cross 会动臂（S11 起）**：采样从"重复同一位形"改为**有界多样位形**
+  （单关节依次偏转 ≤5°、速度 ≤10%、每步测完回原位）——重复同一位形
+  **不能**判定偏置性质（这是 2026-11-19 那次 75.03 mm 归因失效的根因）。
+  安全边界写死在代码里：幅度硬上限 ``FK_MAX_AMPLITUDE_DEG``、限位按
+  **执行域**夹紧（真机 J7 实测 -200.5° 落在规划域之外）、不得越过 home 邻域。
 * 本模块只依赖 ``numpy``（+ 标准库），**禁止 import tesseract**——保证在没有
   GLIBCXX_3.4.31 的环境里也能被 pytest 覆盖。
 
@@ -54,12 +62,14 @@ import ast
 import ctypes
 import datetime
 import json
+import math
 import os
 import sys
 import time
 
 import numpy as np
 
+from . import calibration
 from . import fk_cross
 from . import paths
 from . import retime
@@ -92,6 +102,14 @@ LADDER_BASE_SPEED = 5
 LADDER_SPEED_STEP = 3
 #: FK 交叉校验默认位形数
 FK_DEFAULT_SAMPLES = 20
+#: FK 采样的**默认偏转幅度**（度）。单关节依次小幅偏转，测完回原位。
+FK_DEFAULT_AMPLITUDE_DEG = 5.0
+#: FK 采样的**幅度硬上限**（度）—— 请求值超过即被夹到上限并在 summary 里标注。
+FK_MAX_AMPLITUDE_DEG = 5.0
+#: FK 采样的运动速度上限（``rm_movej`` 的 speed 百分比）
+FK_MAX_SPEED_PCT = 10
+#: FK 采样默认参与的关节（1..7 → joint1..joint7）
+FK_JOINT_NAMES = ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7")
 
 STATUS_OK = "ok"
 STATUS_DRY_RUN = "dry_run"
@@ -1051,27 +1069,207 @@ def tcp_repeatability(arm="left", target_deg=None, repeats=TCP_DEFAULT_REPEATS,
 
 
 # ------------------------------------------------------------------ FK 交叉
+def _fk_limits_deg(ws=None):
+    """每个关节的（执行域优先）限位，单位度。
+
+    **为什么用执行域**：真机当前位形可能落在规划域之外（J7 实测 -200.5°，
+    规划域只到 ±180°）。采样目标必须夹在**机械可执行**范围里，否则一夹就是
+    20° 的大幅运动 —— 那不是"小幅偏转"，而是撞机。
+
+    返回 ``[(lo_deg, hi_deg)] * 7``；读不到限位时返回 ``None``（不夹）。
+    """
+    limits = None
+    try:
+        from . import baseline
+        limits = baseline.load_joint_limits(ws)
+    except Exception:  # pragma: no cover - 限位缺失不应让采样崩掉
+        limits = None
+    out = []
+    for name in FK_JOINT_NAMES:
+        entry = (limits or {}).get(name) or {}
+        lo = entry.get("execution_lower", entry.get("lower"))
+        hi = entry.get("execution_upper", entry.get("upper"))
+        if lo is None or hi is None:
+            return None
+        out.append((math.degrees(float(lo)), math.degrees(float(hi))))
+    return out
+
+
+def fk_sampling_plan(base_deg, n=FK_DEFAULT_SAMPLES, amplitude_deg=FK_DEFAULT_AMPLITUDE_DEG,
+                     joints=None, seed=42, limits=None, home_deg=None):
+    """生成**有界多样位形**的 FK 采样计划（纯函数，离线可测）。
+
+    口径（S11 的永久防线）：
+
+    * 以当前位姿 ``base_deg`` 为原点，每次只**单关节**偏转；
+    * 偏转幅度 ``|delta| <= amplitude_deg``（硬上限 ``FK_MAX_AMPLITUDE_DEG``）；
+    * 目标必须落在关节限位（执行域）内，且**不越过 home 邻域**
+      （base 在 home 哪一侧，目标必须留在同一侧）；
+    * 每个样本一个**互不相同**的位形（同一位形重复采样不能判定偏置性质）。
+
+    返回 ``[{"index", "joint_index", "joint_name", "delta_deg", "target_deg"}]``。
+    """
+    base = [float(v) for v in base_deg]
+    if len(base) != len(FK_JOINT_NAMES):
+        raise HwCollectError("基准位形必须是 %d 个关节角，收到 %d"
+                             % (len(FK_JOINT_NAMES), len(base)))
+    if n <= 0:
+        raise HwCollectError("采样数必须为正：%r" % (n,))
+    amplitude = float(amplitude_deg)
+    if not (amplitude > 0):
+        raise HwCollectError("采样幅度必须为正：%r" % (amplitude_deg,))
+    if amplitude > FK_MAX_AMPLITUDE_DEG:
+        raise HwCollectError("采样幅度 %r 超过硬上限 %r°（安全边界，不得放宽）"
+                             % (amplitude_deg, FK_MAX_AMPLITUDE_DEG))
+    if joints is None:
+        joint_idx = list(range(len(FK_JOINT_NAMES)))
+    else:
+        joint_idx = []
+        for item in joints:
+            if isinstance(item, str):
+                name = item.strip().lower()
+                if name not in FK_JOINT_NAMES:
+                    raise HwCollectError("未知关节名 %r（可选：%s）"
+                                         % (item, ", ".join(FK_JOINT_NAMES)))
+                joint_idx.append(FK_JOINT_NAMES.index(name))
+            else:
+                idx = int(item)
+                if not (0 <= idx < len(FK_JOINT_NAMES)):
+                    raise HwCollectError("关节下标 %r 越界（0..%d）"
+                                         % (item, len(FK_JOINT_NAMES) - 1))
+                joint_idx.append(idx)
+        if not joint_idx:
+            raise HwCollectError("--fk-joints 不能为空")
+
+    home = list(home_deg) if home_deg else [0.0] * len(FK_JOINT_NAMES)
+    rng = np.random.default_rng(int(seed))
+    plan = []
+    seen = set()
+    attempts = 0
+    max_attempts = max(50, 20 * int(n))
+    while len(plan) < int(n) and attempts < max_attempts:
+        attempts += 1
+        j = joint_idx[len(plan) % len(joint_idx)]
+        sign = 1.0 if rng.random() < 0.5 else -1.0
+        magnitude = amplitude * float(rng.uniform(0.6, 1.0))
+        target = list(base)
+        target[j] = base[j] + sign * magnitude
+        if limits is not None:
+            lo, hi = limits[j]
+            target[j] = min(max(target[j], lo), hi)
+        # **不越过 home 邻域**：base 在 home 的哪一侧，目标必须留在同一侧
+        h = home[j]
+        if base[j] > h:
+            target[j] = max(target[j], h)
+        elif base[j] < h:
+            target[j] = min(target[j], h)
+        # 幅度硬上限（限位/home 夹紧后仍不得超出）
+        delta = target[j] - base[j]
+        if abs(delta) > amplitude:
+            target[j] = base[j] + math.copysign(amplitude, delta)
+            delta = target[j] - base[j]
+        key = tuple(round(v, 6) for v in target)
+        if key in seen:
+            continue
+        seen.add(key)
+        plan.append({
+            "index": len(plan),
+            "joint_index": j,
+            "joint_name": FK_JOINT_NAMES[j],
+            "delta_deg": float(delta),
+            "target_deg": list(target),
+        })
+    if len(plan) < int(n):
+        raise HwCollectError("无法生成 %d 组互异位形（幅度 %r° 太小或限位/home 夹紧后无可用空间）"
+                             % (n, amplitude_deg))
+    return plan
+
+
+def _controller_pose_sample(snapshot):
+    """快照 → fk_cross 样本里的 ``controller_pose``（位置 + 姿态）。
+
+    **姿态必须进来**：只给位置时姿态项恒为 ``not_provided``，
+    <0.05° 判据从未真正生效（这是 S11 修正的第二个根因）。
+
+    优先用四元数（姿态与旋转约定无关），退化到 euler（rad）。
+    """
+    cp = (snapshot or {}).get("controller_pose") or {}
+    pos = cp.get("position") or {}
+    try:
+        x, y, z = (float(pos["x"]), float(pos["y"]), float(pos["z"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HwCollectError("控制器位姿缺位置字段：%r" % (exc,))
+    pose = {"x": x, "y": y, "z": z}
+    quat = cp.get("quaternion")
+    if isinstance(quat, dict) and all(k in quat for k in ("x", "y", "z", "w")):
+        pose["quat"] = [float(quat["x"]), float(quat["y"]),
+                        float(quat["z"]), float(quat["w"])]
+    else:
+        euler = cp.get("euler")
+        if isinstance(euler, dict) and all(k in euler for k in ("rx", "ry", "rz")):
+            pose["rpy"] = [float(euler["rx"]), float(euler["ry"]), float(euler["rz"])]
+    return pose
+
+
+def _load_calibration_offsets(ws=None, calibration_path=None):
+    """读工位标定偏置 → ``(tool_offset, base_offset, meta)``。
+
+    未标定（yaml 里是 null）返回 ``(None, None, meta)``——**不得**用默认值顶替。
+    """
+    path = calibration_path or os.path.join(paths.workcell_dir(ws), "rm_workcell.yaml")
+    meta = {"source": path, "available": False, "tcp": False, "base_to_base": False}
+    if not os.path.exists(path):
+        meta["note"] = "工位配置不存在（未标定）"
+        return None, None, meta
+    try:
+        cal = calibration.load_workcell_calibration(path)
+    except calibration.CalibrationError as exc:
+        meta["note"] = "标定段读取失败（按未标定处理）：%s" % exc
+        meta["error"] = str(exc)
+        return None, None, meta
+    meta["available"] = True
+    meta["tcp"] = cal.get("tcp") is not None
+    meta["base_to_base"] = cal.get("base_to_base") is not None
+    return cal.get("tcp"), cal.get("base_to_base"), meta
+
+
 def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
                         dry_run=False, ws=None, lib=None, urdf_path=None,
-                        link=None):
+                        link=None, amplitude_deg=FK_DEFAULT_AMPLITUDE_DEG,
+                        joints=None, calibration_path=None):
     """FK 与控制器位姿交叉校验（调用 ``rmctl.fk_cross.cross_check``）。
 
     控制器位姿只进入比对报告，**不得**写回轨迹/模型（R003）。
+
+    **采样口径（S11）**：不再"重复同一位形"，而是**有界多样位形**——
+    以当前位姿为原点，单关节依次小幅偏转（默认 ≤5°、速度 ≤10%），
+    每步测完**回原位**。同时把控制器**姿态**写进样本，使姿态项参与判定，
+    并把工位标定偏置（``calibration.tcp`` / ``calibration.base_to_base``）
+    传给 ``cross_check``，使报告同时给出 raw / corrected 两组指标。
     """
     params = {"n": n, "seed": seed, "ip": ip,
+              "amplitude_deg": amplitude_deg,
+              "joints": list(joints) if joints else list(FK_JOINT_NAMES),
               "tolerances": {"pos_mm": fk_cross.DEFAULT_POS_TOL_MM,
                              "ori_deg": fk_cross.DEFAULT_ORI_TOL_DEG},
               "controller_pose_usage": fk_cross.CONTROLLER_POSE_USAGE}
     started = _now_iso()
+    tool_offset, base_offset, cal_meta = _load_calibration_offsets(ws, calibration_path)
+    params["calibration"] = cal_meta
+
     if dry_run:
-        syn = fk_cross.synthesize_samples(n=n, seed=seed, urdf_path=urdf_path)
-        report = fk_cross.cross_check(syn["samples"], urdf_path)
-        summary = fk_cross.fk_recheck_fields(report)
-        summary["ok"] = bool(report["ok"])
-        summary["violations"] = report["violations"]
-        summary["note"] = "dry-run 合成样本，不是真机位姿"
+        base = [0.0] * len(FK_JOINT_NAMES)
+        plan = fk_sampling_plan(base, n=n, amplitude_deg=amplitude_deg,
+                                joints=joints, seed=seed, limits=_fk_limits_deg(ws))
+        targets = [step["target_deg"] for step in plan]
+        samples = fk_cross.synthesize_samples_for_configs(targets, urdf_path)
+        report = fk_cross.cross_check(samples, urdf_path,
+                                      tool_offset=tool_offset, base_offset=base_offset)
+        summary = _fk_summary(report, plan, cal_meta, source="synthetic",
+                              amplitude_deg=amplitude_deg,
+                              note="dry-run 合成样本（非真机位姿）")
         return _result("fk_cross", arm, "dry_run", STATUS_DRY_RUN, params,
-                        syn["samples"], summary,
+                        samples, summary,
                         _synthetic_evidence("fk_cross", "合成 FK 交叉样本"), started)
 
     link, failure = _connect_arm(arm=arm, ip=ip, ws=ws, lib=lib, link=link)
@@ -1082,23 +1280,33 @@ def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
         return failure
 
     samples = []
+    plan = []
+    base_deg = None
     try:
-        for _ in range(n):
-            rc, deg = _joint_degrees(link)
-            if rc != 0:
-                raise HwCollectError("rm_get_joint_degree 返回码 %r" % rc)
-            goal = [float(v) for v in deg]
-            move = link.preposition_movej(goal, speed=5, block=1)
+        rc, deg = _joint_degrees(link)
+        if rc != 0:
+            raise HwCollectError("rm_get_joint_degree 返回码 %r" % rc)
+        base_deg = [float(v) for v in deg]
+        plan = fk_sampling_plan(base_deg, n=n, amplitude_deg=amplitude_deg,
+                                joints=joints, seed=seed, limits=_fk_limits_deg(ws))
+        for step in plan:
+            move = link.preposition_movej(step["target_deg"], speed=FK_MAX_SPEED_PCT, block=1)
             if move.get("status") != "ok":
                 raise HwCollectError(move.get("reason") or "rm_movej 失败")
             snap = link.snapshot()
             if snap.get("status") != "ok":
                 raise HwCollectError(snap.get("reason") or "状态快照失败")
-            pos = snap["snapshot"]["controller_pose"]["position"]
-            samples.append({"joint_deg": goal,
-                            "controller_pose": {"x": float(pos["x"]),
-                                                "y": float(pos["y"]),
-                                                "z": float(pos["z"])}})
+            pose = _controller_pose_sample(snap.get("snapshot") or {})
+            rc, actual = _joint_degrees(link)
+            if rc != 0:
+                raise HwCollectError("rm_get_joint_degree 返回码 %r" % rc)
+            samples.append({"joint_deg": [float(v) for v in actual],
+                            "commanded_joint_deg": list(step["target_deg"]),
+                            "controller_pose": pose})
+            # **每步测完回原位**（回到基准位形）
+            back = link.preposition_movej(base_deg, speed=FK_MAX_SPEED_PCT, block=1)
+            if back.get("status") != "ok":
+                raise HwCollectError(back.get("reason") or "回原位 rm_movej 失败")
     except HwCollectError as exc:
         return _result("fk_cross", arm, "hardware", STATUS_ERROR, params, samples, {},
                        [_evidence_error(str(exc),
@@ -1107,15 +1315,10 @@ def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
                               "next_action": "确认控制器在线后重跑 FK 交叉校验"})
     finally:
         _close_link(link)
-    report = fk_cross.cross_check(samples, urdf_path)
-    summary = fk_cross.fk_recheck_fields(report)
-    summary["ok"] = bool(report["ok"])
-    summary["violations"] = report["violations"]
-    # **归因分析**（fk_cross 已实现，见 rmctl.fk_cross._attribution）：
-    # 区分「系统性平移」（零位漂移 / TCP 工具偏置）与「离散偏差」（个别关节异常）。
-    # 只看标量 max_mm 会把两者混为一谈 → 必须带上归因。
-    attribution = report.get("attribution") or {}
-    summary["attribution"] = attribution
+    report = fk_cross.cross_check(samples, urdf_path,
+                                  tool_offset=tool_offset, base_offset=base_offset)
+    summary = _fk_summary(report, plan, cal_meta, source="hardware",
+                          amplitude_deg=amplitude_deg)
     details = report.get("samples_detail") or []
     vectors = [list(d.get("dev_vector_mm") or []) for d in details]
     vectors = [v for v in vectors if len(v) == 3]
@@ -1134,6 +1337,50 @@ def fk_cross_experiment(arm="left", n=FK_DEFAULT_SAMPLES, seed=42, ip=None,
     return _result("fk_cross", arm, "hardware", STATUS_OK, params, samples, summary,
                    [{"kind": "sdk", "detail": "SDK 路径: %s" % (sdk_path(ws=ws) or "<injected>")},
                     {"kind": "fk_report", "ok": report["ok"]}], started)
+
+
+def _fk_summary(report, plan, cal_meta, source="hardware", note=None,
+                amplitude_deg=None):
+    """FK 复测 summary：raw / corrected 两组指标 + residual_kind + 采样元数据。"""
+    summary = fk_cross.fk_recheck_fields(report)
+    summary["ok"] = bool(report["ok"])
+    summary["ok_corrected"] = bool(report.get("ok_corrected", report["ok"]))
+    summary["violations"] = report["violations"]
+    corrections = report.get("corrections") or {}
+    summary["raw"] = {
+        "max_pos_dev_mm": (corrections.get("raw") or {}).get("max_pos_dev_mm"),
+        "mean_pos_dev_mm": (corrections.get("raw") or {}).get("mean_pos_dev_mm"),
+        "max_ori_dev_deg": (corrections.get("raw") or {}).get("max_ori_dev_deg"),
+        "ok": bool(report["ok"]),
+    }
+    summary["corrected"] = {
+        "max_pos_dev_mm": (corrections.get("corrected") or {}).get("max_pos_dev_mm"),
+        "mean_pos_dev_mm": (corrections.get("corrected") or {}).get("mean_pos_dev_mm"),
+        "max_ori_dev_deg": (corrections.get("corrected") or {}).get("max_ori_dev_deg"),
+        "ok": bool(report.get("ok_corrected", report["ok"])),
+    }
+    attribution = report.get("attribution") or {}
+    summary["attribution"] = attribution
+    summary["residual_kind"] = attribution.get("residual_kind")
+    attribution_corr = report.get("attribution_corrected") or {}
+    summary["residual_kind_corrected"] = attribution_corr.get("residual_kind")
+    summary["sampling"] = {
+        "source": source,
+        "strategy": "bounded_single_joint_offset（单关节依次小幅偏转，测完回原位）",
+        "amplitude_deg": (float(FK_DEFAULT_AMPLITUDE_DEG) if amplitude_deg is None
+                          else float(amplitude_deg)),
+        "samples": int(report.get("samples") or 0),
+        "distinct_configs": len({tuple(step["target_deg"]) for step in plan}),
+        "joints": sorted({step["joint_name"] for step in plan}),
+        "return_to_origin": True,
+        "speed_pct": FK_MAX_SPEED_PCT,
+        "plan": [{"index": step["index"], "joint": step["joint_name"],
+                  "delta_deg": step["delta_deg"]} for step in plan],
+    }
+    summary["calibration"] = cal_meta
+    if note:
+        summary["note"] = note
+    return summary
 
 
 # ------------------------------------------------------------------ 急停演练
@@ -1353,6 +1600,15 @@ def _build_parser():
                     help="ladder_acc_jerk 每个关节的重复次数（默认 3，取包络）")
     ap.add_argument("--samples", type=int, default=FK_DEFAULT_SAMPLES,
                     help="fk_cross 位形组数（默认 20）")
+    ap.add_argument("--fk-amplitude-deg", dest="fk_amplitude_deg", type=float,
+                    default=FK_DEFAULT_AMPLITUDE_DEG,
+                    help="fk_cross 单关节偏转幅度（度，默认 %g，上限 %g）"
+                         % (FK_DEFAULT_AMPLITUDE_DEG, FK_MAX_AMPLITUDE_DEG))
+    ap.add_argument("--fk-joints", dest="fk_joints", default=None,
+                    help="fk_cross 参与采样的关节（逗号分隔：下标 0..6 或 joint1..joint7；"
+                         "缺省全部 7 个）")
+    ap.add_argument("--seed", type=int, default=42,
+                    help="采样随机种子（位形生成可复现）")
     ap.add_argument("--photo", action="append", default=None,
                     help="zero_capture 的证据照片引用（可重复）")
     ap.add_argument("--target", default=None,
@@ -1382,7 +1638,26 @@ def main(argv=None):
     elif args.experiment == "ladder_acc_jerk":
         kwargs.update({"trials": args.trials})
     elif args.experiment == "fk_cross":
-        kwargs.update({"n": args.samples})
+        kwargs.update({"n": args.samples, "seed": args.seed,
+                       "amplitude_deg": args.fk_amplitude_deg})
+        if args.fk_joints:
+            joints = []
+            for token in args.fk_joints.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                if token.lower().startswith("joint"):
+                    joints.append(token.lower())
+                else:
+                    try:
+                        joints.append(int(token))
+                    except ValueError:
+                        print("输入非法: --fk-joints 必须是下标或 jointN", file=sys.stderr)
+                        return 2
+            if not joints:
+                print("输入非法: --fk-joints 不能为空", file=sys.stderr)
+                return 2
+            kwargs.update({"joints": joints})
     elif args.experiment == "zero_capture":
         kwargs.update({"photos": args.photo or []})
 
