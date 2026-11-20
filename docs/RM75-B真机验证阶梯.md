@@ -153,7 +153,26 @@ docker run --rm --network host -v /home:/home -w "$PWD" \
 
 ---
 
-## 6. 与 M001 里程碑验证的关系
+## 6. 里程碑收尾的三项辅助工具（不属于 V0→V9 阶梯）
+
+阶梯解决"链路是否可信"，这三项解决"验收条款的字面要求"：
+
+| 工具 | 对应条款 | 说明 |
+|---|---|---|
+| `scripts/rm75_limit_downlink.py` | R004「能下发限值」 | 驱动级速度/加速度/位置下发留档。默认 dry-run（0 次 SDK 调用只出 diff）；`--apply` 才下发，速度按 `--speed-scale`（默认 0.2 =「≤20% 速度起步」）收紧；**位置限值用执行域**（机械范围）而非规划域；白名单无读回符号 → 只以返回码 + diff 判定。**真机已完成：28 次调用全 rc=0。** |
+| `scripts/rm75_long_run.py` | S03/R001「连续 10 分钟透传无保护停」 | 默认 600 s、10 ms 栅格、单关节 0.2° 微动，走执行层 live 路径；先跑 7 项前置检查，不通过就不发运动指令。**待执行（需臂已使能）。** |
+| `scripts/rm75_stream_loss_drill.py` | S03/R001「断流 200 ms 内停机」 | 流式开始后关闭主动上报（`rm_set_realtime_push(enable=0)`，C 类纯配置符号），反馈龄期越过 200 ms → 期望执行层判 L4 断流并 `rm_set_arm_stop` 急停。**待执行（需臂已使能）。** |
+
+### 6.1 范围重划（2026-11-20）
+
+M001-3kzz40 的验收范围已收敛为**单臂**（标题即为"单臂真机打通 + 规划服务与性能优化"）：
+夹爪真机、取放真机 50 圈、人工 MTTR、现场 UAT 签字、TCP 标定与零位/固件取证
+整体移交新里程碑 **M002-o62zc6（夹爪与真机工艺闭环 + 现场验收，T01–T05）**。
+**未降级**：10 分钟长跑与断流真机复现仍留在 M001 范围内，作为未完成项继续执行。
+
+---
+
+## 7. 与 M001 里程碑验证的关系
 
 `.gsd/phases/01-3kzz40-phase/01-VALIDATION.md` 的判定是 `needs-attention`，
 **唯一原因**是"真机窗口不可达 → CC1/CC2/CC4/CC6/CC7 与 Operational/UAT 计划项缺少
@@ -172,7 +191,7 @@ docker run --rm --network host -v /home:/home -w "$PWD" \
 
 ---
 
-## 7. 离线自检（不碰真机）
+## 8. 离线自检（不碰真机）
 
 ```bash
 python3 -m pytest dualarm_ws/src/rmctl/tests/test_rm75_validation_ladder.py \

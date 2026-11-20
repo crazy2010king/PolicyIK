@@ -255,6 +255,19 @@ python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --channel canfd  --joint 0 
 bash scripts/run_rm75_probe.sh --ip 192.168.1.18
 bash scripts/run_rm75_probe.sh --ip 192.168.1.18 --with-motion --joint 0 --delta-deg 0.3 --speed-pct 2
 
+# 驱动级限值下发留档（默认 dry-run；--apply 才下发，速度按 20% 起步收紧）
+python3 scripts/rm75_limit_downlink.py --ip 192.168.1.18
+python3 scripts/rm75_limit_downlink.py --ip 192.168.1.18 --apply --speed-scale 0.2 \
+        --out build/reports/validation/limit_downlink_20261119.json
+
+# 真机长跑（默认 600 s 微动轨迹，执行层 live 路径）
+python3 scripts/rm75_long_run.py --ip 192.168.1.18 --duration-s 600 \
+        --out build/reports/validation/long_run_600s.json
+
+# 真机 UDP 断流复现（关主动上报 → 期望 200 ms 内 L4 停机）
+python3 scripts/rm75_stream_loss_drill.py --ip 192.168.1.18 \
+        --out build/reports/validation/stream_loss_drill.json
+
 # 报告速览（只读文件）
 python3 scripts/rm75_probe_report.py build/reports/validation/ladder_report.json
 
@@ -297,7 +310,15 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | V8 | joint1 三档（10°/档、速度 5/8/11%、每档回原位）：包络 acc **1.7557 rad/s²**、jerk **81.099 rad/s³** |
 | V9 | 软停 rc=0、急停 rc=0、`drill_performed=true`、状态快照留档 |
 
-### 6.2 本轮暴露并修复的 7 个真机缺陷
+### 6.2 里程碑收尾的三项真机工具（2026-11-20）
+
+| 工具 | 目的 | 真机结果 |
+|---|---|---|
+| `scripts/rm75_limit_downlink.py` | 驱动级限值下发留档（R004 剩余项） | **已完成**：28 次 SDK 调用（7 关节 × 速度/加速度/下限/上限）全部 rc=0；位置限值用**执行域**（机械范围），速度按 20% 起步收紧；白名单无读回符号 → 只以返回码 + diff 判定，不伪造读回值 |
+| `scripts/rm75_long_run.py` | 10 分钟连续执行长跑（S03/R001 字面要求） | **待执行**：需臂已使能（当前 7 轴掉使能） |
+| `scripts/rm75_stream_loss_drill.py` | UDP 断流 200 ms 内停机的真机复现 | **待执行**：需臂已使能 |
+
+### 6.3 本轮暴露并修复的 7 个真机缺陷
 
 | # | 现象 | 根因 | 修复 |
 |---|---|---|---|
@@ -324,7 +345,8 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | **CC2 的"连续 10 分钟"** | 当前只有 5.53 s / 501 拍 | 用执行层跑一条 ≥600 s 的微动轨迹（周期 10 ms → 约 6 万拍） |
 | **CC1 取放 50 次 / 夹爪** | 未覆盖 | 需夹爪供电与协议时序打通后另开窗口 |
 | **双臂（P4/P5）** | 右臂 `192.168.1.19` 未接触 | 右臂网络可达后另开窗口；注意 UDP 端口 8092 预留 |
-| **里程碑验证重跑** | M001 仍是 `needs-attention` | 证据已入库（`workcell/baselines/evidence/rm75_validation_ladder_20261119.json`），可重跑 `/gsd validate-milestone`；但 CC1/CC3 与 V6 未闭合，判定大概率仍是 needs-attention |
+| **里程碑验证重跑** | M001 仍是 `needs-attention` | 2026-11-20 已做**范围重划**：M001 收敛为单臂（验收条款、ROADMAP Success Criteria、CONTEXT、需求归属均已更新），夹爪/取放/现场人项移交新里程碑 **M002-o62zc6**（T01–T05）；M001 剩余未完成项为 10 分钟长跑与断流真机复现（需臂使能） |
+| **臂的使能状态** | 急停演练后已清错复位（`RM_IDLE_E`），但 **7 轴仍掉使能**（`joint_en_flag` 全 0） | 需在示教器**重新使能**；在此之前探针的 7 项前置检查会拒绝任何运动指令（这是预期行为） |
 
 ---
 
@@ -338,6 +360,9 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | 高风险阶段 | `... --stages V8,V9 --allow-risky` |
 | 600 s 上报长跑 | `... --stages V2 --udp-duration-s 600` |
 | 单点微动 | `python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --channel movej --joint 0 --delta-deg 0.3 --speed-pct 2` |
+| 限值下发留档 | `python3 scripts/rm75_limit_downlink.py --ip 192.168.1.18 --apply --speed-scale 0.2` |
+| 真机长跑 | `python3 scripts/rm75_long_run.py --ip 192.168.1.18 --duration-s 600` |
+| 断流复现 | `python3 scripts/rm75_stream_loss_drill.py --ip 192.168.1.18` |
 | 一键（默认只读） | `bash scripts/run_rm75_probe.sh --ip 192.168.1.18` |
 | 报告速览 | `python3 scripts/rm75_probe_report.py build/reports/validation/ladder_report.json` |
 | 黑名单审计 | `python3 -m rm_hw_bridge.audit --repo` |
