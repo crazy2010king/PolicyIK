@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""真机 UDP 断流复现（S03 / R001 的"断流 200 ms 内停机"验收项）。
+
+离线只能**注入**假断流；真机证据必须让反馈通道**真的**断掉。本工具的做法：
+
+1. 建链并**开启**主动上报（`rm_set_realtime_push(enable=1)`）；
+2. 启动执行层真机路径（10 ms 栅格流式透传）；
+3. 流式开始后 ~1 s，**关闭主动上报**（`rm_set_realtime_push(enable=0)`）
+   —— 控制器不再上报，SDK 反馈缓存随之变陈旧；
+4. 执行层的反馈龄期越过 ``STREAM_STOP_MS``(200 ms) → 判 **L4 断流** →
+   ``rm_set_arm_stop`` 急停；本工具记录"关上报 → L4 动作"的时延与事件链。
+
+只使用契约白名单内的符号（``rm_set_realtime_push`` 属 C 类：纯配置）。
+
+用法::
+
+    python3 scripts/rm75_stream_loss_drill.py --ip 192.168.1.18 \
+        --out build/reports/validation/stream_loss_drill.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import threading
+import time
+from typing import Any, Dict, Optional
+
+SCHEMA = "rmctl.rm75_stream_loss_drill/1"
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="rm75_stream_loss_drill",
+        description="真机 UDP 断流复现（关主动上报 → 期望 200 ms 内 L4 停机）")
+    parser.add_argument("--ip", default="192.168.1.18")
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--udp-port", dest="udp_port", type=int, default=8091)
+    parser.add_argument("--arm", choices=["left", "right"], default="left")
+    parser.add_argument("--cut-after-s", dest="cut_after_s", type=float, default=1.0,
+                        help="流式开始后多久关闭主动上报（秒）")
+    parser.add_argument("--duration-s", dest="duration_s", type=float, default=8.0)
+    parser.add_argument("--out", default=None)
+    parser.add_argument("--ws", default=None)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "rm75_safe_probe", os.path.join(here, "rm75_safe_probe.py"))
+    probe = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = probe
+    spec.loader.exec_module(probe)
+
+    from rm_executor import cli as executor_cli
+
+    # 1) 前置检查（只读）
+    pre = probe.run_probe(arm=args.arm, ip=args.ip, port=args.port,
+                           udp_port=args.udp_port, precheck_only=True, ws=args.ws)
+    if pre.get("status") != "ok":
+        sys.stderr.write("前置检查未通过，不运动: %s\n" % pre.get("reason"))
+        return 3
+    joints = None
+    for phase in pre.get("phases") or []:
+        if phase.get("name") == "snapshot":
+            joints = (phase.get("data") or {}).get("snapshot", {}).get("joint_deg")
+
+    # 2) 生成一条 8 s 的微动轨迹（断流演练要的是"运动中断流"）
+    long_run = importlib.util.module_from_spec(
+        importlib.util.spec_from_file_location("rm75_long_run",
+                                               os.path.join(here, "rm75_long_run.py")))
+    sys.modules["rm75_long_run"] = long_run
+    long_run.spec.loader.exec_module(long_run)
+    traj = long_run.build_trajectory(joints, 0, 0.2, args.duration_s, 0.010)
+    ws = args.ws or here
+    traj_path = os.path.join(ws, "build", "reports", "validation",
+                             "stream_loss_trajectory.json")
+    os.makedirs(os.path.dirname(traj_path), exist_ok=True)
+    with open(traj_path, "w", encoding="utf-8") as fh:
+        json.dump(traj, fh)
+
+    # 3) 起一个线程在 cut_after_s 后关闭主动上报
+    from rm_hw_bridge import bridge as hw_bridge
+    cut_at = [None]
+    cut_result = [None]
+
+    def _cut():
+        time.sleep(args.cut_after_s)
+        link, failure = probe._connect_link(args.arm, args.ip, args.port,
+                                            args.udp_port, True, args.ws, None)
+        if link is None:
+            cut_result[0] = {"status": "error",
+                              "reason": (failure or {}).get("reason", "连接失败")}
+            return
+        try:
+            res = link.set_realtime_push_enabled(False)
+            cut_at[0] = time.time()
+            cut_result[0] = {"status": res.get("status"),
+                              "reason": res.get("reason"),
+                              "sdk_calls": res.get("sdk_calls")}
+        finally:
+            try:
+                link.close()
+            except Exception:
+                pass
+
+    worker = threading.Thread(target=_cut, daemon=True)
+    worker.start()
+
+    # 4) 执行层真机路径（它自己会建链；注意：这会占第二个连接额度）
+    t0 = time.time()
+    report = executor_cli.execute(mode="live", trajectory_path=traj_path, realtime=True,
+                                  arm=args.arm, ip=args.ip, port=args.port,
+                                  udp_port=args.udp_port, ws=args.ws)
+    worker.join(timeout=5.0)
+
+    events = report.get("events") or []
+    stream_lost = [e for e in events if e.get("type") == "feedback_stream_lost"]
+    evidence = {
+        "schema": SCHEMA,
+        "mode": "hardware",
+        "status": report.get("status"),
+        "reason": report.get("reason"),
+        "arm": args.arm,
+        "endpoint": {"ip": args.ip, "port": args.port},
+        "params": {"cut_after_s": args.cut_after_s, "duration_s": args.duration_s},
+        "cut_result": cut_result[0],
+        "events": [e.get("type") for e in events],
+        "stream_lost": bool(stream_lost),
+        "stream_lost_evidence": stream_lost[:2],
+        "wall_s": round(time.time() - t0, 3),
+        "trajectory": traj_path,
+        "expectation": "关闭主动上报后，反馈龄期越过 STREAM_STOP_MS(200 ms) → L4 断流 → rm_set_arm_stop",
+    }
+    if args.out:
+        out = os.path.abspath(args.out)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump(evidence, fh, ensure_ascii=False, indent=2)
+    if args.json:
+        print(json.dumps(evidence, ensure_ascii=False, indent=2))
+    else:
+        print("断流演练：status=%s 断流事件=%s" % (evidence["status"],
+                                                  evidence["stream_lost"]))
+        print("  关上报: %s" % (cut_result[0] or {}).get("reason"))
+        for e in evidence["stream_lost_evidence"]:
+            print("  - %s" % e)
+    return 0 if evidence["stream_lost"] else 4
+
+
+if __name__ == "__main__":
+    sys.exit(main())

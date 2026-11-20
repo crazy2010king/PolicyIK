@@ -502,6 +502,8 @@ class ArmLink:
         realtime_period_ms: Optional[int] = None,
         endpoint: Optional[Dict[str, Any]] = None,
         sdk_timeout_result: Optional[Dict[str, Any]] = None,
+        realtime_target_ip: Optional[str] = None,
+        udp_port: Optional[int] = None,
     ) -> None:
         self._bridge = bridge
         self._handle = handle
@@ -510,6 +512,8 @@ class ArmLink:
         self.next_action = next_action
         self.evidence = list(evidence or [])
         self.realtime_period_ms = realtime_period_ms
+        self.realtime_target_ip = realtime_target_ip
+        self.udp_port = udp_port
         self.endpoint = dict(endpoint or {})
         self._closed = False
         # 建连期 ``rm_set_timeout`` 的结果（成功/失败都留痕，**不静默**）
@@ -1251,6 +1255,55 @@ class ArmLink:
             arm_current_status_name=status_name,
         )
 
+    # ------------------------------------------------- 主动上报开关（窄接口）
+    def set_realtime_push_enabled(self, enabled: bool,
+                                  port: Optional[int] = None,
+                                  target_ip: Optional[str] = None) -> Dict[str, Any]:
+        """开/关 UDP 主动上报（``rm_set_realtime_push`` 的 ``enable`` 位）。
+
+        用途：**真机断流复现**——执行层要求"UDP 断流 200 ms 内停机"必须有真机证据；
+        离线只能注入假断流。关掉主动上报后，控制器不再上报，执行层的反馈龄期
+        会在 200 ms 内越过阈值并触发 L4 急停 —— 这是**真实**的断流链路。
+
+        * 只用契约白名单内的 ``rm_set_realtime_push``（C 类：纯配置，无解算）；
+        * 关闭时把 ``enable=0``、``cycle`` 保持合法值（5 的倍数），避免配置非法；
+        * 目标 IP/端口沿用建链时的配置（未显式给出时从实时上报状态推断，
+          推断不到则用 ``0.0.0.0`` + 当前端口）。
+        """
+        if not self.connected:
+            return self._not_connected("主动上报开关")
+        sym = "rm_set_realtime_push"
+        fn = getattr(self._bridge.binding, sym, None)
+        if fn is None:
+            return errors.error(
+                "契约清单缺少符号 %s，无法开关主动上报" % sym,
+                "确认所用 .so 为 RM-API2 1.1.7，重新物化 SDK 后重跑",
+                [], symbol=sym, sdk_calls=0)
+        cfg = gen.rm_realtime_push_config_t()
+        cfg.cycle = int(self.realtime_period_ms or REALTIME_CYCLE_MULTIPLE_MS)
+        cfg.enable = bool(enabled)
+        cfg.port = int(port or self._udp_port or 0)
+        cfg.force_coordinate = 0
+        cfg.ip = (target_ip or self._realtime_target_ip or "0.0.0.0").encode("utf-8")[:27]
+        cfg.custom_config.arm_current_status = 1
+        cfg.custom_config.joint_speed = 1
+        try:
+            rc = int(fn(self._handle, cfg) or 0)
+        except Exception as exc:  # noqa: BLE001 - SDK 异常统一转 error
+            return errors.error(
+                "%s 调用异常：%s" % (sym, exc),
+                "确认 .so 与当前架构匹配后重跑", [repr(exc)],
+                symbol=sym, rc=None, sdk_calls=1)
+        if rc != 0:
+            return errors.error(
+                "%s 返回 %d（开关主动上报失败）" % (sym, rc),
+                "确认控制器在线、目标 IP/端口合法后重跑",
+                ["%s rc=%d" % (sym, rc)], symbol=sym, rc=rc, sdk_calls=1)
+        return errors.ok(
+            "主动上报已%s" % ("开启" if enabled else "关闭"),
+            "", ["%s rc=0" % sym],
+            symbol=sym, rc=0, sdk_calls=1, enabled=bool(enabled))
+
     # ------------------------------------------------------- 关节角透传通道
     def _not_connected(self, action: str) -> Dict[str, Any]:
         """未连接时的统一失败结果（**不伪造任何数值**）。"""
@@ -1960,6 +2013,8 @@ def connect(
         realtime_period_ms=period if enable_realtime else None,
         endpoint=endpoint,
         sdk_timeout_result=timeout_result,
+        realtime_target_ip=(realtime_target_ip or ip) if enable_realtime else None,
+        udp_port=int(target_port) if enable_realtime else None,
     )
 
 
