@@ -282,3 +282,60 @@ def test_blocked_result_has_no_fabricated_values(tmp_path):
     assert res["status"] == "blocked"
     assert res["config"] is None
     assert res["next_action"]
+
+
+# ------------------------------------------- 结构化声明标志（S12/T4）
+def test_result_carries_structured_declared_flag(repo_root):
+    """load 结果恒带**结构化**布尔字段 gripper_declared（仓库工位：已声明）。"""
+    res = gripper_config.load_gripper_config(repo_root)
+    assert res[gripper_config.DECLARED_KEY] is True
+
+
+def test_declared_flag_false_when_section_missing(tmp_path):
+    """工位**未配置**夹爪 → gripper_declared=False（调用方据此走「不启用互锁」）。"""
+    ws = _make_ws(tmp_path, "version: 1\nexecution:\n  period_s: 0.01\n")
+    res = gripper_config.load_gripper_config(ws)
+    assert res["status"] == "blocked"
+    assert res[gripper_config.DECLARED_KEY] is False
+
+
+def test_declared_flag_true_even_when_fields_missing(tmp_path):
+    """工位**已配置**夹爪但字段缺失 → gripper_declared=True（fail-closed 判据）。"""
+    text = _VALID_GRIPPER.replace("      device_id: 1\n", "")
+    ws = _make_ws(tmp_path, text)
+    res = gripper_config.load_gripper_config(ws)
+    assert res["status"] == "blocked"
+    assert "device_id" in res["reason"]
+    assert res[gripper_config.DECLARED_KEY] is True
+
+
+def test_gripper_declaration_is_structured(repo_root):
+    """gripper_declaration：仓库工位 → declared=True / known=True。"""
+    decl = gripper_config.gripper_declaration(repo_root)
+    assert decl["declared"] is True
+    assert decl["known"] is True
+    assert decl["evidence"]
+
+
+def test_gripper_declaration_false_when_section_missing(tmp_path):
+    """工位无 gripper: 段 → declared=False / known=True（**已知**的「未配置」）。"""
+    ws = _make_ws(tmp_path, "version: 1\nexecution:\n  period_s: 0.01\n")
+    decl = gripper_config.gripper_declaration(ws)
+    assert decl["declared"] is False
+    assert decl["known"] is True
+
+
+def test_gripper_declaration_unknown_when_file_missing(tmp_path):
+    """工位文件缺失 → known=False（**无法判定** → 调用方必须保守拒绝）。"""
+    os.makedirs(os.path.join(str(tmp_path), "dualarm_ws", "src", "rm_description"))
+    os.makedirs(os.path.join(str(tmp_path), "workcell"))
+    decl = gripper_config.gripper_declaration(str(tmp_path))
+    assert decl["declared"] is False
+    assert decl["known"] is False
+
+
+def test_gripper_declaration_unknown_when_yaml_broken(tmp_path):
+    """YAML 解析失败 → known=False（不静默当成「未配置夹爪」）。"""
+    ws = _make_ws(tmp_path, "version: 1\ngripper:\n  model: [unclosed\n")
+    decl = gripper_config.gripper_declaration(ws)
+    assert decl["known"] is False

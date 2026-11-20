@@ -30,13 +30,22 @@ from rm_hw_bridge import errors, paths
 
 __all__ = [
     "CALIBRATION_FIELDS",
+    "DECLARED_KEY",
     "GRIPPER_SECTION",
     "PATHS",
     "REQUIRED_FIELDS",
     "THRESHOLD_KEYS",
     "GripperConfig",
+    "gripper_declaration",
     "load_gripper_config",
 ]
+
+#: 结果字典里的**结构化**声明标志：工位文件是否**声明**了 ``gripper:`` 段。
+#:
+#: ``load_gripper_config`` 的 ``reason`` 是自由文本（人读），**不得**被调用方
+#: 用字符串匹配来分流「工位未配置夹爪」与「工位已配置但配置非法」；
+#: 调用方一律读这个布尔字段（或 :func:`gripper_declaration` 的 ``declared``）。
+DECLARED_KEY = "gripper_declared"
 
 #: 工位文件里的夹爪段名
 GRIPPER_SECTION = "gripper"
@@ -224,12 +233,84 @@ def load_gripper_config(ws: str = None) -> Dict[str, Any]:
         * 失败：``{"status": "blocked", "reason": "...（指名缺失/非法字段）",
           "next_action": "（可粘贴）", "evidence": [...], "config": None}``。
 
+    另外**恒定**带一个**结构化**布尔字段 ``gripper_declared``
+    （:data:`DECLARED_KEY`）：工位文件是否**声明**了 ``gripper:`` 段。
+    ``True`` = 声明了（哪怕字段缺失/非法）；``False`` = 该工位**不使用**夹爪；
+    ``None`` = **无法判定**（工位文件缺失 / YAML 解析失败 / 顶层不是映射）。
+    调用方**只读这个布尔字段**来分流，**不得**去匹配 ``reason`` 自由文本。
+
     blocked 触发条件：工位文件缺失 / YAML 解析失败 / 缺 ``gripper:`` 段 /
     必需字段缺失或类型错 / 标定字段类型错。
 
     **标定字段为 ``None`` 不构成 blocked**（配置合法），但 ``config``
     里的对应值保持 ``None``，调用方据此走 ``NEEDS_PARAM``。
     """
+    holder: Dict[str, Any] = {}
+    res = _load_gripper_config_impl(ws, holder)
+    res[DECLARED_KEY] = holder.get("declared")
+    return res
+
+
+def gripper_declaration(ws: str = None) -> Dict[str, Any]:
+    """**结构化**判定：工位定义文件是否**声明**了 ``gripper:`` 段。
+
+    这是「工位是否配置夹爪」的**唯一无歧义**判据——``load_gripper_config``
+    的 ``reason`` 是自由文本（人读），调用方不得靠字符串匹配分流。
+
+    返回
+    ----
+    dict
+        ``{"declared": bool, "known": bool, "reason": str, "evidence": [...]}``
+
+        * ``declared=True``：工位里有 ``gripper:`` 段（**哪怕字段缺失/非法**）；
+        * ``declared=False``：工位里**没有** ``gripper:`` 段 → 该工位不使用夹爪；
+        * ``known=False``：**无法判定**（工位文件缺失 / YAML 解析失败 /
+          顶层不是映射）→ 调用方应**保守拒绝**（不得当成「未配置夹爪」）。
+
+    零 SDK、零 rmctl / rm_executor 依赖。
+    """
+    cfg_path = paths.workcell_config_path(ws)
+    evidence: List[str] = ["workcell: %s" % cfg_path]
+
+    if not os.path.isfile(cfg_path):
+        return {
+            "declared": False,
+            "known": False,
+            "reason": "找不到工位定义文件: %s（无法判定是否声明夹爪段）" % cfg_path,
+            "evidence": evidence,
+        }
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+    except Exception as exc:  # noqa: BLE001 - YAML 解析异常 → 无法判定
+        return {
+            "declared": False,
+            "known": False,
+            "reason": "工位定义文件解析失败（%s）: %s（无法判定是否声明夹爪段）"
+                      % (type(exc).__name__, exc),
+            "evidence": evidence + [repr(exc)],
+        }
+    if not isinstance(data, dict):
+        return {
+            "declared": False,
+            "known": False,
+            "reason": "工位定义文件格式错误（顶层必须是映射，当前 %s）"
+                      "（无法判定是否声明夹爪段）" % type(data).__name__,
+            "evidence": evidence,
+        }
+
+    declared = GRIPPER_SECTION in data
+    return {
+        "declared": bool(declared),
+        "known": True,
+        "reason": ("工位已声明 %s: 段" % GRIPPER_SECTION if declared
+                   else "工位未声明 %s: 段（该工位不使用夹爪）" % GRIPPER_SECTION),
+        "evidence": evidence + ["gripper 段存在: %s" % declared],
+    }
+
+
+def _load_gripper_config_impl(ws: str, holder: Dict[str, Any]) -> Dict[str, Any]:
+    """夹爪配置读取的**实现**（结果结构化声明标志由外层包装器补上）。"""
     cfg_path = paths.workcell_config_path(ws)
     evidence: List[str] = ["workcell: %s" % cfg_path]
 
@@ -254,6 +335,9 @@ def load_gripper_config(ws: str = None) -> Dict[str, Any]:
             "修复 %s 的 YAML 格式后重跑" % cfg_path,
             evidence,
         )
+
+    # **结构化**声明标志：工位是否声明了 gripper: 段（段存在但字段非法也算声明）
+    holder["declared"] = GRIPPER_SECTION in data
 
     section = data.get(GRIPPER_SECTION)
     if not isinstance(section, dict):

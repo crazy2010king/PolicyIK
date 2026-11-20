@@ -41,6 +41,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from rm_executor import contract
 from rm_executor import injection as injection_mod
+from rm_executor import interlock
 from rm_executor import metrics as metrics_mod
 from rm_executor import report as report_mod
 from rm_executor.clock import ManualClock, TickClock
@@ -85,6 +86,9 @@ INTERLOCK_DISABLED_NOTE = "未启用夹爪互锁"
 #: 「已启用夹爪互锁」的证据前缀（**固定文案**，便于检索）
 INTERLOCK_ENABLED_NOTE = "已启用夹爪互锁"
 
+#: 「夹爪互锁闸门不可用（fail-closed 拒绝运动）」的证据前缀（**固定文案**）
+INTERLOCK_UNAVAILABLE_NOTE = "夹爪互锁闸门不可用"
+
 
 class _Unset:
     """哨兵：区分「未传 motion_gate」与「显式传 None（不启用互锁）」。"""
@@ -97,40 +101,148 @@ class _Unset:
 _UNSET = _Unset()
 
 
+#: 「夹爪配置读取失败」时的可粘贴下一步（恢复硬件层导入）
+_NEXT_ACTION_HW_BRIDGE = (
+    "export PYTHONPATH=$PWD/dualarm_ws/src/rm_hw_bridge:$PYTHONPATH  "
+    "# 恢复硬件层导入后重跑同一条命令"
+)
+
+
+def _gripper_declaration(ws: Optional[str]) -> Dict[str, Any]:
+    """结构化判定：工位是否**声明**了夹爪段（硬件层唯一判据）。
+
+    返回 ``{"declared": bool, "known": bool, "reason": str, "evidence": [...]}``。
+
+    * 硬件层不可导入 / 判定抛异常 → ``known=False``（**无法判定**）→ 调用方
+      必须**保守拒绝**（不得当成「工位未配置夹爪」）。
+    """
+    try:
+        from rm_hw_bridge import gripper_config as _gripper_config
+    except Exception as exc:  # noqa: BLE001 - 硬件层不可用 → 无法判定
+        return {
+            "declared": False,
+            "known": False,
+            "reason": "硬件层 rm_hw_bridge.gripper_config 不可用: %s: %s"
+                      % (type(exc).__name__, exc),
+            "evidence": [],
+        }
+    try:
+        decl = _gripper_config.gripper_declaration(ws)
+    except Exception as exc:  # noqa: BLE001 - 判定异常 → 无法判定
+        return {
+            "declared": False,
+            "known": False,
+            "reason": "夹爪声明判定失败: %s: %s" % (type(exc).__name__, exc),
+            "evidence": [],
+        }
+    if not isinstance(decl, dict):
+        return {
+            "declared": False,
+            "known": False,
+            "reason": "夹爪声明判定结果非法: %r" % (decl,),
+            "evidence": [],
+        }
+    return {
+        "declared": bool(decl.get("declared")),
+        "known": bool(decl.get("known")),
+        "reason": str(decl.get("reason") or ""),
+        "evidence": list(decl.get("evidence") or []),
+    }
+
+
+def _unavailable_gate(reason: str, next_action: str,
+                      evidence: Optional[List[Any]] = None
+                      ) -> Tuple[Any, str]:
+    """构造 **fail-closed** 闸门（永远拒绝运动）+ 对应证据文案。
+
+    用于「工位已配置夹爪但闸门不可用」——静默降级为「无互锁」是**不安全
+    降级**，必须拒绝一切运动下发。
+    """
+    gate = interlock.UnavailableMotionGate(
+        reason=reason or interlock.REASON_GATE_UNAVAILABLE,
+        next_action=next_action,
+        evidence=evidence,
+    )
+    note = "%s（%s）" % (INTERLOCK_UNAVAILABLE_NOTE, reason or "")
+    return gate, note
+
+
 def _make_motion_gate(ws: Optional[str] = None):
     """构造**共享**的夹爪运动闸门（``MotionGate``）。
 
     返回 ``(gate, note)``：
 
     * ``gate`` 为 ``MotionGate`` 实例 → 注入执行器，阶段 B / C 前会查；
-    * ``gate`` 为 ``None`` → **不启用互锁**（既有行为完全不变），
-      ``note`` 写明原因（固定前缀 :data:`INTERLOCK_DISABLED_NOTE`）。
+    * ``gate`` 为 ``None`` → **不启用互锁**（工位**未配置**夹爪时的既有
+      行为，**逐字不变**），``note`` 写明原因（固定前缀
+      :data:`INTERLOCK_DISABLED_NOTE`）；
+    * ``gate`` 为 :class:`rm_executor.interlock.UnavailableMotionGate` →
+      **fail-closed**（工位**已配置**夹爪但闸门不可用）→ 执行器在阶段 B
+      之前就拒绝，**零运动下发**。
+
+    **分流判据**：「工位是否配置夹爪」只看硬件层的**结构化**布尔信号
+    （``rm_hw_bridge.gripper_config.gripper_declaration`` 的 ``declared`` /
+    ``load_gripper_config`` 结果里的 ``gripper_declared``），
+    **不得**靠匹配自由文本 ``reason``。
 
     **惰性导入**（与 ``rm_executor.contract`` 同一纪律）：执行层不模块级
-    import ``rm_hw_bridge``；导入失败 → 不启用互锁并留证据，**不假装有闸门**。
+    import ``rm_hw_bridge``。
 
     共享对象：同进程内的夹爪动作客户端与执行器共用
     ``rm_hw_bridge.gripper_state.shared_motion_gate()`` 这**同一个**实例
     → 夹爪一动作，执行器的闸门立刻变为非 IDLE。
     """
-    try:
-        from rm_hw_bridge.gripper_state import shared_motion_gate
-    except Exception as exc:  # noqa: BLE001 - 硬件层不可用 → 不启用互锁
-        return None, ("%s（rm_hw_bridge.gripper_state 不可用: %s: %s）"
-                      % (INTERLOCK_DISABLED_NOTE, type(exc).__name__, exc))
-    # 夹爪配置未启用（工位文件缺 gripper: 段等）→ 不启用互锁
+    # -- 1) 工位是否**配置**夹爪（结构化判据，不匹配自由文本） ----------
+    decl = _gripper_declaration(ws)
+    declared = bool(decl.get("declared"))
+    known = bool(decl.get("known"))
+    decl_evidence = list(decl.get("evidence") or [])
+
+    if known and not declared:
+        # 工位**未配置**夹爪 → 不启用互锁是正确语义（行为逐字不变）
+        return None, ("%s（工位未配置夹爪：%s）"
+                      % (INTERLOCK_DISABLED_NOTE,
+                         decl.get("reason") or "workcell/rm_workcell.yaml 无 gripper: 段"))
+    if not known:
+        # **无法判定** → 保守拒绝（不得当成「未配置夹爪」）
+        reason = "无法判定工位是否配置夹爪 → 拒绝运动（fail-closed）: %s" % (
+            decl.get("reason") or "未知原因")
+        return _unavailable_gate(
+            reason,
+            "确认工作区根（含 workcell/rm_workcell.yaml）后重跑同一条命令"
+            "（可用 `export RM_WS=<仓库根>` 指定）",
+            decl_evidence,
+        )
+
+    # -- 2) 工位**已配置**夹爪 → 闸门必须可用，否则 fail-closed ----------
     try:
         from rm_hw_bridge import gripper_config as _gripper_config
         res = _gripper_config.load_gripper_config(ws)
-    except Exception as exc:  # noqa: BLE001 - 配置读取异常 → 不启用互锁
-        return None, ("%s（夹爪配置读取失败: %s: %s）"
-                      % (INTERLOCK_DISABLED_NOTE, type(exc).__name__, exc))
+    except Exception as exc:  # noqa: BLE001 - 配置读取异常 → fail-closed
+        reason = "%s（夹爪配置读取失败: %s: %s）" % (
+            interlock.REASON_GATE_UNAVAILABLE, type(exc).__name__, exc)
+        return _unavailable_gate(reason, _NEXT_ACTION_HW_BRIDGE, decl_evidence)
     if not isinstance(res, dict) or res.get("status") != "ok":
-        reason = ""
+        cfg_reason = ""
+        cfg_next = ""
+        cfg_evidence: List[Any] = []
         if isinstance(res, dict):
-            reason = str(res.get("reason") or "")
-        return None, ("%s（夹爪配置不可用: %s）"
-                      % (INTERLOCK_DISABLED_NOTE, reason or "未知原因"))
+            cfg_reason = str(res.get("reason") or "")
+            cfg_next = str(res.get("next_action") or "")
+            cfg_evidence = list(res.get("evidence") or [])
+        reason = "%s（夹爪配置不可用: %s）" % (
+            interlock.REASON_GATE_UNAVAILABLE, cfg_reason or "未知原因")
+        return _unavailable_gate(
+            reason,
+            cfg_next or ("修复 workcell/rm_workcell.yaml::gripper 后重跑同一条命令"),
+            decl_evidence + cfg_evidence,
+        )
+    try:
+        from rm_hw_bridge.gripper_state import shared_motion_gate
+    except Exception as exc:  # noqa: BLE001 - 硬件层不可用 → fail-closed
+        reason = "%s（rm_hw_bridge.gripper_state 不可用: %s: %s）" % (
+            interlock.REASON_GATE_UNAVAILABLE, type(exc).__name__, exc)
+        return _unavailable_gate(reason, _NEXT_ACTION_HW_BRIDGE, decl_evidence)
     gate = shared_motion_gate()
     return gate, ("%s（共享 MotionGate 实例，阶段 B / 阶段 C 前各查一次）"
                   % INTERLOCK_ENABLED_NOTE)

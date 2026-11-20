@@ -66,6 +66,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from rm_executor import contract
 from rm_executor import events as events_mod
+from rm_executor import interlock
 from rm_executor import metrics as metrics_mod
 from rm_executor import report as report_mod
 from rm_executor import resample
@@ -728,10 +729,16 @@ class Executor:
         blocked = self._check_motion_gate(stage)
         if blocked is None:
             return None
+        state = str(blocked.get("state") or "UNKNOWN")
+        if state == interlock.STATE_GATE_UNAVAILABLE:
+            # **fail-closed**（S12/T4）：闸门/配置不可用 → 不是「夹爪动作期间」
+            reason = ("夹爪闸门不可用（%s，stage=%s，闸门状态=%s）"
+                      % (interlock.REASON_GATE_UNAVAILABLE, stage, state))
+        else:
+            reason = "夹爪动作期间禁止运动（stage=%s，闸门状态=%s）" % (stage, state)
         self._add_event(
             "gripper_interlock_blocked", "NEEDS_HUMAN",
-            "夹爪动作期间禁止运动（stage=%s，闸门状态=%s）"
-            % (stage, blocked["state"]),
+            reason,
             blocked["evidence"],
             blocked["next_action"],
         )
@@ -1898,6 +1905,9 @@ class Executor:
         # -- 夹爪互锁闸门状态（可观测：报告里能看出互锁是否启用）----------
         if self.motion_gate is None:
             evidence.append("未启用夹爪互锁（未注入 motion_gate）")
+        elif getattr(self.motion_gate, "state", "") == interlock.STATE_GATE_UNAVAILABLE:
+            evidence.append("夹爪互锁闸门不可用（%s）"
+                            % interlock.REASON_GATE_UNAVAILABLE)
         else:
             evidence.append("已启用夹爪互锁（闸门状态=%s）"
                             % getattr(self.motion_gate, "state", "UNKNOWN"))
