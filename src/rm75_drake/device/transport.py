@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from typing import Any, Deque, List, Optional, Sequence, Tuple
 
 from ..planning.trajectory import JOINT_COUNT
-from .binding import RM_TRIPLE_MODE_E, ArmBinding
+from .binding import RM_TRIPLE_MODE_E, ArmBinding, SdkCallTimeout
 from .config import DeviceConfig
 from .hardware_lock import hardware_lock
 from .sdk import NotAvailableError, SdkAudit, deg_to_rad, rad_to_deg
@@ -74,6 +74,14 @@ GRIPPER_POSITION_MAX = 1000
 #: 夹爪下发的**阻塞超时**（s）——阻塞模式等控制器返回「夹爪到位」，
 #: 超时返回 ``-4``。夹爪单程约 0.4 s，取 5 s 留足裕量。
 GRIPPER_BLOCK_TIMEOUT_S = 5
+
+#: **非实时路径**上 SDK 调用的超时（s）。
+#:
+#: 真机实测（RM75-B / 控制器代次 3）：厂商 ctypes 调用**没有内置超时**，
+#: 一次被控制器拒绝的调用（``rm_set_arm_emergency_stop`` 返回 ``-4``）之后，
+#: 同连接上的 ``rm_set_realtime_push(enable=False)`` **不再返回**（阻塞 > 8 s）
+#: ⇒ 我方必须自带超时保护，否则一次异常就能挂死收尾流程或 5 ms 执行环。
+SDK_CALL_TIMEOUT_S = 2.0
 
 #: 帧级系统错误码里的**特殊值**：``errCode == -3`` 表示「推送数据不完整」
 #: ⇒ 该帧必须丢弃（**不是**故障原因）。其余非 0 值一律视为系统错误码。
@@ -479,7 +487,10 @@ class SdkTransport(ArmTransport):
         binding = self._require_binding()
         for index in range(JOINT_COUNT):
             binding.call(
-                "rm_set_joint_en_state", index, 1 if state else 0
+                "rm_set_joint_en_state",
+                index,
+                1 if state else 0,
+                timeout_s=SDK_CALL_TIMEOUT_S,
             )
 
     def clear_error(self) -> None:
@@ -490,8 +501,10 @@ class SdkTransport(ArmTransport):
         self._require_open()
         binding = self._require_binding()
         for index in range(JOINT_COUNT):
-            binding.call("rm_set_joint_clear_err", index)
-        binding.call("rm_clear_system_err")
+            binding.call(
+                "rm_set_joint_clear_err", index, timeout_s=SDK_CALL_TIMEOUT_S
+            )
+        binding.call("rm_clear_system_err", timeout_s=SDK_CALL_TIMEOUT_S)
 
     def emergency_stop(self) -> None:
         """急停。
@@ -499,12 +512,16 @@ class SdkTransport(ArmTransport):
         真机实测：``rm_set_arm_emergency_stop(state: bool)``。
         """
         self._require_open()
-        self._require_binding().call("rm_set_arm_emergency_stop", True)
+        self._require_binding().call(
+            "rm_set_arm_emergency_stop", True, timeout_s=SDK_CALL_TIMEOUT_S
+        )
 
     def slow_stop(self) -> None:
         """缓停。"""
         self._require_open()
-        self._require_binding().call("rm_set_arm_slow_stop")
+        self._require_binding().call(
+            "rm_set_arm_slow_stop", timeout_s=SDK_CALL_TIMEOUT_S
+        )
 
     def set_joint_limits(
         self, lower_rad: Sequence[float], upper_rad: Sequence[float]
@@ -520,10 +537,16 @@ class SdkTransport(ArmTransport):
         upper = _validate_joint_vector(upper_rad, "upper_rad")
         for index in range(JOINT_COUNT):
             binding.call(
-                "rm_set_joint_min_pos", index, rad_to_deg(lower[index])
+                "rm_set_joint_min_pos",
+                index,
+                rad_to_deg(lower[index]),
+                timeout_s=SDK_CALL_TIMEOUT_S,
             )
             binding.call(
-                "rm_set_joint_max_pos", index, rad_to_deg(upper[index])
+                "rm_set_joint_max_pos",
+                index,
+                rad_to_deg(upper[index]),
+                timeout_s=SDK_CALL_TIMEOUT_S,
             )
 
     # -- 状态读取 --------------------------------------------------------
@@ -557,7 +580,9 @@ class SdkTransport(ArmTransport):
         """
         self._require_open()
         binding = self._require_binding()
-        ret, raw = binding.call("rm_get_current_arm_state")
+        ret, raw = binding.call(
+            "rm_get_current_arm_state", timeout_s=SDK_CALL_TIMEOUT_S
+        )
         if int(ret) != 0:
             raise TransportError(
                 f"rm_get_current_arm_state 返回 {ret}（查询失败）",
@@ -568,7 +593,9 @@ class SdkTransport(ArmTransport):
     def read_joint_currents_ma(self) -> Tuple[float, ...]:
         """读取逐轴电流（mA，7 维）。"""
         self._require_open()
-        ret, raw = self._require_binding().call("rm_get_current_joint_current")
+        ret, raw = self._require_binding().call(
+            "rm_get_current_joint_current", timeout_s=SDK_CALL_TIMEOUT_S
+        )
         if int(ret) != 0:
             raise TransportError(
                 f"rm_get_current_joint_current 返回 {ret}（查询失败）",
@@ -579,7 +606,9 @@ class SdkTransport(ArmTransport):
     def read_gripper(self) -> GripperState:
         """读取夹爪状态（``rm_get_gripper_state``）。"""
         self._require_open()
-        raw = self._require_binding().call("rm_get_gripper_state")
+        raw = self._require_binding().call(
+            "rm_get_gripper_state", timeout_s=SDK_CALL_TIMEOUT_S
+        )
         return _gripper_state_from_raw(raw)
 
     def command_gripper_position(self, position: int, *, speed: int = 100) -> None:
@@ -595,7 +624,11 @@ class SdkTransport(ArmTransport):
         value = _validate_gripper_position(position)
         _validate_gripper_speed(speed)
         self._require_binding().call(
-            "rm_set_gripper_position", value, True, GRIPPER_BLOCK_TIMEOUT_S
+            "rm_set_gripper_position",
+            value,
+            True,
+            GRIPPER_BLOCK_TIMEOUT_S,
+            timeout_s=SDK_CALL_TIMEOUT_S + GRIPPER_BLOCK_TIMEOUT_S,
         )
 
     # -- 内部工具 --------------------------------------------------------

@@ -121,13 +121,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     transport.attach_state_source(source)
 
     result: Dict[str, Any] = {"status": "failed", "stages": {}}
+
+    def _log(text: str) -> None:
+        if not args.json:
+            print(f"[estop_fault_test] {text}", flush=True)
+
     try:
         frame = source.latest()
         result["stages"]["before"] = {
             "arm_current_status": int(frame.arm_current_status) if frame else None,
         }
         # ── 注入：厂商接口触发急停 ────────────────────────────────
+        _log("注入急停（rm_set_arm_emergency_stop(True)）…")
         transport.emergency_stop()
+        _log("已调用急停接口，等待状态上报反映…")
         deadline = time.monotonic() + float(args.detect_timeout_s)
         diagnosis = None
         while time.monotonic() < deadline:
@@ -139,20 +146,34 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "reason": diagnosis.reason if diagnosis else "",
             "detail": diagnosis.detail if diagnosis else "未检测到故障",
         }
+        _log(
+            "检测结果："
+            + (diagnosis.reason if diagnosis else "未检测到故障（接口可能被控制器拒绝）")
+        )
         if diagnosis is None or diagnosis.reason != "estop_status":
             result["status"] = "failed"
             result["detail"] = "未检测到 estop_status 故障"
             return EXIT_FAILURE
 
+        _log("进入安全态…")
         machine = DeviceStateMachine(clock=time.monotonic)
         state = enter_safe_state(transport, machine, diagnosis)
+        _log(f"安全态：{state.value}")
         result["stages"]["safe_state"] = {"state": state.value}
 
         # ── 恢复：官方顺序（清错 → 放宽限位 → 上使能 → 回位 → 恢复限位）──
         limits = _limits(config)
+        # 回位目标 = **当前实测位形**（不是零位！零位在奇异圆柱里且低于桌面，
+        # 回位到零位会把机械臂拽向围栏外）。真机恢复应以「最后已知好位形」为准。
+        home = None
+        current = source.latest()
+        if current is not None:
+            home = tuple(float(v) for v in current.joint_positions_rad)
+        _log("执行恢复流程…")
         recovery = RecoveryProcedure(
             transport=transport,
             machine=machine,
+            home_position_rad=home,
             soft_lower_rad=limits.soft_lower_rad,
             soft_upper_rad=limits.soft_upper_rad,
             gripper_target=None,
@@ -171,9 +192,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             ],
         }
         result["status"] = "ok" if recovery.ok else "failed"
+        _log(f"恢复：ok={recovery.ok} final={machine.state.value}")
     finally:
+        _log("收尾（停上报、关连接）…")
         receiver.stop()
         transport.close()
+        _log("收尾完成")
 
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))

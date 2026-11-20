@@ -161,6 +161,27 @@ def test_calibrate_currents_debounced_envelope_keeps_sustained_level():
     assert envelope == pytest.approx(2000.0)
 
 
+# ── SDK 调用超时保护 ────────────────────────────────────────────────────
+def test_sdk_call_timeout_raises_instead_of_hanging():
+    """厂商 ctypes 调用无内置超时 ⇒ 必须由我方兜底（真机实测：一次被拒调用后同连接请求不再返回）。"""
+    import time as _time
+
+    from rm75_drake.device.binding import SdkCallTimeout, _call_with_timeout
+
+    def _slow():
+        _time.sleep(5.0)
+        return "late"
+
+    with pytest.raises(SdkCallTimeout):
+        _call_with_timeout(_slow, (), {}, 0.2, "rm_slow")
+
+
+def test_sdk_call_timeout_passes_through_fast_results():
+    from rm75_drake.device.binding import _call_with_timeout
+
+    assert _call_with_timeout(lambda: 42, (), {}, 1.0, "rm_fast") == 42
+
+
 # ── 真机互斥锁 ──────────────────────────────────────────────────────────
 def test_hardware_lock_is_reentrant_within_a_process():
     """同一进程内可重入（厂商约束是**跨进程**互斥）。"""

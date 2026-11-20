@@ -40,6 +40,7 @@ from .sdk import deg_to_rad
 from .state_source import StateSource
 
 __all__ = [
+    "REALTIME_CALL_TIMEOUT_S",
     "REALTIME_PUSH_CYCLE_UNIT_MS",
     "detect_local_ip",
     "RealtimePushSettings",
@@ -48,6 +49,9 @@ __all__ = [
     "RealtimeStateReceiver",
 ]
 
+
+#: 主动上报配置调用的超时（s）——厂商调用无内置超时。
+REALTIME_CALL_TIMEOUT_S = 2.0
 
 #: ``rm_set_realtime_push`` 的 ``cycle`` 单位（ms）。
 #:
@@ -365,7 +369,11 @@ class RealtimeStateReceiver:
             force_coordinate=int(settings.force_coordinate),
             ip=str(settings.ip),
         )
-        ret = self._binding.call("rm_set_realtime_push", config)
+        # ⚠️ 必须带超时：真机实测，急停等调用被控制器拒绝（返回 -4）之后，
+        #    同连接上的 rm_set_realtime_push 可能**不再返回** ⇒ 不加超时会挂死收尾。
+        ret = self._binding.call(
+            "rm_set_realtime_push", config, timeout_s=REALTIME_CALL_TIMEOUT_S
+        )
         if int(ret) != 0:
             raise RuntimeError(f"rm_set_realtime_push 返回 {ret}（配置失败）")
 

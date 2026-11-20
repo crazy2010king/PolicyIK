@@ -34,6 +34,7 @@
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -44,6 +45,7 @@ __all__ = [
     "RM_TRIPLE_MODE_E",
     "RM_SINGLE_MODE_E",
     "RM_DUAL_MODE_E",
+    "SdkCallTimeout",
     "ConnectReport",
     "ArmBinding",
 ]
@@ -56,6 +58,18 @@ __all__ = [
 RM_SINGLE_MODE_E = 0
 RM_DUAL_MODE_E = 1
 RM_TRIPLE_MODE_E = 2
+
+
+class SdkCallTimeout(RuntimeError):
+    """SDK 调用**超时**（厂商 ctypes 调用没有内置超时，可能永久阻塞）。
+
+    真机实测（RM75-B / 控制器代次 3）：
+    ``rm_set_arm_emergency_stop(True)`` 返回 ``-4``（控制器超时拒绝）之后，
+    紧接着的 ``rm_set_realtime_push(enable=False)`` **不再返回**（阻塞 > 8 s），
+    而同一连接上的 ``rm_get_current_arm_state`` 仍然正常（0.01 s）。
+    ⇒ 结论：厂商 ctypes 调用**必须**由我方加超时保护，否则一次异常就能
+    把 5 ms 执行环 / 收尾流程挂死。
+    """
 
 
 @dataclass(frozen=True)
@@ -261,7 +275,14 @@ class ArmBinding:
         return True
 
     # -- 调用 ------------------------------------------------------------
-    def call(self, name: str, /, *args: Any, **kwargs: Any) -> Any:
+    def call(
+        self,
+        name: str,
+        /,
+        *args: Any,
+        timeout_s: Optional[float] = None,
+        **kwargs: Any,
+    ) -> Any:
         """调用一个 SDK 符号（**实例方法优先**，模块级函数兜底）。
 
         路由规则
@@ -270,6 +291,12 @@ class ArmBinding:
         2. 否则 → 调模块级同名函数（测试替身 / 旧布局）；
         3. 都没有 → :class:`AttributeError`（点名符号，不静默返回空函数）。
 
+        超时保护
+        --------
+        ``timeout_s`` 给定时，调用在**守护线程**里执行并等待至多该时长；
+        超时则抛 :class:`SdkCallTimeout`（底层线程仍在跑，但**不阻塞我方流程**）。
+        厂商 ctypes 调用没有内置超时 ⇒ 非实时路径上的调用**必须**给超时。
+
         每次调用都会记进 :attr:`audit`（白名单 / 禁用名单审计）。
         """
         if self._proxy is None:
@@ -277,16 +304,19 @@ class ArmBinding:
         arm = self._arm
         target = getattr(arm, name, None) if arm is not None else None
         if callable(target):
-            result = target(*args, **kwargs)
-            self.audit.record(name, _args_repr(args, kwargs))
-            return result
-        module_fn = getattr(self._proxy.target, name, None)
-        if not callable(module_fn):
-            raise AttributeError(
-                f"SDK 里既没有实例方法也没有模块级函数：{name}"
-                f"（真机 SDK 的调用形态是实例方法）"
-            )
-        result = module_fn(*args, **kwargs)
+            fn = target
+        else:
+            module_fn = getattr(self._proxy.target, name, None)
+            if not callable(module_fn):
+                raise AttributeError(
+                    f"SDK 里既没有实例方法也没有模块级函数：{name}"
+                    f"（真机 SDK 的调用形态是实例方法）"
+                )
+            fn = module_fn
+        if timeout_s is None:
+            result = fn(*args, **kwargs)
+        else:
+            result = _call_with_timeout(fn, args, kwargs, float(timeout_s), name)
         self.audit.record(name, _args_repr(args, kwargs))
         return result
 
@@ -297,6 +327,38 @@ class ArmBinding:
         if self._proxy is None:
             return False
         return callable(getattr(self._proxy.target, name, None))
+
+
+def _call_with_timeout(
+    fn: Any,
+    args: Any,
+    kwargs: Any,
+    timeout_s: float,
+    name: str,
+) -> Any:
+    """在守护线程里执行 SDK 调用，最多等 ``timeout_s`` 秒。"""
+    box: Dict[str, Any] = {}
+    done = threading.Event()
+
+    def _run() -> None:
+        try:
+            box["result"] = fn(*args, **kwargs)
+        except Exception as exc:  # pragma: no cover - 由调用方看到
+            box["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_run, daemon=True, name=f"rm75-sdk-{name}")
+    thread.start()
+    if not done.wait(max(0.001, float(timeout_s))):
+        raise SdkCallTimeout(
+            f"SDK 调用超时（{timeout_s:.2f} s）：{name}"
+            f"（厂商 ctypes 调用无内置超时；真机实测：一次被控制器拒绝的调用"
+            f"（返回 -4）会让后续同连接请求不再返回）"
+        )
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 def _args_repr(args: Any, kwargs: Any) -> str:
