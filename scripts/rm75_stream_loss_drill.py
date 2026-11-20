@@ -30,6 +30,81 @@ from typing import Any, Dict, Optional
 
 SCHEMA = "rmctl.rm75_stream_loss_drill/1"
 
+#: 证据里 mode 的合法取值（真机 hardware / 离线 offline / 假执行 fake）
+MODES = ("hardware", "offline", "fake")
+
+
+def _probe_module(here: str):
+    """取得 rm75_safe_probe 模块。
+
+    **测试缝隙**：优先复用 ``sys.modules`` 中已注入的同名模块（离线用例注入假
+    探针），否则按原路径动态加载（生产行为不变）。
+    """
+    injected = sys.modules.get("rm75_safe_probe")
+    if injected is not None:
+        return injected
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "rm75_safe_probe", os.path.join(here, "rm75_safe_probe.py"))
+    probe = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = probe
+    spec.loader.exec_module(probe)
+    return probe
+
+
+def _long_run_module(here: str):
+    """取得 rm75_long_run 模块。
+
+    **测试缝隙**：优先复用 ``sys.modules["rm75_long_run"]``（离线用例注入假模块），
+    否则按原路径动态加载（生产行为不变）。
+    """
+    injected = sys.modules.get("rm75_long_run")
+    if injected is not None:
+        return injected
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "rm75_long_run", os.path.join(here, "rm75_long_run.py"))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _executor_cli():
+    """取得执行层 CLI 模块。
+
+    **测试缝隙**：优先复用 ``sys.modules["rm_executor.cli"]``（离线用例注入假
+    执行器），否则按原路径 ``from rm_executor import cli`` 导入。
+    """
+    injected = sys.modules.get("rm_executor.cli")
+    if injected is not None:
+        return injected
+    from rm_executor import cli as executor_cli
+    return executor_cli
+
+
+def _hw_bridge_module():
+    """取得 rm_hw_bridge.bridge 模块。
+
+    **测试缝隙**：优先复用 ``sys.modules`` 中已注入的同名模块，否则按原路径导入。
+    """
+    injected = sys.modules.get("rm_hw_bridge.bridge")
+    if injected is not None:
+        return injected
+    from rm_hw_bridge import bridge as hw_bridge
+    return hw_bridge
+
+
+def _evidence_mode(executor_cli_mod) -> str:
+    """证据 mode：只有**真实**执行层模块才允许标 ``hardware``。
+
+    注入的假执行器一律标 ``fake``——绝不让离线/假结果冒充真机结论。
+    """
+    path = (getattr(executor_cli_mod, "__file__", "") or "").replace("\\", "/")
+    if path.endswith("/rm_executor/cli.py"):
+        return "hardware"
+    return "fake"
+
 
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(
@@ -47,15 +122,9 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    import importlib.util
     here = os.path.dirname(os.path.abspath(__file__))
-    spec = importlib.util.spec_from_file_location(
-        "rm75_safe_probe", os.path.join(here, "rm75_safe_probe.py"))
-    probe = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = probe
-    spec.loader.exec_module(probe)
-
-    from rm_executor import cli as executor_cli
+    probe = _probe_module(here)
+    executor_cli = _executor_cli()
 
     # 1) 前置检查（只读）
     pre = probe.run_probe(arm=args.arm, ip=args.ip, port=args.port,
@@ -69,11 +138,7 @@ def main(argv: Optional[list] = None) -> int:
             joints = (phase.get("data") or {}).get("snapshot", {}).get("joint_deg")
 
     # 2) 生成一条 8 s 的微动轨迹（断流演练要的是"运动中断流"）
-    long_run = importlib.util.module_from_spec(
-        importlib.util.spec_from_file_location("rm75_long_run",
-                                               os.path.join(here, "rm75_long_run.py")))
-    sys.modules["rm75_long_run"] = long_run
-    long_run.spec.loader.exec_module(long_run)
+    long_run = _long_run_module(here)
     traj = long_run.build_trajectory(joints, 0, 0.2, args.duration_s, 0.010)
     ws = args.ws or here
     traj_path = os.path.join(ws, "build", "reports", "validation",
@@ -83,7 +148,7 @@ def main(argv: Optional[list] = None) -> int:
         json.dump(traj, fh)
 
     # 3) 起一个线程在 cut_after_s 后关闭主动上报
-    from rm_hw_bridge import bridge as hw_bridge
+    hw_bridge = _hw_bridge_module()
     cut_at = [None]
     cut_result = [None]
 
@@ -121,7 +186,7 @@ def main(argv: Optional[list] = None) -> int:
     stream_lost = [e for e in events if e.get("type") == "feedback_stream_lost"]
     evidence = {
         "schema": SCHEMA,
-        "mode": "hardware",
+        "mode": _evidence_mode(executor_cli),
         "status": report.get("status"),
         "reason": report.get("reason"),
         "arm": args.arm,

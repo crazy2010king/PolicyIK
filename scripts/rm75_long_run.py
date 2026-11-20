@@ -30,6 +30,51 @@ from typing import Any, Dict, List, Optional
 
 SCHEMA = "rmctl.rm75_long_run/1"
 
+#: 证据里 mode 的合法取值（真机 hardware / 离线 offline / 假执行 fake）
+MODES = ("hardware", "offline", "fake")
+
+
+def _probe_module(here: str):
+    """取得 rm75_safe_probe 模块。
+
+    **测试缝隙**：优先复用 ``sys.modules`` 中已注入的同名模块（离线用例注入假
+    探针），否则按原路径动态加载（生产行为不变）。
+    """
+    injected = sys.modules.get("rm75_safe_probe")
+    if injected is not None:
+        return injected
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "rm75_safe_probe", os.path.join(here, "rm75_safe_probe.py"))
+    probe = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = probe
+    spec.loader.exec_module(probe)
+    return probe
+
+
+def _executor_cli():
+    """取得执行层 CLI 模块。
+
+    **测试缝隙**：优先复用 ``sys.modules["rm_executor.cli"]``（离线用例注入假
+    执行器），否则按原路径 ``from rm_executor import cli`` 导入。
+    """
+    injected = sys.modules.get("rm_executor.cli")
+    if injected is not None:
+        return injected
+    from rm_executor import cli as executor_cli
+    return executor_cli
+
+
+def _evidence_mode(executor_cli_mod) -> str:
+    """证据 mode：只有**真实**执行层模块才允许标 ``hardware``。
+
+    注入的假执行器一律标 ``fake``——绝不让离线/假结果冒充真机结论。
+    """
+    path = (getattr(executor_cli_mod, "__file__", "") or "").replace("\\", "/")
+    if path.endswith("/rm_executor/cli.py"):
+        return "hardware"
+    return "fake"
+
 
 def build_trajectory(joints_deg: List[float], joint_index: int, delta_deg: float,
                      duration_s: float = 600.0, period_s: float = 0.010,
@@ -95,13 +140,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
-    import importlib.util
     here = os.path.dirname(os.path.abspath(__file__))
-    spec = importlib.util.spec_from_file_location(
-        "rm75_safe_probe", os.path.join(here, "rm75_safe_probe.py"))
-    probe = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = probe
-    spec.loader.exec_module(probe)
+    probe = _probe_module(here)
 
     # 1) 先做只读前置检查（7 项）——不通过就不发任何运动指令
     pre = probe.run_probe(arm=args.arm, ip=args.ip, port=args.port,
@@ -127,7 +167,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         json.dump(traj, fh)
 
     # 3) 走执行层真机路径
-    from rm_executor import cli as executor_cli
+    executor_cli = _executor_cli()
     t0 = time.time()
     report = executor_cli.execute(mode="live", trajectory_path=traj_path, realtime=True,
                                   arm=args.arm, ip=args.ip, port=args.port,
@@ -136,7 +176,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     metrics = report.get("metrics") or {}
     evidence = {
         "schema": SCHEMA,
-        "mode": "hardware",
+        "mode": _evidence_mode(executor_cli),
         "status": report.get("status"),
         "reason": report.get("reason"),
         "arm": args.arm,
