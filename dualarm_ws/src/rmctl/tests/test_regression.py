@@ -163,6 +163,83 @@ def test_failing_segment_makes_overall_fail_with_exit_4(monkeypatch):
     assert report["status"] == seg_mod.contract().STATUS_ERROR, report
 
 
+def test_failing_segment_summary_names_the_fail_segment(monkeypatch):
+    """负例 2b：顶层汇总**只列 fail / blocked 段**，且**指名失败段**。"""
+    failing = orch.ExecResult(
+        exit_code=4,
+        report={
+            "status": "error",
+            "reason": "离线证据链失败段落: cycle",
+            "next_action": "对照失败段落的 assertions 字段修正后重跑",
+            "failures": ["cycle"],
+            "evidence": ["cycle: 断言未通过"],
+        },
+    )
+    monkeypatch.setattr(orch, "_execute", lambda spec, ctx, out: failing)
+    monkeypatch.setitem(
+        orch.SEGMENTS, "process_offline",
+        lambda ctx: seg_mod.segment_result(
+            "pass", reason="假段通过", evidence=["ok"],
+            mode="fake", report_path="", id="process_offline"))
+
+    ctx = orch.build_context(repo_root=REPO_ROOT, ws=REPO_ROOT)
+    report = orch.run_regression(ctx, only=["gripper_offline",
+                                            "process_offline"])
+    summary = report[seg_mod.SUMMARY_KEY]
+    ids = [item["id"] for item in summary]
+    assert ids == ["gripper_offline"], summary
+    assert summary[0]["verdict"] == "fail", summary
+    assert summary[0]["reason"], summary
+    assert summary[0]["next_action"], summary
+    # 顶层 reason 指名失败段
+    assert "gripper_offline" in report["reason"], report["reason"]
+
+
+# ---------------------------------------------------------------------------
+# 汇总段（顶层 problem_segments）：只列 fail / blocked 段并指名失败段
+# ---------------------------------------------------------------------------
+def test_cli_report_top_level_has_summary_key(tmp_path):
+    """CLI 层：报告 JSON 顶层带汇总键；无失败段时汇总为空且**不静默**。"""
+    out_path = tmp_path / "s09_regression.json"
+    proc = _run_cli(["--out", str(out_path), "--only", "gripper_offline"])
+    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)
+    report = _load(str(out_path))
+    assert seg_mod.SUMMARY_KEY in report, sorted(report)
+    assert isinstance(report[seg_mod.SUMMARY_KEY], list), report
+    # 该段通过 → 汇总为空
+    assert report[seg_mod.SUMMARY_KEY] == [], report[seg_mod.SUMMARY_KEY]
+    # 打印里必须明确说明「无 fail/blocked 段」（不静默）
+    assert "无 fail/blocked 段" in proc.stdout, proc.stdout
+    assert "汇总" in proc.stdout, proc.stdout
+
+
+def test_cli_report_summary_names_blocked_segments(tmp_path):
+    """CLI 层：干净工作区 → 汇总**指名** blocked 段（id + 原因 + 下一步）。"""
+    clean_ws = tmp_path / "clean_ws"
+    clean_ws.mkdir()
+    out_path = tmp_path / "clean.json"
+    proc = _run_cli(["--ws", str(clean_ws), "--out", str(out_path)])
+    assert proc.returncode == 3, (proc.returncode, proc.stdout, proc.stderr)
+    report = _load(str(out_path))
+    summary = report[seg_mod.SUMMARY_KEY]
+    assert summary, "干净机器应至少有一段 blocked 进了汇总"
+    for item in summary:
+        assert item["verdict"] in ("fail", "blocked"), item
+        assert item["id"], item
+        assert item["reason"], item
+        assert item["next_action"], item
+    # pass 段不入汇总
+    seg_ids = {s["id"] for s in report["segments"]}
+    summary_ids = {item["id"] for item in summary}
+    assert summary_ids <= seg_ids, (summary_ids, seg_ids)
+    blocked_ids = {s["id"] for s in report["segments"]
+                   if s["verdict"] == "blocked"}
+    assert summary_ids == blocked_ids, (summary_ids, blocked_ids)
+    # 打印里逐条点名 blocked 段
+    for seg_id in blocked_ids:
+        assert seg_id in proc.stdout, proc.stdout
+
+
 # ---------------------------------------------------------------------------
 # 负例 3：未知段 id → argparse 退出码 2
 # ---------------------------------------------------------------------------

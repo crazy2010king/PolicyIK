@@ -19,6 +19,8 @@
 ----
 默认写到 ``build/reports/s09_regression.json``（相对仓库根）；顶层键为
 ``status`` / ``reason`` / ``next_action`` / ``evidence`` + ``segments[]``，
+另带一个**只含 fail / blocked 段**的汇总键 ``problem_segments``
+（每项含 ``id`` / ``verdict`` / ``reason`` / ``next_action``），
 每段含 ``id`` / ``verdict`` / ``reason`` / ``next_action`` / ``evidence`` /
 ``mode`` / ``report_path``。段级语义与归一化规则见
 ``rmctl.regression.orchestrator`` 的模块 docstring。
@@ -46,6 +48,7 @@ for _rel in (
         sys.path.insert(0, _p)
 
 from rmctl.regression import orchestrator as orch  # noqa: E402
+from rmctl.regression import segments as seg_mod  # noqa: E402
 
 #: 默认报告路径（相对仓库根）
 DEFAULT_OUT = os.path.join("build", "reports", "s09_regression.json")
@@ -68,7 +71,32 @@ def _parse_only(raw: str) -> List[str]:
 
 
 def _print_report(report: dict, out_path: str) -> None:
+    """打印回归报告：**先打汇总**（只列 fail / blocked 段并指名失败段），
+    再打其余段明细。
+
+    汇总为空时**明确打印**「无 fail/blocked 段」（绝不静默）。
+    """
     print("一键回归报告: %s" % out_path)
+
+    summary = report.get(seg_mod.SUMMARY_KEY)
+    if not isinstance(summary, list):
+        summary = seg_mod.summary_of(report.get("segments") or [])
+    fails = [item for item in summary if item.get("verdict") == "fail"]
+    blocked = [item for item in summary if item.get("verdict") == "blocked"]
+
+    print("  汇总（fail / blocked 段）:")
+    if not summary:
+        print("    无 fail/blocked 段")
+    for item in fails:
+        print("    [fail] %s" % item.get("id"))
+        print("        原因: %s" % item.get("reason"))
+        print("        下一步: %s" % item.get("next_action"))
+    for item in blocked:
+        print("    [blocked] %s" % item.get("id"))
+        print("        原因: %s" % item.get("reason"))
+        print("        下一步: %s" % item.get("next_action"))
+
+    print("  段明细:")
     for seg in report.get("segments") or []:
         print("  %-20s %-8s %s" % (seg.get("id"), seg.get("verdict"),
                                    seg.get("reason")))

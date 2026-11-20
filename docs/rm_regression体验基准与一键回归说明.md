@@ -60,6 +60,22 @@
 * **禁止静默**：报告 `status` 未知、报告缺失/不可解析、退出码与报告
   自相矛盾 → 一律 `fail`（契约回归），**绝不**静默当 pass。
 
+### 1.0 顶层汇总段（`problem_segments`）：只列 fail / blocked 段
+
+顶层报告带一个**增量键** `problem_segments`——它是**只含 `fail` 与
+`blocked` 段**的结构化清单（每项固定带 `id` / `verdict` / `reason` /
+`next_action`）：
+
+| 项 | 规则 |
+|---|---|
+| 内容 | **只**包含 `fail` 段与 `blocked` 段；`pass` / `skipped` 段**一律不入** |
+| 每项字段 | `id` / `verdict` / `reason` / `next_action`（`next_action` **不得为空**，缺失时用执行层契约兜底值） |
+| 顶层 `reason` | `fail` 时**指名 fail 段 id**；`blocked` 时**指名 blocked 段 id**；`pass` 段 / `skipped` 段的 id **绝不**出现在失败原因里 |
+
+> 现场用法：先看 CLI 打印的「汇总（fail / blocked 段）」段——它逐条列出
+> **是哪一段**失败、为什么失败、下一步该做什么；汇总为空时 CLI 明确打印
+> 「无 fail/blocked 段」（**不静默**），再看段明细。
+
 ### 1.1 与 `rm_executor.contract` 的映射（status / 退出码）
 
 段级 verdict 的 status 与退出码**唯一来源** =
@@ -150,7 +166,7 @@ python3 scripts/rm_regression.py --ws /path/to/ws --out /tmp/s09_regression.json
 
 | 文件 | 产出者 | 内容 |
 |---|---|---|
-| `build/reports/s09_regression.json` | `scripts/rm_regression.py` | **顶层**：`status` / `reason` / `next_action` / `evidence` + `mode` / `exit_code` / `verdict` + `segments[]` |
+| `build/reports/s09_regression.json` | `scripts/rm_regression.py` | **顶层**：`status` / `reason` / `next_action` / `evidence` + `mode` / `exit_code` / `verdict` + `problem_segments[]`（**只列 fail / blocked 段**，每项含 `id` / `verdict` / `reason` / `next_action`）+ `segments[]` |
 | `build/reports/s09_experience.json` / `.md` | `rmctl.regression.experience` | E1–E4 逐指标（值 + mode + status + 目标 + 出处） |
 | `build/reports/s09_perf_baseline.csv` / `.md` | `rmctl.regression.perf_baseline` | S1–S5 逐套件一行（S4/S5 = `not_applicable`） |
 | `build/reports/s09_baselines.json` / `.md` | `rmctl.regression.baselines` | 四类真机基线逐行（`status` 逐字取自 YAML） |
@@ -159,6 +175,10 @@ python3 scripts/rm_regression.py --ws /path/to/ws --out /tmp/s09_regression.json
 
 每段结果字段固定为：`id` / `verdict` / `status` / `reason` / `next_action` /
 `evidence[]` / `mode` / `report_path`。
+
+顶层另有汇总键 `problem_segments`：**只**包含 `fail` / `blocked` 段
+（`pass` / `skipped` 不入），每项含 `id` / `verdict` / `reason` /
+`next_action`；CLI 打印时**先打这段汇总**（逐条指名失败段），再打段明细。
 
 ---
 

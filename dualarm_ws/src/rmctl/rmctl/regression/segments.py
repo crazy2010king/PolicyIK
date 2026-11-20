@@ -47,9 +47,12 @@ from typing import Any, Dict, Iterable, List, Optional
 
 __all__ = [
     "MODES",
+    "SUMMARY_KEY",
+    "SUMMARY_VERDICTS",
     "VERDICTS",
     "aggregate",
     "segment_result",
+    "summary_of",
     "verdict_to_exit_code",
     "verdict_to_status",
 ]
@@ -59,6 +62,16 @@ VERDICTS = ("pass", "blocked", "fail", "skipped")
 
 #: 运行模式词表（每个指标都要带 mode 标注）
 MODES = ("fake", "offline", "live")
+
+#: 顶层**汇总键**（增量键：既有顶层键一个都不删改）。
+#: 语义固定：顶层报告带一个**只含 fail / blocked 段**的结构化清单，
+#: 让现场「5 分钟判因」不必翻 7 段明细去找哪一段失败。
+SUMMARY_KEY = "problem_segments"
+
+#: 汇总里**只收**这两种 verdict（``fail`` = 回归，``blocked`` = 外部条件
+#: 未满足）；``pass`` / ``skipped`` 一律不进入汇总。
+#: 注意：这里的取值**取自** :data:`VERDICTS`，不引入第二套 verdict 词表。
+SUMMARY_VERDICTS = ("fail", "blocked")
 
 #: verdict → 执行层 status 常量**名**（值本身只在 rm_executor.contract 里定义，
 #: 本模块不复制任何 status 字符串，避免第二套词表）
@@ -201,6 +214,38 @@ def segment_result(verdict: str, reason: str = "", next_action: str = "",
     return out
 
 
+# --------------------------------------------------------------- 汇总
+def summary_of(segments: Optional[Iterable[Dict[str, Any]]] = None
+                ) -> List[Dict[str, Any]]:
+    """从段列表抽**汇总段**：**只含** ``fail`` / ``blocked`` 段。
+
+    每条汇总项固定带 ``id`` / ``verdict`` / ``reason`` / ``next_action``：
+
+    * ``pass`` / ``skipped`` 段**一律不进汇总**（不制造噪音）；
+    * ``next_action`` 取段结果里 contract 已补好的兜底值；段结果缺失时
+      用 ``rm_executor.contract.NEXT_ACTION_FALLBACK`` 兜底，**不得为空**。
+
+    该函数是**纯函数**（零 I/O），汇总语义唯一口径。
+    """
+    out: List[Dict[str, Any]] = []
+    for seg in list(segments or []):
+        if not isinstance(seg, dict):
+            continue
+        verdict = seg.get("verdict")
+        if verdict not in SUMMARY_VERDICTS:
+            continue
+        next_action = str(seg.get("next_action") or "")
+        if not next_action:
+            next_action = str(contract().NEXT_ACTION_FALLBACK)
+        out.append({
+            "id": str(seg.get("id") or ""),
+            "verdict": verdict,
+            "reason": str(seg.get("reason") or ""),
+            "next_action": next_action,
+        })
+    return out
+
+
 # --------------------------------------------------------------- 聚合
 def aggregate(segments: Optional[Iterable[Dict[str, Any]]] = None,
               mode: str = "offline", reason: str = "",
@@ -216,6 +261,11 @@ def aggregate(segments: Optional[Iterable[Dict[str, Any]]] = None,
 
     顶层键固定为 ``status`` / ``reason`` / ``next_action`` / ``evidence``
     + ``segments[]`` + ``mode``，另附 ``exit_code``（供 CLI 直接使用）。
+
+    **增量键** :data:`SUMMARY_KEY`（``problem_segments``）：顶层带一个
+    **只含 fail / blocked 段**的结构化清单（每项含 ``id`` / ``verdict`` /
+    ``reason`` / ``next_action``），供现场直接定位「哪一段失败」。
+    ``pass`` / ``skipped`` 段**不进汇总**。
 
     负例行为：
 
@@ -257,6 +307,8 @@ def aggregate(segments: Optional[Iterable[Dict[str, Any]]] = None,
         "mode": res["mode"],
         "exit_code": res["exit_code"],
         "verdict": top_verdict,
+        # 增量键：只含 fail / blocked 段的汇总（pass / skipped 不入）
+        SUMMARY_KEY: summary_of(res["segments"]),
     }
     for key, value in res.items():
         if key not in out:
@@ -265,15 +317,28 @@ def aggregate(segments: Optional[Iterable[Dict[str, Any]]] = None,
 
 
 def _default_reason(verdict: str, segments: List[Dict[str, Any]]) -> str:
-    """聚合层默认 reason（**不编造数字**，只说清段数与关键段 id）。"""
+    """聚合层默认 reason（**不编造数字**，**指名失败段**）。
+
+    * ``fail`` → 只列**判定为 fail 的段 id**（代码 / 契约回归）；
+    * ``blocked`` → 只列**被阻塞的段 id**（外部条件未满足）；
+    * ``pass`` → 只报段数（没有失败段可指名）。
+
+    ``pass`` / ``skipped`` 段的 id **绝不**出现在失败原因里
+    （否则现场会去找一段根本没失败的段）。
+    """
     if not segments:
         return "没有任何回归段（空报告，退出码 0）"
-    ids = [str(seg.get("id") or "") for seg in segments]
-    tagged = [i for i in ids if i]
+
+    def _ids_of(kind: str) -> List[str]:
+        return [str(seg.get("id") or "") for seg in segments
+                if seg.get("verdict") == kind and str(seg.get("id") or "")]
+
     if verdict == "fail":
-        return "有段判定为 fail（共 %d 段：%s）" % (
-            len(segments), ", ".join(tagged) if tagged else "未命名段")
+        failed = _ids_of("fail")
+        return "有段判定为 fail（fail 段 %d 个：%s）" % (
+            len(failed), ", ".join(failed) if failed else "未命名段")
     if verdict == "blocked":
-        return "有段因外部条件未满足被阻塞（共 %d 段：%s）" % (
-            len(segments), ", ".join(tagged) if tagged else "未命名段")
+        blocked = _ids_of("blocked")
+        return "有段因外部条件未满足被阻塞（blocked 段 %d 个：%s）" % (
+            len(blocked), ", ".join(blocked) if blocked else "未命名段")
     return "所有可跑段通过（共 %d 段）" % len(segments)

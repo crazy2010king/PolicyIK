@@ -11,9 +11,12 @@ import pytest
 from rmctl.regression import segments as seg
 from rmctl.regression.segments import (
     MODES,
+    SUMMARY_KEY,
+    SUMMARY_VERDICTS,
     VERDICTS,
     aggregate,
     segment_result,
+    summary_of,
     verdict_to_exit_code,
     verdict_to_status,
 )
@@ -117,6 +120,87 @@ def test_fail_segment_without_next_action_gets_contract_fallback():
 def test_aggregate_blocked_report_has_next_action():
     report = aggregate([segment_result("blocked", id="a")])
     assert report["next_action"], "顶层 blocked 报告必须带可粘贴的 next_action"
+
+
+# ------------------------------------------------------------- 汇总段
+def _mixed_segments():
+    """一份混合段集：pass + fail + blocked + skipped（各一个）。"""
+    return [
+        segment_result("pass", reason="段通过", id="seg_pass"),
+        segment_result("fail", reason="期望值不符", id="seg_fail"),
+        segment_result("blocked", reason="缺 build/model", id="seg_blocked"),
+        segment_result("skipped", reason="范围外", id="seg_skipped"),
+    ]
+
+
+def test_summary_key_present_and_only_fail_blocked():
+    """汇总只含 fail / blocked 段；pass / skipped 段**不入汇总**。"""
+    report = aggregate(_mixed_segments())
+    assert SUMMARY_KEY in report, "顶层缺汇总键: %s" % SUMMARY_KEY
+    summary = report[SUMMARY_KEY]
+    assert isinstance(summary, list), summary
+    ids = [item["id"] for item in summary]
+    assert ids == ["seg_fail", "seg_blocked"], summary
+    verdicts = [item["verdict"] for item in summary]
+    assert verdicts == ["fail", "blocked"], summary
+    for item in summary:
+        assert set(item.keys()) >= {"id", "verdict", "reason", "next_action"}, item
+
+
+def test_summary_excludes_pass_and_skipped_ids():
+    """pass / skipped 段的 id **不得**出现在汇总里。"""
+    summary = aggregate(_mixed_segments())[SUMMARY_KEY]
+    ids = {item["id"] for item in summary}
+    assert "seg_pass" not in ids, summary
+    assert "seg_skipped" not in ids, summary
+
+
+def test_summary_next_action_never_empty():
+    """汇总里每段的 next_action 非空（缺则 contract 兜底）。"""
+    summary = aggregate(_mixed_segments())[SUMMARY_KEY]
+    for item in summary:
+        assert item["next_action"], item
+
+
+def test_summary_next_action_falls_back_when_missing():
+    """段结果缺 next_action → 汇总用 contract 兜底值（不静默为空）。"""
+    segs = [{"id": "raw_fail", "verdict": "fail", "reason": "回归"}]
+    summary = aggregate(segs)[SUMMARY_KEY]
+    assert len(summary) == 1, summary
+    assert summary[0]["next_action"] == _contract().NEXT_ACTION_FALLBACK, summary
+
+
+def test_top_level_reason_names_the_fail_segment():
+    """有 fail 段时顶层 reason **指名该 fail 段的 id**。"""
+    report = aggregate(_mixed_segments())
+    assert "seg_fail" in report["reason"], report["reason"]
+    assert "seg_pass" not in report["reason"], report["reason"]
+    assert "seg_skipped" not in report["reason"], report["reason"]
+
+
+def test_top_level_reason_names_blocked_segments_distinctly():
+    """blocked 语义与 fail 语义可区分：blocked 时 reason 指名 blocked 段。"""
+    segs = [segment_result("pass", id="a"),
+            segment_result("blocked", reason="外部条件未满足", id="b")]
+    report = aggregate(segs)
+    assert "b" in report["reason"], report["reason"]
+    assert "a" not in report["reason"], report["reason"]
+    assert "fail" not in report["reason"], report["reason"]
+
+
+def test_summary_empty_when_no_problem_segment():
+    """无 fail / blocked 段 → 汇总为空列表（不静默丢键）。"""
+    report = aggregate([segment_result("pass", id="a"),
+                        segment_result("skipped", id="b")])
+    assert report[SUMMARY_KEY] == [], report[SUMMARY_KEY]
+
+
+def test_summary_of_is_pure_and_ignores_non_dict():
+    """summary_of 是纯函数：忽略非字典项，不抛异常。"""
+    out = summary_of([{"id": "x", "verdict": "fail", "reason": "r"},
+                      "not-a-dict"])
+    assert [item["id"] for item in out] == ["x"], out
+    assert SUMMARY_VERDICTS == ("fail", "blocked"), SUMMARY_VERDICTS
 
 
 # ------------------------------------------------------------- 负例
