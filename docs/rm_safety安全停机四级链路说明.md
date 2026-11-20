@@ -155,10 +155,20 @@ collision             L3   collision      slow_stop         pass
 protection_stop       L4   protection_stop stop              pass
 stream_lost           L4   stream_lost    stop              pass
 passed=6 failed=0 → pass
+reason    : 全部 6 条用例命中预期等级
+categories: pass=6 mismatch=0 internal_error=0
+reports   : <工作区根>/build/reports/safety
 ```
 
 单例复跑：`--case <name>`（可重复），报告目录 `--out-dir <dir>`（默认
-`<工作区根>/build/reports`）。
+`<工作区根>/build/reports/safety`）。
+
+> **默认输出目录已与一键回归报告隔离**：一键回归的段级报告
+> （`build/reports/s09_segment_*.json` / `build/reports/s09_regression.json`）
+> 留在 `build/reports/`，安全跑批产物（`s04_<case>.json` /
+> `s04_safety_cases.json` / 合成轨迹 `s04_sample_traj.json`）一律落在
+> `build/reports/safety/`，两者不再同址。
+> `--out-dir <dir>` 语义不变：显式传入即**原样使用**该目录。
 
 | 用例 | 注入 | 预期等级 | 预期故障类 | 预期动作 | 说明 |
 |---|---|---|---|---|---|
@@ -169,18 +179,27 @@ passed=6 failed=0 → pass
 | `protection_stop` | `protection_stop` | L4 | `protection_stop` | `stop` | 控制器保护停（`RM_STOP_E = 9`） |
 | `stream_lost` | `feedback_stall:250` | L4 | `stream_lost` | `stop` | 反馈断流超过停机阈值 |
 
-**注入参数在解析阶段就自证校验**（越不过阈值直接拒绝，退出码 3，
-不会产出"跑了但没动作"的报告）：
+**注入参数在解析阶段就自证校验**（越不过阈值直接拒绝，不会产出"跑了但没动作"
+的报告）：该用例判为 `invalid_spec`（**内部错误类**），整批跑批退出码 **4**。
 
 * `follow_error_light` 必须落在告警阈值之上、停机阈值之内（`2.0° < deg ≤ 5.0°`）；
 * `limit_exceeded` 的越界量必须 `> 0`；
 * `collision` 的码必须是非负整数。
 
+**退出码分级**（数字唯一来源 = `rm_executor.contract.EXIT_CODES`，不另造）：
+
+| 情况 | 退出码 | 说明 |
+|---|---|---|
+| 六条用例全部命中预期等级 | **0** | `STATUS_OK` |
+| 判定不符（等级 / 故障类 / 动作序列未命中） | **3** | `STATUS_BLOCKED`（外部条件 / 判定不符） |
+| 内部错误（缺轨迹 `error`、注入规格非法 `invalid_spec`） | **4** | `STATUS_ERROR`（代码 / 契约问题） |
+| 零用例（一条都没执行） | **4** | 属调用 / 配置问题，不是外部阻塞；**绝不出现「判定 fail 却退出 0」** |
+
 ---
 
 ## 4. 证据字段清单
 
-### 4.1 单例报告（`build/reports/s04_<case>.json`）
+### 4.1 单例报告（`build/reports/safety/s04_<case>.json`）
 
 | 字段 | 含义 |
 |---|---|
@@ -200,9 +219,21 @@ passed=6 failed=0 → pass
 | `auto_recovery_occurred` | 是否发生过 L1 自动恢复 |
 | `executor_status` / `executor_exit_code` | 执行器状态与退出码 |
 | `verdict` / `verdict_reason` | `pass` / `fail` / `invalid_spec` / `error` 与理由 |
+| `category` | 用例类别（退出码分级的唯一依据）：`pass` / `mismatch`（判定不符 → 3）/ `internal_error`（内部错误 → 4） |
 | `honesty` | 诚实声明（离线代理结论，不代表真机结论） |
 
-### 4.2 判据证据条目
+### 4.2 汇总报告（`build/reports/safety/s04_safety_cases.json`）
+
+| 字段 | 含义 |
+|---|---|
+| `total` / `passed` / `failed` | 用例总数 / 命中数 / 未命中数 |
+| `verdict` | `pass`（全部命中）/ `fail`（有未命中或零用例） |
+| `reason` | 判定理由（零用例时明写「没有用例被执行」） |
+| `category_counts` | 分类计数：`pass` / `mismatch` / `internal_error` |
+| `exit_code` | **整批退出码**（由类别派生，数字来源 = `contract.EXIT_CODES`）：0 / 3 / 4 |
+| `cases` | 逐例结论（含 `category` 与单例报告文件名 `s04_<case>.json`） |
+
+### 4.3 判据证据条目
 
 每条证据至少含五个可核对字段：
 
@@ -216,7 +247,7 @@ passed=6 failed=0 → pass
 | `unit` | 单位（`deg` / `ms`），仅数值型判据有 |
 | `note` | 补充说明（如"未知错误码，按保守档 L3 缓停处理"） |
 
-### 4.3 动作审计证据（`kind` 固定取值，便于检索）
+### 4.4 动作审计证据（`kind` 固定取值，便于检索）
 
 | `kind` | 含义 |
 |---|---|
@@ -228,7 +259,7 @@ passed=6 failed=0 → pass
 | `l1_speed_restore_failed` | L1 自动恢复失败 |
 | `external_gate_request` | 外部安全闸门请求停机 |
 
-### 4.4 执行器报告（evidence 行）
+### 4.5 执行器报告（evidence 行）
 
 ```
 safety: current_level=L2 peak_level=L2 speed_scaled=false event_count=3 action_count=1
@@ -236,7 +267,7 @@ limit_check=ok            # 或 unavailable（原因）
 safety gate: <path>（已关闭）   # 仅在闸门触发过停机时出现
 ```
 
-### 4.5 状态面
+### 4.6 状态面
 
 * `Executor.safety_status` → `{current_level, peak_level, speed_scaled, event_count, auto_recovery_allowed, action_count}`；
 * `SafetySupervisor.to_dict()` → 同上（供 `rmctl safety status` 与报告消费）；
@@ -244,7 +275,7 @@ safety gate: <path>（已关闭）   # 仅在闸门触发过停机时出现
 * `SafetySupervisor.events` → 事件副本（`type` / `severity` / `reason` / `evidence` / `next_action`）；
 * `SafetySupervisor.event_errors` → 宿主事件回调异常留痕（**不影响安全动作本身**）。
 
-### 4.6 事件名（冻结）
+### 4.7 事件名（冻结）
 
 安全等级事件：`safety_l1_slowdown` / `safety_l1_slowdown_cleared` /
 `safety_l2_pause` / `safety_l3_slow_stop` / `safety_l4_emergency_stop`。

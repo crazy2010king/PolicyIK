@@ -22,7 +22,18 @@ stream_lost         ``feedback_stall:250``        L4     stream_lost
 退出码 / 动作序列 / SDK 调用序列 / 证据字段 / 恢复判定 / verdict），
 汇总落 ``<out-dir>/s04_safety_cases.json``。
 
-退出码：全部用例命中预期等级 → **0**；期望不符 → **3**；内部错误 → **4**。
+退出码（**唯一来源** = ``rm_executor.contract.EXIT_CODES``，不得自造数字）：
+
+* 全部用例命中预期等级 → **0**（``STATUS_OK``）；
+* 判定不符（等级 / 故障类 / 动作序列未命中）→ **3**（``STATUS_BLOCKED``）；
+* 内部错误（``verdict="error"`` 缺轨迹 / ``verdict="invalid_spec"`` 注入规格非法）
+  → **4**（``STATUS_ERROR``）；
+* **零用例**（一条都没执行）→ **4**（属调用 / 配置问题，不是外部阻塞）。
+
+默认输出目录是 ``<工作区根>/build/reports/safety``（**与一键回归报告目录
+``build/reports`` 隔离**——回归的 ``s09_segment_*.json`` / ``s09_regression.json``
+留在 ``build/reports``，安全跑批产物一律落在 ``build/reports/safety/``）。
+文件名保持 ``s04_<case>.json`` / ``s04_safety_cases.json``（下游文档引用这些名字）。
 
 **诚实声明**
 ------------
@@ -53,8 +64,16 @@ from rm_executor.transport import FakeTransport
 
 __all__ = [
     "CASES",
+    "CLASS_INTERNAL_ERROR",
+    "CLASS_MISMATCH",
+    "CLASS_PASS",
+    "DEFAULT_OUT_DIRNAME",
     "FAULT_CLASS",
+    "REGRESSION_OUT_DIRNAME",
     "build_parser",
+    "classify_result",
+    "default_out_dir",
+    "exit_code_for",
     "main",
     "run_all",
     "run_case",
@@ -67,7 +86,22 @@ DEFAULT_PERIOD_S = 0.010
 FAKE_CALL_RECORD_LIMIT = 2000
 
 #: 报告默认输出目录名（相对工作区根）
-DEFAULT_OUT_DIRNAME = os.path.join("build", "reports")
+#:
+#: **必须与一键回归报告目录隔离**：回归脚本（``scripts/rm_regression.py`` 等）
+#: 把段级报告写在 ``build/reports/s09_segment_*.json`` / ``s09_regression.json``，
+#: 安全跑批若同址就会互相覆盖 / 混读，故独立到 ``build/reports/safety/``。
+DEFAULT_OUT_DIRNAME = os.path.join("build", "reports", "safety")
+
+#: 一键回归报告目录（**只读参照**，用于说明与安全跑批产物不同址；
+#: 安全跑批**不得**往这里写）
+REGRESSION_OUT_DIRNAME = os.path.join("build", "reports")
+
+#: 用例类别：内部错误（→ 退出码 4）
+CLASS_INTERNAL_ERROR = "internal_error"
+#: 用例类别：判定不符（→ 退出码 3）
+CLASS_MISMATCH = "mismatch"
+#: 用例类别：命中预期（→ 退出码 0）
+CLASS_PASS = "pass"
 
 #: 汇总报告文件名
 SUMMARY_FILENAME = "s04_safety_cases.json"
@@ -229,6 +263,49 @@ def _extract_actions(evidence: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]
     return out
 
 
+# ----------------------------------------------------------------- 结果分类
+def classify_result(report: Dict[str, Any]) -> str:
+    """把单条用例报告归类（**退出码分级的唯一依据**）。
+
+    归类规则：
+
+    * ``pass`` → :data:`CLASS_PASS`（退出码 0）；
+    * ``error``（缺轨迹）/ ``invalid_spec``（注入规格非法）→
+      :data:`CLASS_INTERNAL_ERROR`（退出码 4：**代码 / 契约问题**）；
+    * 执行器自身报 ``status="error"`` → 同上（内部错误）；
+    * 其余（等级 / 故障类 / 动作未命中预期）→ :data:`CLASS_MISMATCH`
+      （退出码 3：**外部条件 / 判定不符**）。
+    """
+    verdict = str(report.get("verdict") or "")
+    if verdict == "pass":
+        return CLASS_PASS
+    if verdict in ("error", "invalid_spec"):
+        return CLASS_INTERNAL_ERROR
+    if str(report.get("executor_status") or "") == contract.STATUS_ERROR:
+        return CLASS_INTERNAL_ERROR
+    return CLASS_MISMATCH
+
+
+def exit_code_for(categories: Sequence[str]) -> int:
+    """由用例类别序列派生进程退出码（**唯一出口**）。
+
+    * 零用例 → 4（内部错误：调用 / 配置问题，不是外部阻塞）；
+    * 含内部错误 → 4；
+    * 含判定不符 → 3；
+    * 全通过 → 0。
+
+    退出码数字**只从** ``rm_executor.contract.EXIT_CODES`` 取，不自造。
+    """
+    cats = list(categories or [])
+    if not cats:
+        return contract.EXIT_CODES[contract.STATUS_ERROR]
+    if any(c == CLASS_INTERNAL_ERROR for c in cats):
+        return contract.EXIT_CODES[contract.STATUS_ERROR]
+    if any(c == CLASS_MISMATCH for c in cats):
+        return contract.EXIT_CODES[contract.STATUS_BLOCKED]
+    return contract.EXIT_CODES[contract.STATUS_OK]
+
+
 # ----------------------------------------------------------------- 单例跑批
 def run_case(spec: Dict[str, Any], ws: Optional[str] = None,
              out_dir: Optional[str] = None,
@@ -284,6 +361,7 @@ def run_case(spec: Dict[str, Any], ws: Optional[str] = None,
         "executor_exit_code": 0,
         "verdict": "fail",
         "verdict_reason": "",
+        "category": CLASS_MISMATCH,
         "honesty": "离线代理结论（fake 模式），不代表真机结论",
     }
 
@@ -296,6 +374,7 @@ def run_case(spec: Dict[str, Any], ws: Optional[str] = None,
         report["verdict_reason"] = "注入规格非法：%s" % exc
         report["executor_status"] = contract.STATUS_BLOCKED
         report["executor_exit_code"] = contract.EXIT_CODES[contract.STATUS_BLOCKED]
+        report["category"] = CLASS_INTERNAL_ERROR
         return report
 
     if not trajectory_path:
@@ -303,6 +382,7 @@ def run_case(spec: Dict[str, Any], ws: Optional[str] = None,
         report["verdict_reason"] = "缺少轨迹文件（trajectory_path 为空）"
         report["executor_status"] = contract.STATUS_ERROR
         report["executor_exit_code"] = contract.EXIT_CODES[contract.STATUS_ERROR]
+        report["category"] = CLASS_INTERNAL_ERROR
         if out_dir:
             _dump(report, os.path.join(out_dir, "s04_%s.json" % name))
         return report
@@ -403,6 +483,9 @@ def run_case(spec: Dict[str, Any], ws: Optional[str] = None,
         report["verdict"] = "pass"
         report["verdict_reason"] = "等级/故障类/动作序列逐条命中预期"
 
+    # 类别（退出码分级的唯一依据；与 verdict + executor_status 一致）
+    report["category"] = classify_result(report)
+
     if out_dir:
         _dump(report, os.path.join(out_dir, "s04_%s.json" % name))
     return report
@@ -426,7 +509,9 @@ def run_all(ws: Optional[str] = None, out_dir: Optional[str] = None,
             cases: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """跑一批用例并落盘（每例一份 + 汇总一份）；返回汇总字典。
 
-    汇总字典含 ``passed`` / ``failed`` 计数与逐例结论（``cases``）。
+    汇总字典含 ``passed`` / ``failed`` 计数与逐例结论（``cases``），
+    以及 **类别分级** 与 **由类别派生的退出码**（``category_counts`` /
+    ``exit_code``）——退出码数字只来自 ``contract.EXIT_CODES``。
     """
     specs = list(cases if cases is not None else CASES)
     if out_dir:
@@ -454,11 +539,35 @@ def run_all(ws: Optional[str] = None, out_dir: Optional[str] = None,
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
     passed = sum(1 for r in results if r.get("verdict") == "pass")
+    categories = [classify_result(r) for r in results]
+    category_counts = {
+        CLASS_PASS: categories.count(CLASS_PASS),
+        CLASS_MISMATCH: categories.count(CLASS_MISMATCH),
+        CLASS_INTERNAL_ERROR: categories.count(CLASS_INTERNAL_ERROR),
+    }
+    # 退出码**由类别派生**（唯一出口 = contract.EXIT_CODES）：
+    # 零用例 → 4；含内部错误 → 4；含判定不符 → 3；全通过 → 0。
+    exit_code = exit_code_for(categories)
+    if not results:
+        verdict = "fail"
+        reason = "没有用例被执行（零用例）：属调用 / 配置问题，不是外部阻塞"
+    elif passed == len(results):
+        verdict = "pass"
+        reason = "全部 %d 条用例命中预期等级" % len(results)
+    else:
+        verdict = "fail"
+        reason = ("%d 条未命中预期（内部错误 %d / 判定不符 %d）"
+                  % (len(results) - passed,
+                     category_counts[CLASS_INTERNAL_ERROR],
+                     category_counts[CLASS_MISMATCH]))
     summary = {
         "total": len(results),
         "passed": passed,
         "failed": len(results) - passed,
-        "verdict": "pass" if passed == len(results) and results else "fail",
+        "verdict": verdict,
+        "reason": reason,
+        "category_counts": category_counts,
+        "exit_code": exit_code,
         "honesty": ("离线代理结论（fake 模式），不代表真机结论；"
                     "碰撞码为工程声明映射（厂商 err[] 码表本轮未取得，待真机回填）"),
         "cases": [
@@ -478,6 +587,7 @@ def run_all(ws: Optional[str] = None, out_dir: Optional[str] = None,
                 "recovery": r.get("recovery"),
                 "verdict": r.get("verdict"),
                 "verdict_reason": r.get("verdict_reason"),
+                "category": classify_result(r),
                 "report": "s04_%s.json" % r.get("case"),
             }
             for r in results
@@ -489,6 +599,15 @@ def run_all(ws: Optional[str] = None, out_dir: Optional[str] = None,
 
 
 # --------------------------------------------------------------------- CLI
+def default_out_dir(ws: Optional[str] = None) -> str:
+    """默认报告输出目录（**绝对路径**）。
+
+    = ``<工作区根>/build/reports/safety``——与一键回归报告目录
+    (``build/reports``）**不同址**。
+    """
+    return os.path.join(paths_mod.workspace_root(ws), DEFAULT_OUT_DIRNAME)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构造参数解析器。"""
     parser = argparse.ArgumentParser(
@@ -510,8 +629,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     """CLI 主入口；返回进程退出码（0 命中 / 3 不符 / 4 内部错误）。"""
     args = build_parser().parse_args(argv)
-    out_dir = args.out_dir or os.path.join(paths_mod.workspace_root(args.ws),
-                                           DEFAULT_OUT_DIRNAME)
+    out_dir = args.out_dir or default_out_dir(args.ws)
     specs = list(CASES)
     if args.case:
         wanted = list(args.case)
@@ -535,10 +653,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                  ",".join(item["action_sequence"]) or "-", item["verdict"]))
     print("passed=%d failed=%d → %s"
           % (summary["passed"], summary["failed"], summary["verdict"]))
+    if summary.get("reason"):
+        print("reason    : %s" % summary["reason"])
+    counts = summary.get("category_counts") or {}
+    print("categories: pass=%d mismatch=%d internal_error=%d"
+          % (counts.get(CLASS_PASS, 0), counts.get(CLASS_MISMATCH, 0),
+             counts.get(CLASS_INTERNAL_ERROR, 0)))
     print("reports   : %s" % out_dir)
-    if summary["failed"]:
-        return contract.EXIT_CODES[contract.STATUS_BLOCKED]
-    return contract.EXIT_CODES[contract.STATUS_OK]
+    # 退出码**只从 summary 派生**（内部错误 → 4 / 判定不符 → 3 / 全通过 → 0；
+    # 零用例 → 4）。数字来源 = contract.EXIT_CODES，不自造。
+    return int(summary.get("exit_code",
+                           contract.EXIT_CODES[contract.STATUS_ERROR]))
 
 
 if __name__ == "__main__":

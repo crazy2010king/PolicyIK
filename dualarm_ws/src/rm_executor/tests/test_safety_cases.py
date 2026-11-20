@@ -206,3 +206,83 @@ def test_cli_main_rejects_unknown_case(tmp_path):
     rc = batch_mod.main(["--case", "no_such_case", "--out-dir",
                          str(tmp_path / "reports")])
     assert rc == contract.EXIT_CODES[contract.STATUS_BLOCKED]
+
+
+# ------------------------------------------------------ 退出码分级（新增）
+def test_internal_error_maps_to_exit_code_four_not_three(tmp_path):
+    """内部错误（``verdict="error"`` / ``invalid_spec``）→ 退出码 **4**，不是 3。
+
+    * 分类规则：``error`` / ``invalid_spec`` → ``internal_error``；
+    * 退出码只从 ``contract.EXIT_CODES`` 取：4 = ``STATUS_ERROR``。
+    """
+    # (1) 缺轨迹 → verdict="error"
+    rep = batch_mod.run_case(dict(batch_mod.CASES[0]),
+                              trajectory_path=None)
+    assert rep["verdict"] == "error", rep
+    assert rep["category"] == batch_mod.CLASS_INTERNAL_ERROR, rep
+    assert batch_mod.exit_code_for([rep["category"]]) == \
+        contract.EXIT_CODES[contract.STATUS_ERROR] == 4
+    assert batch_mod.exit_code_for([rep["category"]]) != \
+        contract.EXIT_CODES[contract.STATUS_BLOCKED]
+
+    # (2) 注入规格非法 → verdict="invalid_spec"（同样属内部错误类）
+    bad = dict(batch_mod.CASES[0])
+    bad["injection"] = "follow_error_light:1.0"
+    rep_bad = batch_mod.run_case(bad, trajectory_path=None)
+    assert rep_bad["verdict"] == "invalid_spec", rep_bad
+    assert rep_bad["category"] == batch_mod.CLASS_INTERNAL_ERROR, rep_bad
+
+    # (3) 整批汇总：内部错误 → 退出码 4
+    summary = batch_mod.run_all(out_dir=str(tmp_path / "reports"),
+                                cases=[bad])
+    assert summary["category_counts"][batch_mod.CLASS_INTERNAL_ERROR] == 1, summary
+    assert summary["exit_code"] == contract.EXIT_CODES[contract.STATUS_ERROR], summary
+    assert summary["exit_code"] == 4, summary
+    assert summary["exit_code"] != contract.EXIT_CODES[contract.STATUS_BLOCKED], summary
+
+
+def test_zero_cases_exits_non_zero_with_reason(tmp_path):
+    """零用例 → 退出码**非 0**（4），且 summary 说清原因。
+
+    绝不允许出现「verdict=fail 却退出 0」。
+    """
+    summary = batch_mod.run_all(out_dir=str(tmp_path / "reports"), cases=[])
+    assert summary["total"] == 0, summary
+    assert summary["verdict"] == "fail", summary
+    assert summary["exit_code"] != 0, summary
+    assert summary["exit_code"] == contract.EXIT_CODES[contract.STATUS_ERROR], summary
+    assert "没有用例被执行" in summary["reason"], summary
+    # 汇总文件照样落盘（可审计）
+    path = tmp_path / "reports" / batch_mod.SUMMARY_FILENAME
+    assert path.exists(), path
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["exit_code"] != 0, payload
+    assert "没有用例被执行" in payload["reason"], payload
+
+
+def test_default_out_dir_is_isolated_from_regression_reports(tmp_path):
+    """默认输出目录**不再是** ``build/reports``（与一键回归报告隔离）。
+
+    * 新默认 = ``build/reports/safety``（与旧默认 ``build/reports`` 不同）；
+    * 轨迹与全部报告都落在新目录**内部**，不与回归报告同层混放。
+    """
+    old_default = os.path.join("build", "reports")
+    assert batch_mod.DEFAULT_OUT_DIRNAME != old_default
+    assert batch_mod.DEFAULT_OUT_DIRNAME == \
+        os.path.join("build", "reports", "safety")
+    assert batch_mod.REGRESSION_OUT_DIRNAME == old_default
+    assert batch_mod.default_out_dir(None).endswith(
+        os.path.join("build", "reports", "safety"))
+
+    # 产物落盘：新目录内含轨迹 + 每例报告 + 汇总；回归目录层没有散落文件
+    out_dir = tmp_path / "build" / "reports" / "safety"
+    summary = batch_mod.run_all(out_dir=str(out_dir))
+    assert summary["passed"] == len(batch_mod.CASES), summary
+    assert (out_dir / batch_mod.TRAJECTORY_FILENAME).exists(), out_dir
+    for spec in batch_mod.CASES:
+        assert (out_dir / ("s04_%s.json" % spec["case"])).exists(), out_dir
+    assert (out_dir / batch_mod.SUMMARY_FILENAME).exists(), out_dir
+    parent = out_dir.parent
+    assert not (parent / batch_mod.SUMMARY_FILENAME).exists(), parent
+    assert not (parent / batch_mod.TRAJECTORY_FILENAME).exists(), parent
+    assert not [p for p in parent.iterdir() if p.name.startswith("s04_")], parent
