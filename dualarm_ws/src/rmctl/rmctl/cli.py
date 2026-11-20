@@ -505,7 +505,7 @@ def cmd_baseline_check(args):
     if blocked:
         print("基线被阻塞（status=blocked，已附阻塞原因与已尝试动作）: %s" % ", ".join(blocked))
         print("→ 这些条目**没有**任何实测数值；真机窗口可用后按 "
-              "docs/code_doc/真机基线与实测限值归档说明.md 重新执行并回填")
+              "docs/真机基线与实测限值归档说明.md 重新执行并回填")
     if pending:
         print("基线结构齐备，未实测: %s（不阻塞；实测回填后 status 改为 measured）"
               % ", ".join(pending))

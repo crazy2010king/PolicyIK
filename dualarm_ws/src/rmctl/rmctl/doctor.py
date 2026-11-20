@@ -228,7 +228,7 @@ def _zero_check(ws: str) -> Dict[str, Any]:
     return _check(
         "zero:baseline", False,
         "零位基线 status=%s（零位未采集）%s" % (status, ("：" + reason) if reason else ""),
-        action or ("真机窗口按 docs/code_doc/真机基线与实测限值归档说明.md 第 3 节"
+        action or ("真机窗口按 docs/真机基线与实测限值归档说明.md 第 3 节"
                    "采集零位后，把 zero_baseline.yaml 的 status 改为 measured"),
         "NEEDS_HUMAN")
 
@@ -367,7 +367,7 @@ def collect_checks(ws: Optional[str] = None,
                              % (ml_status or "缺失"),
                              "真机窗口执行 python3 -m rmctl.hwcollect ladder_acc_jerk "
                              "并回填 workcell/baselines/measured_limits.yaml"
-                             "（见 docs/code_doc/真机基线与实测限值归档说明.md）",
+                             "（见 docs/真机基线与实测限值归档说明.md）",
                              "INFO"))
     except Exception as exc:  # noqa: BLE001
         checks.append(_check("baselines:present", False, repr(exc),

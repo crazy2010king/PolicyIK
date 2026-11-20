@@ -120,7 +120,7 @@ $ python3 -m rm_hw_bridge.audit --repo
 
 | 规则 | 本项目落实 | 本轮真机表现 |
 |---|---|---|
-| `rm_current_arm_state_t.pose` **仅用于标定后的一致性校验**，不得作为规划真值 | 快照字段固定 `controller_pose_scope = "cross_check_only"`；规划/校验一律用**自研 FK** | **V6 就是这条边界的产物**：自研 FK（Link7 系）vs 控制器位姿（TCP 系）差 **75.03 mm**，归因为**系统性平移**且 `calibration.tcp = null`（未标定）→ 判**不合格**，并明确"**该偏差不能当作模型精度结论**"。若把厂商位姿当真值，这个 75 mm 就会被悄悄吃掉。 |
+| `rm_current_arm_state_t.pose` **仅用于标定后的一致性校验**，不得作为规划真值 | 快照字段固定 `controller_pose_scope = "cross_check_only"`；规划/校验一律用**自研 FK** | **V6 就是这条边界的产物**：自研 FK（Link7 系）vs 控制器位姿（TCP 系）差 **75.03 mm**，归因为**系统性平移**且 `calibration.tcp = null`（未标定）→ 判**不合格**，并明确"**该偏差不能当作模型精度结论**"。若把厂商位姿当真值，这个 75 mm 就会被悄悄吃掉。**（2026-11-20 S11 复测：那次 75.03 mm 的归因已作废 —— “20 组位形”实为同一位形重复；重测结果见 §7.1）** |
 | 零位只能走示教器受控流程（`rm_set_joint_zero_pos` 禁用） | 零位列在 `zero_baseline.yaml`，采集项含示教器凹槽对齐照片 | 本轮**未做**零位取证（照片 + 固件/示教器版本），基线仍 `blocked` |
 
 ### 2.5 "控制器是否在偷偷规划"的主动检测（设计 §1.3 `rm_get_arm_current_trajectory` 的用途）
@@ -151,7 +151,7 @@ $ python3 -m rm_hw_bridge.audit --repo
 | **P0** 夹爪开合 100 次无超时，`mode`/`actpos`/`error` 可稳定读出 | ⛔ 未覆盖 | 本轮不含夹爪（单臂运动链路） |
 | **P0** 硬件急停演练：触发后两臂立即停，SDK 返回明确错误码 | ✅ **达成（单臂）** | V9：软停 + 急停 rc=0、状态快照留档（`drill_performed=true`）；"两臂"需第二台臂可达 |
 | **P0** 版本矩阵与零位基线入档（文档 + 照片） | ❌ **未达成** | 控制器固件 / 示教器版本未读取；零位照片未取证 → `version_matrix` / `zero_baseline` 仍 `blocked` |
-| **P1** 20 组随机位形：自研 FK 与控制器位姿偏差 < 1 mm / 0.05° | ❌ **未达成（真不合格）** | V6 实测 **75.03 mm**（系统性平移，TCP 未标定）；姿态项控制器未提供 → 不参与判定。**先标定 TCP 再复测** |
+| **P1** 20 组随机位形：自研 FK 与控制器位姿偏差 < 1 mm / 0.05° | ❌ **未达成（真不合格）** | V6 实测 **75.03 mm**（系统性平移，TCP 未标定）；姿态项控制器未提供 → 不参与判定。**先标定 TCP 再复测** —— **该归因已被 2026-11-20 S11 复测作废（当时 20 组实为同一位形重复），重测结论见 §7.1** |
 | **P1** 零位状态下离散碰撞检查结果为空 | ✅ 达成（离线） | S01 `acm_report.json` 字段完整；真机零位未取证 |
 | **P1** 10 ms tick 的透传抖动 p99 < 2 ms（连续 5 分钟） | ✅ **达成（本轮 501 拍 / 5.53 s）** | V5：抖动 p99 **0.201 ms**、p50 0.063 ms、max 0.295 ms；跟踪误差 RMS **0.0506°**、max 0.112° |
 | **P1** 关节速度 / 加速度实测值与 `joint_limits` 一致性核对通过 | 🟡 **部分达成** | joint1 三档实测 acc **1.7557 rad/s²**、jerk **81.099 rad/s³**（现值 5.2359 / 30.0）；joint2..joint7 未测 → `measured_limits` 仍 `blocked` |
@@ -305,7 +305,7 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | V3 | `rm_movej` J1 +0.3°（2% 速度）：到位 **0.005°**、漂移 **0.002°**、回程 **0.038°** |
 | V4 | canfd 透传 J1 +0.3°：到位 **0.163°**、漂移 **0.002°**、回程 **0.162°** |
 | V5 | 501 拍 / 5.53 s、到位 **0.0030°**、跟随 RMS **0.0506°**（max 0.112°）、抖动 p50 **0.063 ms** / p95 **0.098 ms** / p99 **0.201 ms** / max **0.295 ms** |
-| V6 | **failed**：FK 位置偏差 **75.03 mm**（阈值 1 mm）、归因 `systematic_translation`、`calibration.tcp = null` |
+| V6 | **failed**：FK 位置偏差 **75.03 mm**（阈值 1 mm）、归因 `systematic_translation`、`calibration.tcp = null`（**该次归因已被 2026-11-20 S11 复测作废** —— 20 组实为同一位形重复；重测见 §7.1） |
 | V7 | 30 次固定目标：最大散布 **0.0341 mm**、平均散布 0.0127 mm（标称 ±0.05 mm） |
 | V8 | joint1 三档（10°/档、速度 5/8/11%、每档回原位）：包络 acc **1.7557 rad/s²**、jerk **81.099 rad/s³** |
 | V9 | 软停 rc=0、急停 rc=0、`drill_performed=true`、状态快照留档 |
@@ -348,7 +348,7 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 
 | 项 | 现状 | 下一步（具体命令/动作） |
 |---|---|---|
-| **V6 FK 交叉校验** | 真不合格（75.03 mm 系统性平移） | 标定 TCP（`workcell/rm_workcell.yaml::calibration.tcp` 现为 null）→ 复测 `rmctl.hwcollect fk_cross --samples 20` |
+| **V6 FK 交叉校验** | **2026-11-20 已在远端主机真机窗口复测**（工件 `workcell/baselines/evidence/rm75_s11_fk_recheck.json`，`status=ok`）：8 组**有界多样位形**（幅度 5°、单关节依次、每步回原位、速度 10%）→ `raw max_pos_dev_mm=151.460` / `mean_pos_dev_mm=130.525` / `max_ori_dev_deg=179.965`，`residual_kind=orientation_dependent`（`consistency_base=0.839` / `consistency_tip=0.841`）→ 按分支规则**不写任何标定偏置**（`calibration.tcp` / `calibration.base_to_base` 仍为 null）。旧的"75.03 mm 系统性平移"结论**已作废**（那 20 组实为同一位形重复） | 按 `residual_kind` 分支走：查零位（示教器凹槽对齐照片 + `joint1..joint7` 零位读数）→ 核对官方 MDH 表 a/α/θ 与清洗 URDF → 确认控制器位姿参考系（base/work/tool）→ 扩大位形多样性后**复测** `python3 -m rmctl.hwcollect fk_cross --arm left --samples 8 --fk-amplitude-deg 5 --seed <seed> --out <dir>`（**远端主机**执行，见 §7.1） |
 | **零位基线** | 未取证（零位照片 + 固件/示教器版本） | 示教器受控流程对齐凹槽 → 照片 → `rmctl.hwcollect zero_capture` → 回填 `zero_baseline.yaml` |
 | **joint2..joint7 的 acc/jerk** | 只测了 joint1（3 档） | `rmctl.hwcollect ladder_acc_jerk --arm left --trials 3`（注意 `joints` 是 1 基关节号，每档自动回原位）→ 7 个关节测齐后 `measured_limits` 才能改 `status=measured` → 再用 `apply_measured_limits.py --dry-run` 走 conservative 回填 |
 | **基线状态位** | 四张基线仍 `blocked`（全表口径未测齐时值字段必须为 null） | 实测值已写在各表 `partial_observations` + 证据工件；测齐后再逐项搬进正式字段 |
@@ -357,6 +357,38 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | **双臂（P4/P5）** | 右臂 `192.168.1.19` 未接触 | 右臂网络可达后另开窗口；注意 UDP 端口 8092 预留 |
 | **里程碑验证重跑** | M001 仍是 `needs-attention` | 2026-11-20 已做**范围重划**：M001 收敛为单臂（验收条款、ROADMAP Success Criteria、CONTEXT、需求归属均已更新），夹爪/取放/现场人项移交新里程碑 **M002-o62zc6**（T01–T05）；M001 剩余未完成项为 10 分钟长跑与断流真机复现（2026-11-20 窗口门禁 blocked，见 `workcell/baselines/evidence/rm75_s10_window_outcome.json`；需臂使能 + 网络可达） |
 | **臂的使能状态** | 急停演练后已清错复位（`RM_IDLE_E`），但 **7 轴仍掉使能**（`joint_en_flag` 全 0） | 需在示教器**重新使能**；在此之前探针的 7 项前置检查会拒绝任何运动指令（这是预期行为） |
+
+### 7.1 S11 远端窗口 FK 复测结论（2026-11-20）与剩余未闭合项
+
+**执行环境（口径，勿再误判）**：控制臂 `192.168.1.18` **只在远端主机 `172.16.119.199`
+所在网段可达** —— 远端 `ping 0% 丢包`（rtt 0.44 ms）、`TCP 8080` 可连、SDK 可装载。
+**本机门禁失败 ≠ 真机不可达**（这是 2026-11-13 那次误判的根因，已写进
+`docs/真机基线与实测限值归档说明.md` §3.1 与 §6 踩坑清单第 15 条）。
+
+```bash
+# 远端执行模板（仓库根与 worktree 同路径，同一份 NFS 文件，无需 rsync/scp）
+ssh -p 2224 zy@172.16.119.199 \
+  'docker exec -i ros_dev bash -lc "cd /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40 && source scripts/rmenv.sh && export RM_API2_LIB=$PWD/../../.deps/rm_api2/libapi_c.so && python3 -m rmctl.hwcollect fk_cross --arm left --ip 192.168.1.18 --samples 8 --fk-amplitude-deg 5 --seed 20261120 --out build/reports/validation/s11_fk_cross"'
+```
+
+| 项 | 实测结论（工件 `workcell/baselines/evidence/rm75_s11_fk_recheck.json`） |
+|---|---|
+| 门禁 | 5/5 通过（ping / TCP 8080 / UDP 8091+8092 空闲 / SDK 可装载 / 探针前置检查 ok） |
+| 只读快照 | 7 轴 `joint_en_flag` 全 1、`arm_err`/`joint_err_code` 全 0、`RM_NO_PLANNING_E` + `RM_IDLE_E` |
+| 采样 | 8 组 / 8 个互异位形；幅度 5°；单关节依次；每步回原位；速度 10% |
+| raw | `max_pos_dev_mm=151.460`、`mean_pos_dev_mm=130.525`、`max_ori_dev_deg=179.965` |
+| corrected | 与 raw 相同（**未施加任何偏置**） |
+| `residual_kind` | `orientation_dependent`（`consistency_base=0.839` / `consistency_tip=0.841` → 5° 单关节小扰动不足以区分坐标系） |
+| 处置 | **不写 `calibration.tcp`，也不写 `calibration.base_to_base`**；残差量级（约 130 mm / 约 180°）远超 mm 级偏置可解释范围 → 指向 URDF 清洗 / 零位 / 控制器位姿参考系口径，**不是**法兰→工具偏置 |
+
+**剩余未闭合项（移交 S13 / M002）**：
+
+| 项 | 阻塞原因 | 下一步 |
+|---|---|---|
+| 右臂 `192.168.1.19` | 远端主机实测同样 `No route to host`（右臂不存在，不是本机问题） | 右臂接入网络后另开窗口；UDP 8092 预留 |
+| 控制器固件 / 示教器版本 | `rm_get_arm_software_version` **不在** `rm_hw_bridge` 的 22+21 符号白名单内 → 不可经 SDK 读取 | 走白名单外读数路径或示教器现场记录；`version_matrix` 保持 `blocked` |
+| `joint2..joint7` 的 acc/jerk | 本轮只测了 joint1（3 档，包络 acc 1.7557 rad/s² / jerk 81.099 rad/s³） | `python3 -m rmctl.hwcollect ladder_acc_jerk --arm left --trials 3`（**远端主机**）测齐 7 个关节 → `measured_limits` 才能改 `status=measured` → 再 `apply_measured_limits.py --dry-run` 走 conservative 回填 |
+| 每关节零位读数 / 凹槽照片 | 需示教器受控流程（`rm_set_joint_zero_pos` 在黑名单内，不可脚本化） | 示教器对齐凹槽 → 照片 → `python3 -m rmctl.hwcollect zero_capture --arm left --photo <照片引用> --out <dir>` |
 
 ---
 

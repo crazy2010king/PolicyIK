@@ -80,7 +80,7 @@ _NEXT_ACTION_MEASURE = (
     "取得真机窗口后执行 `python3 -m rmctl.hwcollect ladder_acc_jerk --arm left --trials 3` "
     "采集 acc/ jerk 实测值，回填 %s（status 改 measured，每条补齐 source/method/samples≥3），"
     "再用 `python3 dualarm_ws/src/rm_description/scripts/apply_measured_limits.py --dry-run` "
-    "预览回填（流程见 docs/code_doc/真机基线与实测限值归档说明.md 第 3 节）"
+    "预览回填（流程见 docs/真机基线与实测限值归档说明.md 第 3 节）"
 )
 
 #: 占位回退的告警下一步
