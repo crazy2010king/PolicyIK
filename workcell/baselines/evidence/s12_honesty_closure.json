@@ -1,0 +1,317 @@
+{
+  "schema": "rmctl.s12_honesty_closure/1",
+  "status": "ok",
+  "captured_at": "2026-11-20T18:21:48+08:00",
+  "milestone": "M001-3kzz40",
+  "slice": "S12",
+  "task": "S12-T7",
+  "scope": "切片级集成验证：把 S12 的四、五项修复合起来端到端复跑一遍并留档（全部离线，未连真机、未下发电机运动指令）。",
+  "environment": {
+    "worktree": ".gsd-worktrees/M001-3kzz40",
+    "machine_reachability": "本轮全程离线：无真机窗口、未连 172.16.119.199、未连 192.168.1.18、未下发任何电机运动指令。",
+    "python": "python3（系统解释器）"
+  },
+
+  "fixes": [
+    {
+      "id": "declaration_gap_closure",
+      "title": "声明补齐：R004 电子围栏能力缺口 / R008 真机版崩溃隔离未实证写入未闭合清单",
+      "conclusion": "established",
+      "evidence": [
+        {
+          "kind": "doc",
+          "file": "docs/RM75-B真机验证执行情况与使用说明.md",
+          "line": 360,
+          "detail": "§7「仍未闭合的项与下一步」表新增行「R004 电子围栏（能力缺口）」：明示厂商 SDK 有 rm_set_electronic_fence_enable / rm_set_electronic_fence_config / rm_set_virtual_wall_config / rm_get_virtual_wall_config，但本项目 rm_hw_bridge/contract.yaml 的 core/support/blacklist 三段 grep 'fence' 零命中 → 装载层未绑定 → 当前实现无法下发电子围栏；归属 M002-o62zc6，R004 保持 active。",
+          "command": "grep -n 'R004 电子围栏（能力缺口）' docs/RM75-B真机验证执行情况与使用说明.md",
+          "exit_code": 0
+        },
+        {
+          "kind": "doc",
+          "file": "docs/RM75-B真机验证执行情况与使用说明.md",
+          "line": 361,
+          "detail": "§7 新增行「R008 真机版崩溃隔离（未实证）」：离线层已实证（真实规划内核 + 四道校验 + 进程级 SIGKILL + rm_executor fake 回放），但真机层「rm_runtime 执行轨迹过程中 kill -9 rm_planner 后真机运动是否继续」本轮未执行，登记为 human-follow-up / NEEDS-HUMAN；R008 保持 active。",
+          "command": "grep -n 'R008 真机版崩溃隔离（未实证）' docs/RM75-B真机验证执行情况与使用说明.md",
+          "exit_code": 0
+        },
+        {
+          "kind": "requirement_notes",
+          "id": "R004",
+          "status": "active",
+          "detail": "R004 requirement notes（gsd_requirement_get R004 / .gsd/state-manifest.json requirements[R004].notes）保留「真机可达路径（真实快照数值 / 下发后驱动器读回）因本窗口真机不可达仍未实证，R004 保持 active，待真机窗口按 S02/S03 验收口径补齐」的未闭合口径；status=active 未被改写为 validated。",
+          "command": "gsd_requirement_get R004",
+          "exit_code": 0
+        },
+        {
+          "kind": "requirement_notes",
+          "id": "R008",
+          "status": "active",
+          "detail": "R008 requirement notes 末句为「未实证：真机版崩溃隔离（rm_runtime 执行中 kill -9 rm_planner）属真机窗口，留待 S06/S09 回填」；status=active，validation=mapped 未改写。",
+          "command": "gsd_requirement_get R008",
+          "exit_code": 0
+        }
+      ],
+      "caveat": "docs §7 与需求 notes 均只做**声明**；R004 电子围栏能力缺口与 R008 真机崩溃隔离**未实证**（见 honesty_statement）。需求 notes 的电子围栏缺口细节以 docs §7 第 360 行为准（notes 侧记述为「真机可达路径未实证」的总口径）。"
+    },
+
+    {
+      "id": "safety_batch_exit_codes_and_out_dir",
+      "title": "safety_batch 退出码分级（内部错误 → 4、零用例 → 非 0）与默认输出目录隔离",
+      "conclusion": "established",
+      "evidence": [
+        {
+          "kind": "command",
+          "command": "PYTHONPATH=dualarm_ws/src/rm_safety:dualarm_ws/src/rm_hw_bridge:dualarm_ws/src/rm_executor python3 -m rm_executor.safety_batch --all",
+          "exit_code": 0,
+          "duration_ms": 199,
+          "detail": "端到端 6 条用例全通过：passed=6 failed=0 → pass；reason「全部 6 条用例命中预期等级」；categories: pass=6 mismatch=0 internal_error=0；报告目录 build/reports/safety。"
+        },
+        {
+          "kind": "code",
+          "file": "dualarm_ws/src/rm_executor/rm_executor/safety_batch.py",
+          "line": 289,
+          "detail": "exit_code_for(categories)：零用例 → contract.EXIT_CODES[STATUS_ERROR]（4）；含 internal_error → 4；含 mismatch → 3；全通过 → 0。退出码数字只从 rm_executor.contract.EXIT_CODES 取，不自造。",
+          "command": "grep -n 'def exit_code_for' -A 30 dualarm_ws/src/rm_executor/rm_executor/safety_batch.py",
+          "exit_code": 0
+        },
+        {
+          "kind": "code",
+          "file": "dualarm_ws/src/rm_executor/rm_executor/safety_batch.py",
+          "line": 93,
+          "detail": "DEFAULT_OUT_DIRNAME = os.path.join('build', 'reports', 'safety')；默认输出目录由 build/reports 改为 build/reports/safety，与一键回归的 build/reports 不再冲突。实测本次 8 个 s04_*.json 全部落在 build/reports/safety/ 下。",
+          "command": "grep -n 'DEFAULT_OUT_DIRNAME' dualarm_ws/src/rm_executor/rm_executor/safety_batch.py",
+          "exit_code": 0
+        },
+        {
+          "kind": "report",
+          "file": "build/reports/safety/s04_safety_cases.json",
+          "detail": "报告内容：total=6 passed=6 failed=0 verdict=pass exit_code=0；category_counts={pass:6, mismatch:0, internal_error:0}。",
+          "command": "python3 -c \"import json;d=json.load(open('build/reports/safety/s04_safety_cases.json'));print(d['total'],d['passed'],d['failed'],d['verdict'],d['exit_code'],d['category_counts'])\"",
+          "exit_code": 0
+        },
+        {
+          "kind": "test",
+          "file": "dualarm_ws/src/rm_executor/tests/test_safety_cases.py",
+          "detail": "单点覆盖：test_zero_cases_exits_non_zero_with_reason（零用例 → 非 0 退出码）、test_default_out_dir_is_isolated_from_regression_reports（默认目录隔离）、exit_code_for 类别映射断言。",
+          "command": "python3 -m pytest dualarm_ws/src/rm_executor/tests/test_safety_cases.py -q",
+          "exit_code": 0
+        }
+      ]
+    },
+
+    {
+      "id": "regression_summary_fail_blocked_only",
+      "title": "一键回归汇总段：只列 fail/blocked 段并指名失败段",
+      "conclusion": "established",
+      "evidence": [
+        {
+          "kind": "command",
+          "command": "python3 scripts/rm_regression.py --out build/reports/s12_regression.json",
+          "exit_code": 3,
+          "duration_ms": 53527,
+          "detail": "端到端一键回归跑通，退出码 3（∈ {0,3}，未出现 4）；顶层 status=blocked、verdict=blocked、mode=offline；reason「有段因外部条件未满足被阻塞（blocked 段 1 个：baselines）」。",
+          "note": "退出码 3 由 baselines 段因真机窗口不可达而 blocked 导致，属如实结论；未改段结论、未改 status 去凑 0。"
+        },
+        {
+          "kind": "report",
+          "file": "build/reports/s12_regression.json",
+          "detail": "顶层键：evidence / exit_code / mode / next_action / problem_segments / reason / segments / status / verdict。汇总键 problem_segments 内容仅 1 项且为 blocked 段 baselines，每项含 id / verdict / reason / next_action。",
+          "command": "python3 scripts/s12_honesty_assert.py",
+          "exit_code": 0
+        },
+        {
+          "kind": "assertion",
+          "file": "scripts/s12_regression_closure_check.py",
+          "detail": "端到端结案检查脚本（7 项断言全过，退出码 0）：跑一键回归 → 断言进程退出码 ∈ {0,3}（4 = 真回归，不接受）→ 断言报告 exit_code 与进程退出码一致 → 断言汇总段 verdict ∈ {fail, blocked} → 断言每段含 id/reason/next_action → 断言汇总段集合 == 实际 fail/blocked 段集合（不漏报不多报）→ 断言顶层 status 与段 verdict 一致 → 断言顶层 reason 指名每个问题段 id。输出 CLOSURE_CHECK_OK。",
+          "command": "python3 scripts/s12_regression_closure_check.py",
+          "exit_code": 0,
+          "duration_ms": 53099,
+          "stdout_tail": "regression_process_exit_code=3 | summary_only_fail_blocked=True ids=['baselines'] | top status=blocked exit_code=3 reason=有段因外部条件未满足被阻塞（blocked 段 1 个：baselines） | CLOSURE_CHECK_OK"
+        },
+        {
+          "kind": "assertion",
+          "file": "scripts/s12_honesty_assert.py",
+          "detail": "纯报告断言脚本（7 项断言全过）：① 顶层有 problem_segments；② 汇总段 verdict ∈ {fail, blocked}；③ 每段含 id/reason/next_action；④ 汇总段集合 == 实际 fail/blocked 段集合；⑤ 顶层 status/exit_code 与段 verdict 一致（有 fail→error/4，有 blocked→blocked/3，否则 ok/0）；⑥ 顶层 reason 指名每个问题段 id；⑦ exit_code ∈ {0,3}。输出 ASSERTIONS_OK。",
+          "command": "python3 scripts/s12_honesty_assert.py",
+          "exit_code": 0,
+          "stdout_tail": "summary_only_fail_blocked=True ids=['baselines'] | top status=blocked exit_code=3 reason=有段因外部条件未满足被阻塞（blocked 段 1 个：baselines） | ASSERTIONS_OK"
+        },
+        {
+          "kind": "test",
+          "file": "dualarm_ws/src/rmctl/tests/test_regression.py",
+          "detail": "单点覆盖：test_failing_segment_summary_names_the_fail_segment、test_cli_report_summary_names_blocked_segments、test_failing_segment_makes_overall_fail_with_exit_4、test_blocked_segment_does_not_make_overall_fail、test_cli_report_top_level_has_summary_key。",
+          "command": "python3 -m pytest dualarm_ws/src/rmctl/tests/test_regression.py -q -k 'summary or exit_4 or blocked'",
+          "exit_code": 0,
+          "detail_count": "7 passed, 11 deselected"
+        }
+      ]
+    },
+
+    {
+      "id": "gripper_fail_closed",
+      "title": "夹爪「已配置但闸门不可用」时执行层 fail-closed 拒绝运动（严格区分「未配置夹爪」）",
+      "conclusion": "established",
+      "evidence": [
+        {
+          "kind": "code",
+          "file": "dualarm_ws/src/rm_executor/rm_executor/interlock.py",
+          "detail": "闸门不可用态常量 STATE_GATE_UNAVAILABLE + REASON_GATE_UNAVAILABLE，与运行时互锁态可区分；构造出的不可用闸门 state 恒为 STATE_GATE_UNAVAILABLE。",
+          "command": "grep -n 'STATE_GATE_UNAVAILABLE' dualarm_ws/src/rm_executor/rm_executor/interlock.py",
+          "exit_code": 0
+        },
+        {
+          "kind": "code",
+          "file": "dualarm_ws/src/rm_executor/rm_executor/executor.py",
+          "line": 1908,
+          "detail": "执行层在闸门态为 STATE_GATE_UNAVAILABLE 时走 fail-closed 分支（按 REASON_GATE_UNAVAILABLE 记录并拒绝运动），不做「静默降级为无夹爪」处理。",
+          "command": "grep -n 'STATE_GATE_UNAVAILABLE' dualarm_ws/src/rm_executor/rm_executor/executor.py",
+          "exit_code": 0
+        },
+        {
+          "kind": "test",
+          "file": "dualarm_ws/src/rm_executor/tests/test_gripper_gate_failclosed.py",
+          "detail": "test_configured_gripper_with_broken_config_fails_closed、test_cli_with_broken_gripper_config_fails_closed、test_repo_workcell_keeps_interlock_enabled（回归保护：仓库真实工位 gripper 段合法 → 闸门可用、行为不变、note 含「已启用夹爪互锁」）。",
+          "command": "python3 -m pytest dualarm_ws/src/rm_executor/tests/test_gripper_gate_failclosed.py -q",
+          "exit_code": 0,
+          "detail_count": "5 passed"
+        }
+      ],
+      "no_false_positive_check": "未误伤既有离线证据链：本次端到端一键回归的 gripper_offline 段 verdict=pass（reason「离线证据链三段全部通过：开合 100 次零超时 / 六类判定各 10 次全对 / 运动互锁零下发」），process_offline 段 verdict=pass；仓库真实工位配置下 test_repo_workcell_keeps_interlock_enabled 通过。"
+    },
+
+    {
+      "id": "cross_package_test_isolation",
+      "title": "跨包全局状态污染导致的既有 pytest 失败修复（隔离缺陷）",
+      "conclusion": "established",
+      "evidence": [
+        {
+          "kind": "command",
+          "command": "python3 -m pytest dualarm_ws/src/rmctl/tests dualarm_ws/src/rm_hw_bridge/tests dualarm_ws/src/rm_safety/tests dualarm_ws/src/rm_executor/tests -q",
+          "exit_code": 0,
+          "duration_ms": 154228,
+          "detail": "四包全量：1806 passed, 1 skipped，**0 failed**（基线的 1 failed 已消失）；本轮复跑未复现跨包全局 realtime 帧计数污染。"
+        }
+      ]
+    }
+  ],
+
+  "pytest_four_packages": {
+    "command": "python3 -m pytest dualarm_ws/src/rmctl/tests dualarm_ws/src/rm_hw_bridge/tests dualarm_ws/src/rm_safety/tests dualarm_ws/src/rm_executor/tests -q",
+    "exit_code": 0,
+    "duration_ms": 154228,
+    "passed": 1806,
+    "failed": 0,
+    "skipped": 1,
+    "baseline_before_fix": "1 failed（跨包全局状态污染），S12 修复后为 0 failed"
+  },
+
+  "regression_end_to_end": {
+    "command": "python3 scripts/rm_regression.py --out build/reports/s12_regression.json",
+    "exit_code": 3,
+    "duration_ms": 53527,
+    "exit_code_in_allowed_set": true,
+    "allowed_set": [0, 3],
+    "top_level": {
+      "status": "blocked",
+      "verdict": "blocked",
+      "mode": "offline",
+      "reason": "有段因外部条件未满足被阻塞（blocked 段 1 个：baselines）"
+    },
+    "report_file": "build/reports/s12_regression.json",
+    "segment_verdicts": [
+      { "id": "gripper_offline", "verdict": "pass", "mode": "fake", "reason": "离线证据链三段全部通过：开合 100 次零超时 / 六类判定各 10 次全对 / 运动互锁零下发" },
+      { "id": "process_offline", "verdict": "pass", "mode": "fake", "reason": "离线证据链四段全部通过：50 圈全流程 / 六类故障分支 / trace 回放对照 / live_window 声明" },
+      { "id": "planner_golden", "verdict": "pass", "mode": "offline", "reason": "7 条场景的 status 全部与 expect_status 一致" },
+      { "id": "planner_acceptance", "verdict": "pass", "mode": "fake", "reason": "rm_planner 三条验收全部通过：① 规划超时被服务端强制中断 / ② 服务崩溃不影响运动执行 / ③ 同请求同种子结果逐点一致" },
+      { "id": "perf_baseline", "verdict": "pass", "mode": "offline", "reason": "S1–S5 共 5 个套件已投影成基线表（实测 3、not_applicable 2）；其中 3 个套件未达设计 §6.9 的组数要求（详见 notes）" },
+      { "id": "experience", "verdict": "pass", "mode": "offline", "reason": "E1–E4 共 15 项指标全部测出并满足设计 §6.2 目标（另有 1 项人工 pending 字段待真机窗口回填）" },
+      { "id": "doctor", "verdict": "pass", "mode": "offline", "reason": "doctor 执行成功，但有 4 项需人工/外部条件（不影响段判定，doctor 本身没回归）" },
+      { "id": "baselines", "verdict": "blocked", "mode": "offline", "reason": "真机基线未全部实测（4/4 类）: zero_baseline=blocked，measured_limits=blocked，version_matrix=blocked，network_plan=blocked；本表如实保留该结论，不改写 status" }
+    ],
+    "summary_only_fail_blocked_verified": true,
+    "summary_verification_detail": {
+      "summary_key": "problem_segments",
+      "summary_entries": 1,
+      "summary_entry_ids": ["baselines"],
+      "summary_entry_verdicts": ["blocked"],
+      "every_entry_has": ["id", "verdict", "reason", "next_action"],
+      "names_the_failing_segment": true,
+      "naming_evidence": "顶层 reason「有段因外部条件未满足被阻塞（blocked 段 1 个：baselines）」指名了被阻塞段 id 'baselines'；本次复跑无 fail 段，故「指名失败段」由 test_failing_segment_summary_names_the_fail_segment 单点覆盖。",
+      "top_level_consistent_with_segment_verdicts": true,
+      "assertion_script": "scripts/s12_honesty_assert.py",
+      "assertion_result": "ASSERTIONS_OK",
+      "end_to_end_assertion_script": "scripts/s12_regression_closure_check.py",
+      "end_to_end_assertion_result": "CLOSURE_CHECK_OK"
+    },
+    "note": "本轮复跑**未**出现 fail 段，也**未**把 blocked 伪装成 pass；baselines 段因真机窗口不可达而 blocked，退出码 3 属如实结论，未为凑 0 改段结论或改 status。"
+  },
+
+  "safety_batch_end_to_end": {
+    "command": "PYTHONPATH=dualarm_ws/src/rm_safety:dualarm_ws/src/rm_hw_bridge:dualarm_ws/src/rm_executor python3 -m rm_executor.safety_batch --all",
+    "exit_code": 0,
+    "duration_ms": 199,
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "verdict": "pass",
+    "category_counts": { "pass": 6, "mismatch": 0, "internal_error": 0 },
+    "reason": "全部 6 条用例命中预期等级",
+    "report_dir": "build/reports/safety",
+    "report_files": [
+      "s04_collision.json",
+      "s04_follow_error_heavy.json",
+      "s04_follow_error_light.json",
+      "s04_limit_exceeded.json",
+      "s04_protection_stop.json",
+      "s04_safety_cases.json",
+      "s04_sample_traj.json",
+      "s04_stream_lost.json"
+    ],
+    "exit_code_semantics_verified": {
+      "zero_cases": "→ 4（内部错误：调用/配置问题，非外部阻塞）",
+      "internal_error": "→ 4",
+      "mismatch": "→ 3",
+      "all_pass": "→ 0（本次实测）",
+      "source": "dualarm_ws/src/rm_executor/rm_executor/safety_batch.py:289 exit_code_for()"
+    },
+    "default_out_dir_isolated": {
+      "before": "build/reports",
+      "after": "build/reports/safety",
+      "conflict_with_regression_reports": false
+    }
+  },
+
+  "honesty_statement": {
+    "scope": "本工件内**全部**结论均为离线 / 文档层结论。",
+    "no_real_machine_numbers": "本工件不含任何真机实测数字；未连真机、未下发电机运动指令；文中出现的 6/6、1806 passed、8/8、15/15 等均为离线用例/离线套件计数，不得被解读为真机指标。",
+    "still_unclosed": [
+      {
+        "requirement": "R004",
+        "item": "电子围栏下发能力缺口",
+        "status": "未闭合（仅声明，未实证）",
+        "detail": "厂商 SDK 有电子围栏接口，但本项目 rm_hw_bridge/contract.yaml 未绑定相应符号 → 当前实现无法下发电子围栏；实现侧移交 M002-o62zc6。",
+        "evidence_ref": "docs/RM75-B真机验证执行情况与使用说明.md:360"
+      },
+      {
+        "requirement": "R008",
+        "item": "真机版崩溃隔离",
+        "status": "未闭合（仅声明，未实证）",
+        "detail": "离线层已实证（SIGKILL 硬超时 / 可中断 / clone-per-planner 隔离 / 确定性种子 / 服务崩溃不影响运动执行），但真机层「rm_runtime 执行中 kill -9 rm_planner 后真机运动是否继续」本轮未执行，属真机窗口项（human-follow-up / NEEDS-HUMAN）。",
+        "evidence_ref": "docs/RM75-B真机验证执行情况与使用说明.md:361"
+      }
+    ],
+    "blocked_segments_are_honest": "一键回归的 baselines 段为真机窗口项，本轮如实 blocked；S12 未通过改段结论或改 status 把它变成 pass/0。",
+    "requirement_status_untouched": "R004 与 R008 的 requirement status 均保持 active，validation 未被改写为 validated。"
+  },
+
+  "commands_run": [
+    { "command": "python3 -m pytest dualarm_ws/src/rmctl/tests dualarm_ws/src/rm_hw_bridge/tests dualarm_ws/src/rm_safety/tests dualarm_ws/src/rm_executor/tests -q", "exit_code": 0, "duration_ms": 154228, "verdict": "pass" },
+    { "command": "python3 scripts/rm_regression.py --out build/reports/s12_regression.json", "exit_code": 3, "duration_ms": 53527, "verdict": "pass" },
+    { "command": "PYTHONPATH=dualarm_ws/src/rm_safety:dualarm_ws/src/rm_hw_bridge:dualarm_ws/src/rm_executor python3 -m rm_executor.safety_batch --all", "exit_code": 0, "duration_ms": 199, "verdict": "pass" },
+    { "command": "python3 scripts/s12_honesty_assert.py", "exit_code": 0, "duration_ms": 16, "verdict": "pass" },
+    { "command": "python3 scripts/s12_regression_closure_check.py", "exit_code": 0, "duration_ms": 53099, "verdict": "pass", "detail": "端到端复跑一键回归并断言退出码 ∈ {0,3} 与汇总段语义（内部回归进程退出码 3，断言脚本退出码 0）" },
+    { "command": "python3 -m pytest dualarm_ws/src/rm_executor/tests/test_gripper_gate_failclosed.py -q", "exit_code": 0, "duration_ms": 327, "verdict": "pass" },
+    { "command": "python3 -m pytest dualarm_ws/src/rm_executor/tests/test_gripper_gate_failclosed.py dualarm_ws/src/rm_executor/tests/test_safety_cases.py dualarm_ws/src/rmctl/tests/test_regression.py -q", "exit_code": 0, "duration_ms": 21029, "verdict": "pass", "detail": "59 passed（S12 相关单点用例合跑）" },
+    { "command": "python3 -m pytest dualarm_ws/src/rmctl/tests/test_regression.py -q -k 'summary or exit_4 or blocked'", "exit_code": 0, "duration_ms": 10030, "verdict": "pass", "detail": "7 passed, 11 deselected（汇总段语义相关用例）" }
+  ]
+}
