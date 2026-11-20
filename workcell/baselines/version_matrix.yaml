@@ -6,7 +6,7 @@
 #   - status=measured 表示该矩阵已冻结（每一条都非 null）。
 kind: version_matrix
 schema_version: 1
-version: 3                  # 基线修订号（单调递增）
+version: 4                  # 基线修订号（单调递增）
 status: blocked
 captured_at: null
 blocked:
@@ -16,6 +16,13 @@ blocked:
     2026-11-19 连通性已恢复（远端主机 ping 正常、TCP 8080 可连、RM-API2 握手成功），
     但**本轮未读取控制器固件与示教器版本**，这两个条目仍为 null，
     整张矩阵**未冻结**（status 保持 blocked，不得声称已冻结）。工具链侧与 SDK 版本已在本机核实并回填。
+    2026-11-20 远端主机真机窗口（172.16.119.199:2224 → 容器 ros_dev）已完成只读门禁与 FK 复测，
+    但**固件/示教器版本仍拿不到**，原因是具体的两条：
+    ① `rm_get_arm_software_version` **不在 rm_hw_bridge 的符号白名单**内
+       （dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml：22 核心 + 21 支持符号，
+       该符号未列入）→ 无法经 SDK 读取控制器固件版本；拓白名单需改硬件适配层契约（另开切片）；
+    ② 示教器版本只能在示教器界面现场读数，本轮窗口无人操作示教器。
+    另：`container_image` 仍为 null（容器内无 docker CLI，无法自证镜像标签）。
   attempted_actions:
     - "本机实测：rm_api_version() 返回 b'1.1.7'（RM-API2 1.1.7 到位，.deps/rm_api2/libapi_c.so，sha256 396913cc1a839e948ca58e02525f9098e86026e5b0f62d2561acc3de53105aac）"
     - "本机实测：import tesseract_robotics → __version__ = 0.35.0.8"
@@ -24,9 +31,15 @@ blocked:
     - "上游复核：/tmp/rmrepo（ros2_rm_robot humble 分支）git describe = humble1.7.1"
     - "门禁3 网络连通（2026-11-13）：ping 192.168.1.18 / 192.168.1.19 均 100% 丢包 → 无法读取控制器固件与示教器版本"
     - "2026-11-19 复测（远端主机）：连通性恢复（ping 正常 / TCP 8080 可连 / RM-API2 握手成功），但**控制器固件与示教器版本仍未读取**（需示教器界面或 rm_get_arm_software_info）"
+    - "2026-11-20 远端主机真机窗口：只读门禁五项全通过 + 只读快照（7 轴使能、错误码全 0）+ 8 组有界多样位形 FK 复测完成；**固件/示教器版本仍未读取**"
+    - "2026-11-20 障碍定位（具体）：`rm_get_arm_software_version` **不在 rm_hw_bridge 符号白名单**（contract.yaml：22 核心 + 21 支持符号）→ 不可经 SDK 读取控制器固件版本；示教器版本需现场界面读数（本轮无人操作示教器）；容器镜像标签亦无法自证（容器内无 docker CLI）"
   next_action: >-
-    真机窗口内读取控制器固件版本（示教器"系统信息"或 rm_get_arm_software_info）与示教器版本，
-    回填本文件并把 status 改为 measured（届时全部 9 个条目都必须非 null）
+    真机窗口内读取控制器固件版本（示教器"系统信息"）与示教器版本，回填本文件并把 status
+    改为 measured（届时全部 9 个条目都必须非 null）。两条路径任选其一：
+    ① 示教器界面人工读数后回填（无需改代码）；
+    ② 另开切片把 `rm_get_arm_software_version` 纳入 rm_hw_bridge 符号白名单
+       （dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml）后再经 SDK 读取。
+    container_image 一项需在容器内可查 docker 元数据（或由镜像仓库侧提供标签）。
 controller_firmware: null        # 控制器固件版本（真机读数）
 teachpendant: null               # 示教器版本
 rm_api2_sdk: "1.1.7"             # RM-API2 SDK 版本（本机实测：rm_api_version() → b'1.1.7'）

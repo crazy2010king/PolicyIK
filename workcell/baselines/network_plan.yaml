@@ -5,7 +5,7 @@
 #   - 同一 ip:port 只能被一个客户端占用；上一个进程未退干净会静默失败（采集前先确认端口空闲）。
 kind: network_plan
 schema_version: 1
-version: 5                  # 基线修订号（单调递增）
+version: 6                  # 基线修订号（单调递增）
 status: blocked
 captured_at: null
 blocked:
@@ -24,6 +24,14 @@ blocked:
     但意味着「执行层 600 s 连续执行长跑」与「UDP 断流 200 ms 停机复现」必须在**远端主机的真机窗口内**执行；
     本机跑不通**不得**被记为长跑/断流未达标的实测结论（结案工件见
     workcell/baselines/evidence/rm75_s10_window_outcome.json）。
+    **2026-11-20 口径修正（S11）**：上条「本机不通」**不等于**真机不可达 —— 可达控制臂的那台机器是
+    远端主机 172.16.119.199（端口 2224，容器 ros_dev），本轮在该主机上实测：ping 192.168.1.18 →
+    3 发 3 收、0% 丢包（rtt 0.428/0.443/0.471 ms）、TCP 8080 可连、UDP 8091/8092 空闲、
+    只读门禁五项全通过、只读快照 7 轴全部使能且错误码全 0、8 组有界多样位形 FK 复测已跑完
+    （工件 workcell/baselines/evidence/rm75_s11_fk_recheck.json）。
+    **右臂 192.168.1.19 在远端主机同样是 "No route to host"（右臂在该网段不存在）**，
+    因此本表的右臂条目**无法**在本环境补测 → 全表口径的 status 仍保持 blocked。
+    另外，「执行层 600 s 连续执行长跑」与「UDP 断流 200 ms 停机复现」本轮**仍未执行**。
   attempted_actions:
     - "本机端口占用核查：ss -ulnp | grep -E '8091|8092' 无输出（本机侧无冲突）"
     - "网络连通（2026-11-13 首次窗口）：ping -c 2 192.168.1.18 → 100% packet loss；ping -c 2 192.168.1.19 → 100% packet loss"
@@ -43,15 +51,20 @@ blocked:
     - "2026-11-20 真机窗口尝试（S10，scripts/rm75_window_run.py 单一入口）：只读门禁 scripts/rm75_window_gate.py 实测 → ip_reachable 失败（ping -c 3 -W 1 192.168.1.18 → 3 packets transmitted, 0 received, 100% packet loss, time 2045ms）、tcp_reachable 失败（nc -vz 192.168.1.18 8080 → 连接失败: timed out）、udp_ports_free 通过（8091/8092 空闲）、sdk_loadable 通过、probe_precheck **已跳过**（未建立任何连接，零运动指令）→ 门禁 status=blocked，长跑 / 断流 / 阶梯**均未执行**，无任何实测数字"
     - "2026-11-20 结案工件：workcell/baselines/evidence/rm75_s10_window_outcome.json（schema rmctl.rm75_s10_window_outcome/1，mode=blocked、status=blocked、long_run/stream_loss/ladder 全为 null，含门禁逐项结果与下一步命令）"
     - "2026-11-20 口径澄清（必须区分，勿混为一谈）：**『执行层 600 s 连续执行长跑』** = scripts/rm75_long_run.py 走 rm_executor live 路径**持续下发关节角指令**的闭环长跑，本轮**未执行**（门禁 blocked）；**『UDP 主动上报 600 s 长跑』** = 只收控制器主动上报帧的**反馈通道**采集，2026-11-19 **已实测**（24002 帧 / 24.998 ms / 断流窗口 0）。前者未做**不能**由后者代偿"
+    - "2026-11-20 远端主机实测（172.16.119.199:2224 → 容器 ros_dev）：ping -c 3 -W 1 192.168.1.18 → 3 发 3 收、0% 丢包（rtt 0.428/0.443/0.471 ms）；TCP 192.168.1.18:8080 可连；本地 UDP 8091/8092 空闲；只读门禁五项全通过（工件 workcell/baselines/evidence/rm75_s11_fk_recheck.json 的 gate 段）"
+    - "2026-11-20 右臂实测结论：远端主机上 192.168.1.19 仍为 **No route to host**（右臂在该网段不存在）→ 右臂条目本轮无法补测；右臂也未做任何 FK / acc-jerk / 重复性采集"
+    - "2026-11-20 本轮执行层长跑 / UDP 断流复现：**仍未执行**（本轮只做了只读门禁、只读快照与有界多样位形 FK 复测）"
   next_action: >-
-    本表仍为 blocked，两条未闭合项互不替代：① **右臂 192.168.1.19 未接触** —— 右臂网络可达后另开窗口实测；
-    ② **执行层 600 s 连续执行长跑与 UDP 断流 200 ms 停机复现未执行**（2026-11-20 窗口门禁 blocked，
-    见 workcell/baselines/evidence/rm75_s10_window_outcome.json）—— 按结案工件的 next_action 依次执行：
+    本表仍为 blocked，三条未闭合项互不替代：① **右臂 192.168.1.19 未接触** —— 远端主机实测
+    "No route to host"（右臂在该网段不存在），需右臂接入并确认可达后另开窗口实测；
+    ② **执行层 600 s 连续执行长跑与 UDP 断流 200 ms 停机复现未执行** —— 必须在**远端主机**
+    真机窗口内执行（2026-11-20 该主机的只读门禁已通过），按结案工件的 next_action 依次执行：
     在示教器上重新使能 7 轴（joint_en_flag 全 1）→ 在示教器上清错误码复位（arm_err / joint_err_code 全 0）→
     ss -ulnp | grep -E '8091|8092'（确认本地 UDP 端口未被占用）→ 重跑
     python3 scripts/rm75_window_run.py --out workcell/baselines/evidence/rm75_s10_window_outcome.json
-    （门禁通过后由该入口自动续跑 长跑 → 断流 → 阶梯）。待右臂补测且全表口径实测完成后，
-    才把 status 改为 measured 并填 captured_at。
+    （门禁通过后由该入口自动续跑 长跑 → 断流 → 阶梯）；
+    ③ 右臂补测且全表口径实测完成后，才把 status 改为 measured 并填 captured_at。
+    **口径纪律**：本机 ping 不通**不得**被记为真机不可达；真机窗口一律在远端主机 172.16.119.199 内执行。
 # 已实测但**尚未进入全表基线状态**的观测（右臂未接触 → status 仍 blocked）。
 partial_observations:
   captured_at: "2026-11-19"

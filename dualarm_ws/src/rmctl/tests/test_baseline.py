@@ -9,6 +9,7 @@
   - 零位基线的 FK 复测阈值（< 1 mm）与"控制器位姿仅用于交叉校验"标注（R003）。
 """
 import copy
+import json
 import os
 
 import pytest
@@ -531,7 +532,15 @@ def test_blocked_status_emits_info_issue():
 
 
 def test_repo_blocked_baselines_have_no_fabricated_values(repo_root):
-    """blocked 基线不得夹带任何实测数值（禁止用占位值掩盖阻塞）。"""
+    """blocked 基线不得夹带任何实测数值（禁止用占位值掩盖阻塞）。
+
+    **S11 例外（只针对 zero_baseline.fk_recheck）**：FK 交叉校验复测本身就是
+    零位基线要求归档的内容之一，S11-T4 已在远端真机窗口完成实测。此时
+    blocked 表里允许携带 FK 残差数值，但必须**逐字等于**真机复测工件
+    （workcell/baselines/evidence/rm75_s11_fk_recheck.json）里的实测值 ——
+    没有工件背书的数值仍按「占位数值」论处（必须为 null）。
+    """
+    evidence = _s11_fk_evidence(repo_root)
     for kind in KINDS:
         data = bl.load_baseline(kind, repo_root)
         if data["status"] != "blocked":
@@ -547,8 +556,27 @@ def test_repo_blocked_baselines_have_no_fabricated_values(repo_root):
         if kind == "zero_baseline":
             for j in data["joints"]:
                 assert j["zero_deg"] is None
-            assert data["fk_recheck"]["max_pos_dev_mm"] is None
-            assert data["fk_recheck"]["max_ori_dev_deg"] is None
+            fk = data["fk_recheck"]
+            if evidence is None:
+                assert fk["max_pos_dev_mm"] is None
+                assert fk["max_ori_dev_deg"] is None
+            else:
+                raw = evidence["fk_recheck"]["raw"]
+                assert fk["max_pos_dev_mm"] == raw["max_pos_dev_mm"]
+                assert fk["max_ori_dev_deg"] == raw["max_ori_dev_deg"]
+
+
+def _s11_fk_evidence(repo_root):
+    """S11-T4 真机 FK 复测工件（无工件 / 非 ok → 返回 None）。"""
+    path = os.path.join(repo_root, "workcell", "baselines", "evidence",
+                        "rm75_s11_fk_recheck.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+    if payload.get("status") != "ok":
+        return None
+    return payload
 
 
 # ------------------------------------------------------------------ 汇总报告
