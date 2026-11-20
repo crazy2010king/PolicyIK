@@ -449,7 +449,9 @@ def test_result_shape_is_isomorphic_to_gripper_config(repo_root):
     assert grip["status"] == "ok", grip
     assert task["status"] == "ok", task
     common = {"status", "reason", "next_action", "evidence"}
-    assert set(grip.keys()) - common == {"config"}
+    # ``gripper_declared`` 是结构化的「工位是否声明夹爪」布尔字段
+    # （``rm_hw_bridge.gripper_config.DECLARED_KEY``），恒定存在。
+    assert set(grip.keys()) - common == {"config", "gripper_declared"}
     assert set(task.keys()) - common == {"spec"}
     assert common <= set(grip.keys())
     assert common <= set(task.keys())

@@ -6,7 +6,9 @@
 * push 之后再改原结构体 → 快照**不受影响**（证明是拷贝不是引用）；
 * 无数据时字段为 ``None``（**不返回 0 冒充**）；
 * 并发 push / read 不抛异常（线程安全只读访问器）；
-* ``snapshot()`` 行为**保持不变**（S02 语义不回退）。
+* ``snapshot()`` 行为**保持不变**（S02 语义不回退）；
+* ``reset_realtime_state()`` 把**进程级单例**复位成「从未收到过帧」——
+  跨包测试隔离入口（S12-T5）。
 """
 from __future__ import annotations
 
@@ -144,3 +146,41 @@ def test_concurrent_push_and_read_is_safe():
         t.join()
     assert errors == []
     assert state.latest_joint_state()["frames"] == 300
+
+
+# ------------------------------------------------------------------ 复位入口
+def test_reset_realtime_state_clears_all_fields():
+    """复位后：帧数归零、时间戳/状态码/关节字段全部清空。"""
+    state = bridge.realtime_state()
+    state.push(_state([1.0] * 7, [2.0] * 7))
+    assert state.latest_joint_state()["frames"] >= 1
+    assert state.arm_current_status == 1
+
+    bridge.reset_realtime_state()
+
+    snap = state.latest_joint_state()
+    assert snap["frames"] == 0
+    assert snap["last_frame_ts"] is None
+    assert snap["joint_position_deg"] is None
+    assert snap["joint_speed_deg_s"] is None
+    assert state.arm_current_status is None
+    assert state.last_joint_status is None
+    assert state.snapshot(20)["frames"] == 0
+    assert state.snapshot(20)["last_ts"] is None
+
+
+def test_reset_realtime_state_is_idempotent():
+    """连续复位两次不抛异常，状态仍是「干净」。"""
+    bridge.reset_realtime_state()
+    bridge.reset_realtime_state()
+    assert bridge.realtime_state().latest_joint_state()["frames"] == 0
+
+
+def test_reset_realtime_state_then_push_works():
+    """复位后仍可正常 push（入口不破坏运行期语义）。"""
+    state = bridge.realtime_state()
+    bridge.reset_realtime_state()
+    state.push(_state([3.0] * 7))
+    snap = state.latest_joint_state()
+    assert snap["frames"] == 1
+    assert snap["joint_position_deg"] == [3.0] * 7

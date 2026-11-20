@@ -28,6 +28,22 @@ def _load_module(path: str, name: str):
     return module
 
 
+@pytest.fixture(autouse=True)
+def _reset_realtime_state():
+    """每个用例前复位**进程级** realtime 单例（跨包测试隔离）。
+
+    ``rm_hw_bridge.bridge._REALTIME`` 是进程级单例（SDK 回调全局注册）。
+    其它包（如 ``rm_executor`` 的硬件接线用例）会直接对它 ``push()`` 且不还原，
+    导致本包的 ``frames == 0`` 断言被污染。这里在每个用例前复位，
+    使本包断言与 pytest 收集顺序、外部污染无关。
+    """
+    from rm_hw_bridge import bridge as hw_bridge
+
+    hw_bridge.reset_realtime_state()
+    yield
+    hw_bridge.reset_realtime_state()
+
+
 @pytest.fixture(scope="session")
 def repo_root() -> str:
     """仓库根（workcell/ 与 dualarm_ws/ 都在这一层）。"""

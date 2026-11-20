@@ -68,6 +68,7 @@ __all__ = [
     "TRAJECTORY_MODE_PASSTHROUGH",
     "connect",
     "realtime_state",
+    "reset_realtime_state",
 ]
 
 #: UDP 主动上报周期必须是 5 ms 的倍数（头文件注释 + network_plan 基线）
@@ -266,6 +267,26 @@ class _RealtimeState:
             self._joint_position = position
             self._joint_speed = speed
 
+    def reset(self) -> None:
+        """把全部可变字段复位到初始状态（**仅供测试隔离**）。
+
+        复位项：``frames`` / ``last_ts`` / ``arm_current_status`` /
+        ``last_joint_status`` 以及拷贝出来的关节字段
+        （``_joint_position`` / ``_joint_speed``）。
+
+        用途：``_RealtimeState`` 是**进程级单例**，跨包测试（例如
+        ``rm_executor`` 的接线用例对真实单例 ``push()``）会把它留在脏状态，
+        导致 ``rm_hw_bridge`` 自己的快照用例读到被污染的帧数。
+        运行时**不调用**本方法——正常运行时状态由回调持续累积。
+        """
+        with self._lock:
+            self.frames = 0
+            self.last_ts = None
+            self.arm_current_status = None
+            self.last_joint_status = None
+            self._joint_position = None
+            self._joint_speed = None
+
     def snapshot(self, period_ms: Optional[int]) -> Dict[str, Any]:
         with self._lock:
             return {
@@ -311,6 +332,20 @@ _REALTIME_CB = None
 def realtime_state() -> _RealtimeState:
     """进程级实时上报状态（只读访问）。"""
     return _REALTIME
+
+
+def reset_realtime_state() -> None:
+    """复位进程级实时上报状态（**测试隔离入口**，运行时不变行为）。
+
+    ``_REALTIME`` 是进程级单例（SDK 回调全局注册），任何包在测试中对其
+    ``push()`` 都会污染其它包的断言（例如 ``rm_executor`` 的接线用例会让
+    ``rm_hw_bridge`` 的 ``frames == 0`` 断言失败）。
+
+    本函数把单例复位成「从未收到过帧」的状态，供
+    ``rm_hw_bridge/tests/conftest.py`` 的 autouse 夹具在每个用例前调用，
+    使本包断言与 pytest 收集顺序、外部污染无关。
+    """
+    _REALTIME.reset()
 
 
 # --------------------------------------------------------------------- 工具
