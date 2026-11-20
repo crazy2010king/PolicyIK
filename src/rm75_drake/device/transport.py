@@ -45,6 +45,7 @@ __all__ = [
     "REASON_INVALID_INPUT",
     "REASON_GRIPPER_OFFLINE",
     "REASON_UNSUPPORTED",
+    "REASON_SDK_REJECTED",
     "GRIPPER_POSITION_MIN",
     "GRIPPER_POSITION_MAX",
     "GRIPPER_BLOCK_TIMEOUT_S",
@@ -82,6 +83,9 @@ GRIPPER_BLOCK_TIMEOUT_S = 5
 #: 同连接上的 ``rm_set_realtime_push(enable=False)`` **不再返回**（阻塞 > 8 s）
 #: ⇒ 我方必须自带超时保护，否则一次异常就能挂死收尾流程或 5 ms 执行环。
 SDK_CALL_TIMEOUT_S = 2.0
+
+#: 控制器拒绝请求（返回码非 0）时的 reason 标签。
+REASON_SDK_REJECTED = "sdk_rejected"
 
 #: 帧级系统错误码里的**特殊值**：``errCode == -3`` 表示「推送数据不完整」
 #: ⇒ 该帧必须丢弃（**不是**故障原因）。其余非 0 值一律视为系统错误码。
@@ -482,29 +486,39 @@ class SdkTransport(ArmTransport):
 
         真机实测：``rm_set_joint_en_state(joint_num, en_state)`` 是**逐轴**接口
         （``en_state`` 是 int：1 使能 / 0 去使能）⇒ 这里逐轴下发。
+
+        ⚠️ ``joint_num`` 是 **1-based（1~7）**（官方 docstring 明写），
+        真机实测：传 0 ⇒ 控制器返回 **1（失败）**，传 1..7 ⇒ 返回 0（成功）。
+        ⇒ 这里必须传 ``index + 1``；且**必须检查返回值**（否则恢复流程会假绿）。
         """
         self._require_open()
         binding = self._require_binding()
         for index in range(JOINT_COUNT):
-            binding.call(
+            ret = binding.call(
                 "rm_set_joint_en_state",
-                index,
+                index + 1,
                 1 if state else 0,
                 timeout_s=SDK_CALL_TIMEOUT_S,
             )
+            _check_sdk_return(ret, f"rm_set_joint_en_state(joint {index + 1})")
 
     def clear_error(self) -> None:
         """清除逐关节错误码，再清系统错误码（官方顺序）。
 
-        真机实测：``rm_set_joint_clear_err(joint_num)`` 是**逐轴**接口。
+        真机实测：``rm_set_joint_clear_err(joint_num)`` 是**逐轴**接口，
+        且 ``joint_num`` 是 **1-based（1~7）**。
         """
         self._require_open()
         binding = self._require_binding()
         for index in range(JOINT_COUNT):
-            binding.call(
-                "rm_set_joint_clear_err", index, timeout_s=SDK_CALL_TIMEOUT_S
+            ret = binding.call(
+                "rm_set_joint_clear_err",
+                index + 1,
+                timeout_s=SDK_CALL_TIMEOUT_S,
             )
-        binding.call("rm_clear_system_err", timeout_s=SDK_CALL_TIMEOUT_S)
+            _check_sdk_return(ret, f"rm_set_joint_clear_err(joint {index + 1})")
+        ret = binding.call("rm_clear_system_err", timeout_s=SDK_CALL_TIMEOUT_S)
+        _check_sdk_return(ret, "rm_clear_system_err")
 
     def emergency_stop(self) -> None:
         """急停。
@@ -529,25 +543,28 @@ class SdkTransport(ArmTransport):
         """设置真机限位（rad → 度）。
 
         真机实测：``rm_set_joint_min_pos(joint_num, min_pos)`` /
-        ``rm_set_joint_max_pos(joint_num, max_pos)`` 是**逐轴**接口。
+        ``rm_set_joint_max_pos(joint_num, max_pos)`` 是**逐轴**接口，
+        且 ``joint_num`` 是 **1-based（1~7）**（传 0 ⇒ 控制器返回 1 = 失败）。
         """
         self._require_open()
         binding = self._require_binding()
         lower = _validate_joint_vector(lower_rad, "lower_rad")
         upper = _validate_joint_vector(upper_rad, "upper_rad")
         for index in range(JOINT_COUNT):
-            binding.call(
+            ret = binding.call(
                 "rm_set_joint_min_pos",
-                index,
+                index + 1,
                 rad_to_deg(lower[index]),
                 timeout_s=SDK_CALL_TIMEOUT_S,
             )
-            binding.call(
+            _check_sdk_return(ret, f"rm_set_joint_min_pos(joint {index + 1})")
+            ret = binding.call(
                 "rm_set_joint_max_pos",
-                index,
+                index + 1,
                 rad_to_deg(upper[index]),
                 timeout_s=SDK_CALL_TIMEOUT_S,
             )
+            _check_sdk_return(ret, f"rm_set_joint_max_pos(joint {index + 1})")
 
     # -- 状态读取 --------------------------------------------------------
     def attach_state_source(self, source: Any) -> None:
@@ -688,6 +705,31 @@ def _state_frame_from_raw(raw: Any) -> StateFrame:
         joint_positions_rad=positions,
         joint_err_codes=tuple(err_codes),
         received_at=time.monotonic(),
+    )
+
+
+def _check_sdk_return(ret: Any, what: str) -> None:
+    """检查 SDK 调用的返回值（厂商约定 0 = 成功）。
+
+    真机实测（RM75-B / 控制器代次 3）：控制器**拒绝**某些请求时返回 ``1``
+    （或 SDK 打印 ``...: false``），**不抛异常** ⇒ 不检查返回值就会把
+    「恢复流程成功」变成**假绿灯**（实测：逐关节限位/使能被拒绝，
+    而恢复流程仍报 ok=True）。
+
+    异常
+    ----
+    :class:`TransportError`
+        控制器拒绝了该请求（``reason="sdk_rejected"``）。
+    """
+    try:
+        code = int(ret)
+    except (TypeError, ValueError):
+        return
+    if code == 0:
+        return
+    raise TransportError(
+        f"控制器拒绝了 {what}（返回 {code}；0 = 成功）",
+        reason="sdk_rejected",
     )
 
 

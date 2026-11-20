@@ -64,6 +64,7 @@ from .state_machine import (
     system_error_code,
 )
 from .transport import REASON_GRIPPER_OFFLINE as _REASON_GRIPPER_OFFLINE
+from .transport import REASON_SDK_REJECTED as _REASON_SDK_REJECTED
 from .transport import REASON_LINK_DOWN as _REASON_LINK_DOWN
 from .transport import ArmTransport, StateFrame, TransportError
 
@@ -83,6 +84,7 @@ __all__ = [
     "RELAX_MARGIN_RAD",
     "RECOVERY_STEPS",
     "STEP_OK",
+    "STEP_WARNING",
     "STEP_FAILED",
     "STEP_SKIPPED",
     # 数据结构
@@ -109,6 +111,8 @@ REASON_GRIPPER_NOT_AT_TARGET = "gripper_not_at_target"
 REASON_JOINT_ERROR = _REASON_JOINT_ERROR
 #: 急停状态（``arm_current_status == 9``）。
 REASON_ESTOP_STATUS = _REASON_ESTOP_STATUS
+#: 控制器拒绝请求（返回码非 0）。
+REASON_SDK_REJECTED = _REASON_SDK_REJECTED
 #: 供电跌落 / 欠压（由**帧级系统错误码**承载）。
 #:
 #: 说明：厂商帧级系统错误码 ↔ 供电跌落的对应关系在硬件可达前**未核实**；
@@ -145,6 +149,10 @@ RELAX_MARGIN_RAD = 0.1745329
 
 #: 步骤状态标签。
 STEP_OK = "ok"
+#: 步骤**有告警但未失败**（真机实测：控制器在停止/示教模式下**拒绝**写限位，
+#: 返回 1；此时软件软限位闸（G1）仍然生效 ⇒ 恢复流程不该被它卡死，
+#: 但也**不得**把它写成「成功」）。
+STEP_WARNING = "warning"
 STEP_FAILED = "failed"
 STEP_SKIPPED = "skipped"
 
@@ -717,10 +725,28 @@ class RecoveryProcedure:
         )
 
     def _step_relax_limits(self, steps: List[RecoveryStep]) -> None:
-        """步骤 4：放宽限位（``rm_set_joint_min_pos`` / ``rm_set_joint_max_pos``）。"""
+        """步骤 4：放宽限位（``rm_set_joint_min_pos`` / ``rm_set_joint_max_pos``）。
+
+        真机实测：控制器在**停止/示教模式**下会拒绝写限位（返回 1）⇒
+        这一步记为**告警**（warning）并继续——软件软限位闸（G1）仍然生效，
+        但**不得**把它写成「成功」。
+        """
         try:
             self._transport.set_joint_limits(self._relaxed_lower, self._relaxed_upper)
         except TransportError as exc:
+            if getattr(exc, "reason", "") == REASON_SDK_REJECTED:
+                steps.append(
+                    RecoveryStep(
+                        name="relax_limits",
+                        symbols=("rm_set_joint_min_pos", "rm_set_joint_max_pos"),
+                        status=STEP_WARNING,
+                        detail=(
+                            "控制器拒绝放宽限位（机械臂可能处于停止/示教模式）；"
+                            "已跳过该步，软件软限位闸（G1）仍然生效"
+                        ),
+                    )
+                )
+                return
             raise RecoveryError(
                 "放宽限位失败",
                 step="relax_limits",
@@ -792,10 +818,27 @@ class RecoveryProcedure:
         )
 
     def _step_restore_limits(self, steps: List[RecoveryStep]) -> None:
-        """步骤 7：恢复限位（写回软件软限位）。"""
+        """步骤 7：恢复限位（写回软件软限位）。
+
+        同 :meth:`_step_relax_limits`：控制器拒绝时记**告警**并继续
+        （软件侧仍按软限位钳位），**不得**写成「成功」。
+        """
         try:
             self._transport.set_joint_limits(self._soft_lower, self._soft_upper)
         except TransportError as exc:
+            if getattr(exc, "reason", "") == REASON_SDK_REJECTED:
+                steps.append(
+                    RecoveryStep(
+                        name="restore_limits",
+                        symbols=("rm_set_joint_min_pos", "rm_set_joint_max_pos"),
+                        status=STEP_WARNING,
+                        detail=(
+                            "控制器拒绝写回软限位（机械臂可能处于停止/示教模式）；"
+                            "软件侧仍按软限位钳位"
+                        ),
+                    )
+                )
+                return
             raise RecoveryError(
                 "恢复限位失败",
                 step="restore_limits",

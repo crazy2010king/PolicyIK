@@ -77,7 +77,8 @@ class _FakeArm:
 
     def rm_set_joint_en_state(self, joint_num, en_state):
         self.calls.append(("rm_set_joint_en_state", int(joint_num), int(en_state)))
-        return 0
+        # 真机实测：joint_num=0 会被控制器拒绝（返回 1）
+        return 1 if int(joint_num) < 1 else 0
 
     def rm_set_joint_clear_err(self, joint_num):
         self.calls.append(("rm_set_joint_clear_err", int(joint_num)))
@@ -97,7 +98,7 @@ class _FakeArm:
 
     def rm_set_joint_min_pos(self, joint_num, min_pos):
         self.calls.append(("rm_set_joint_min_pos", int(joint_num), float(min_pos)))
-        return 0
+        return 1 if int(joint_num) < 1 else 0
 
     def rm_set_joint_max_pos(self, joint_num, max_pos):
         self.calls.append(("rm_set_joint_max_pos", int(joint_num), float(max_pos)))
@@ -306,6 +307,25 @@ def test_sdk_transport_connects_with_rm_create_robot_arm():
     assert fake.calls[0] == ("rm_create_robot_arm", "192.168.1.18", 8080)
 
 
+def test_sdk_transport_reports_controller_rejection():
+    """控制器拒绝（返回非 0）⇒ 必须显式报错，不能当成成功（真机实测：假绿灯的来源）。"""
+    fake = _FakeSdk()
+    transport = SdkTransport(_config(), sdk=fake)
+
+    class _Rejecting(_FakeArm):
+        def rm_set_joint_en_state(self, joint_num, en_state):
+            self.calls.append(("rm_set_joint_en_state", int(joint_num), int(en_state)))
+            return 1  # 控制器拒绝
+
+    fake.rm_robot_interface = types.SimpleNamespace(
+        RoboticArm=lambda mode: _Rejecting(mode, fake.calls)
+    )
+    transport.open()
+    with pytest.raises(TransportError) as excinfo:
+        transport.enable(True)
+    assert excinfo.value.reason == "sdk_rejected"
+
+
 def test_sdk_transport_enable_and_clear_error_are_per_joint():
     """逐关节接口（使能 / 清错）是**逐轴**调用（真机实测签名）。"""
     fake = _FakeSdk()
@@ -317,8 +337,11 @@ def test_sdk_transport_enable_and_clear_error_are_per_joint():
     clears = [c for c in fake.calls if c[0] == "rm_set_joint_clear_err"]
     assert len(enables) == 7
     assert len(clears) == 7
-    assert enables[0] == ("rm_set_joint_en_state", 0, 1)
-    assert clears[0] == ("rm_set_joint_clear_err", 0)
+    # ⚠️ 厂商 joint_num 是 **1-based（1~7）**（真机实测：传 0 被控制器拒绝）
+    assert enables[0] == ("rm_set_joint_en_state", 1, 1)
+    assert enables[-1] == ("rm_set_joint_en_state", 7, 1)
+    assert clears[0] == ("rm_set_joint_clear_err", 1)
+    assert clears[-1] == ("rm_set_joint_clear_err", 7)
 
 
 def test_sdk_transport_only_uses_whitelisted_symbols():
@@ -356,7 +379,7 @@ def test_sdk_transport_set_joint_limits_converts_to_deg():
     assert names["rm_set_joint_min_pos"][2] == pytest.approx(90.0)
     assert names["rm_set_joint_max_pos"][2] == pytest.approx(90.0)
     first_min = next(c for c in fake.calls if c[0] == "rm_set_joint_min_pos")
-    assert first_min[1] == 0
+    assert first_min[1] == 1  # joint_num 是 1-based
     assert len([c for c in fake.calls if c[0] == "rm_set_joint_min_pos"]) == 7
 
 

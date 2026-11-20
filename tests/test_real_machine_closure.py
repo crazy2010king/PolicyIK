@@ -248,3 +248,46 @@ def test_cli_wait_settled_times_out_for_moving_frames():
             return StateFrame(joint_positions_rad=(0.01 * self.counter,) * 7)
 
     assert _wait_settled(_Source(), timeout_s=0.3) is False
+
+
+# ── 有效限位 = 模型软限位 ∩ 控制器限位 ──────────────────────────────────
+def test_effective_limits_intersect_controller_limits():
+    """真机实测：控制器限位可能**比模型软限位更紧**（J1 ±126° vs 模型 ±174°）
+    ⇒ 有效限位必须取交集，否则会下发控制器不接受的目标位形。"""
+    from rm75_drake.device.config import device_config_from_dict
+    from rm75_drake.device.safety import safety_limits_from_sources
+    from rm75_drake.limits import load_joint_limits
+
+    base = {
+        "schema_version": 1,
+        "name": "rm75_b",
+        "arm_ip": "192.168.1.18",
+        "tcp_port": 8080,
+        "udp_port": 8080,
+        "udp_cycle": 1,
+        "joint_zero_offset": [0.0] * 7,
+        "accel_limits": {"measured": False, "values": [6.0] * 7},
+        "current_thresholds": {"calibrated": False, "values": [1000.0] * 7},
+        "fence": {"table_height_m": 0.75, "singularity_radius_m": 0.15},
+    }
+    without = safety_limits_from_sources(
+        load_joint_limits(), device_config_from_dict(base)
+    )
+    assert abs(without.soft_upper_rad[0] - 3.0361868) < 1e-6  # 模型值
+
+    with_controller = safety_limits_from_sources(
+        load_joint_limits(),
+        device_config_from_dict(
+            {
+                **base,
+                "controller_joint_limits": {
+                    "measured": True,
+                    "lower_deg": [-125.998] * 7,
+                    "upper_deg": [125.998] * 7,
+                },
+            }
+        ),
+    )
+    expected = math.radians(125.998)
+    assert abs(with_controller.soft_upper_rad[0] - expected) < 1e-6
+    assert abs(with_controller.soft_lower_rad[0] + expected) < 1e-6

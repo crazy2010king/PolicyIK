@@ -65,6 +65,7 @@ from ..kinematics.mdh import link7_position
 from ..limits import load_joint_limits
 from ..planning.trajectory import JOINT_COUNT
 from .config import DeviceConfig
+from .sdk import deg_to_rad
 
 __all__ = [
     # 稳定 reason 标签
@@ -883,6 +884,15 @@ def safety_limits_from_sources(
     * 电流阈值 ← ``device_config.current_thresholds_ma``；
     * 围栏 ← ``device_config.fence_*``。
 
+    **有效限位 = 模型软限位 ∩ 控制器限位**
+    ------------------------------------------------
+    真机实测（RM75-B / 控制器代次 3）：控制器自己的软限位**并不总是**
+    比模型的软限位更紧——J1 控制器 ±125.998°（模型 ±174.0°）、
+    J3 控制器 ±130.988°（模型 ±174.0°）、J5 控制器 ±123.998°（模型 ±174.0°）。
+    只按模型钳位 ⇒ 会下发**控制器不接受**的目标位形。
+    ⇒ 设备配置里若提供了 ``controller_joint_limits``（实测读取），
+    有效限位取**交集**（更紧者胜）；未提供 ⇒ 退化为模型软限位（保持旧行为）。
+
     异常
     ----
     ValueError
@@ -909,6 +919,14 @@ def safety_limits_from_sources(
         lower.append(float(software["position_lower_rad"]))
         upper.append(float(software["position_upper_rad"]))
         velocity.append(float(software["velocity_rad_s"]))
+    # 有效限位 = 模型软限位 ∩ 控制器限位（控制器更紧时取控制器值）
+    controller_lower = getattr(device_config, "controller_lower_deg", None)
+    controller_upper = getattr(device_config, "controller_upper_deg", None)
+    if controller_lower is not None and controller_upper is not None:
+        for index in range(JOINT_COUNT):
+            lower[index] = max(lower[index], deg_to_rad(float(controller_lower[index])))
+            upper[index] = min(upper[index], deg_to_rad(float(controller_upper[index])))
+
     return SafetyLimits(
         soft_lower_rad=tuple(lower),
         soft_upper_rad=tuple(upper),

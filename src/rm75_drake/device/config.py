@@ -60,6 +60,7 @@ __all__ = [
     "ACCEL_LIMIT_KEYS",
     "CURRENT_THRESHOLD_KEYS",
     "FENCE_KEYS",
+    "CONTROLLER_LIMIT_KEYS",
     "CONSERVATIVE_CURRENT_THRESHOLDS_MA",
     "DeviceConfig",
     "default_device_config_path",
@@ -87,12 +88,17 @@ TOP_LEVEL_KEYS: Tuple[str, ...] = (
     "accel_limits",
     "current_thresholds",
     "fence",
+    "controller_joint_limits",
 )
 
-#: 顶层**必填**键（``accel_limits`` 与 ``current_thresholds`` 两段允许整段缺失：
+#: 顶层**必填**键（``accel_limits`` / ``current_thresholds`` /
+#: ``controller_joint_limits`` 三段允许整段缺失：
 #: 缺失时使用保守兜底并显式标注 ``measured=False`` / ``calibrated=False``）。
 REQUIRED_TOP_LEVEL_KEYS: Tuple[str, ...] = tuple(
-    key for key in TOP_LEVEL_KEYS if key not in ("accel_limits", "current_thresholds")
+    key
+    for key in TOP_LEVEL_KEYS
+    if key
+    not in ("accel_limits", "current_thresholds", "controller_joint_limits")
 )
 
 #: ``accel_limits`` 段的合法子键。
@@ -103,6 +109,19 @@ CURRENT_THRESHOLD_KEYS: Tuple[str, ...] = ("calibrated", "values")
 
 #: ``fence`` 段的合法子键。
 FENCE_KEYS: Tuple[str, ...] = ("table_height_m", "singularity_radius_m")
+
+#: ``controller_joint_limits`` 段的合法子键。
+#:
+#: 这一段是**控制器自己的软限位**（真机实测：``rm_get_joint_min_pos`` /
+#: ``rm_get_joint_max_pos`` 读到的出厂值，单位 **度**）。
+#:
+#: ⚠️ 为什么必须有它：模型的软件软限位**并不总是**比控制器更紧
+#: ——真机实测（RM75-B / 控制器代次 3）：
+#: J1 控制器 ±125.998° 而模型软限位 ±174.0°、J3 控制器 ±130.988° 而模型 ±174.0°、
+#: J5 控制器 ±123.998° 而模型 ±174.0° ⇒ 只按模型钳位会**下发控制器不接受的目标位形**。
+#: ⇒ 有效限位 = **模型软限位 ∩ 控制器限位**（见
+#: :func:`rm75_drake.device.safety.safety_limits_from_sources`）。
+CONTROLLER_LIMIT_KEYS: Tuple[str, ...] = ("measured", "lower_deg", "upper_deg")
 
 #: 电流阈值**保守兜底**（mA）——厂商未公布逐轴电流上限，缺数据时用它，
 #: 并把 ``current_thresholds_calibrated`` 标成 ``False``（未标定）。
@@ -258,6 +277,9 @@ class DeviceConfig:
     current_thresholds_calibrated: bool
     fence_table_height_m: float
     fence_singularity_radius_m: float
+    controller_lower_deg: Optional[Tuple[float, ...]] = None
+    controller_upper_deg: Optional[Tuple[float, ...]] = None
+    controller_limits_measured: bool = False
     schema_version: int = SCHEMA_VERSION
     source_path: Optional[Path] = None
 
@@ -374,6 +396,9 @@ def device_config_from_dict(data: Mapping[str, Any]) -> DeviceConfig:
         mapping.get("current_thresholds")
     )
     table_height, singularity_radius = _parse_fence(mapping["fence"])
+    controller_lower, controller_upper, controller_measured = _parse_controller_limits(
+        mapping.get("controller_joint_limits")
+    )
 
     return DeviceConfig(
         name=name.strip(),
@@ -388,6 +413,9 @@ def device_config_from_dict(data: Mapping[str, Any]) -> DeviceConfig:
         current_thresholds_calibrated=current_calibrated,
         fence_table_height_m=table_height,
         fence_singularity_radius_m=singularity_radius,
+        controller_lower_deg=controller_lower,
+        controller_upper_deg=controller_upper,
+        controller_limits_measured=controller_measured,
         schema_version=version,
     )
 
@@ -427,6 +455,32 @@ def _parse_current_thresholds(section: Any) -> Tuple[Tuple[float, ...], bool]:
         mapping["values"], "current_thresholds.values", JOINT_COUNT
     )
     return values, calibrated
+
+
+def _parse_controller_limits(
+    section: Any,
+) -> Tuple[Optional[Tuple[float, ...]], Optional[Tuple[float, ...]], bool]:
+    """解析 ``controller_joint_limits`` 段（**可选**）。
+
+    返回
+    ----
+    ``(lower_deg, upper_deg, measured)``；整段缺失 ⇒ ``(None, None, False)``
+    （表示「未标定」⇒ 不参与与模型软限位的交集）。
+    """
+    if section is None:
+        return None, None, False
+    mapping = _require_mapping(section, "controller_joint_limits")
+    _check_keys(mapping, "controller_joint_limits", CONTROLLER_LIMIT_KEYS, CONTROLLER_LIMIT_KEYS)
+    measured = _as_bool(mapping["measured"], "controller_joint_limits.measured")
+    lower = _as_float_vector(mapping["lower_deg"], "controller_joint_limits.lower_deg", JOINT_COUNT)
+    upper = _as_float_vector(mapping["upper_deg"], "controller_joint_limits.upper_deg", JOINT_COUNT)
+    for index in range(JOINT_COUNT):
+        if lower[index] >= upper[index]:
+            raise DeviceConfigError(
+                f"controller_joint_limits 的关节 {index + 1} 区间非法："
+                f"[{lower[index]}, {upper[index]}]"
+            )
+    return lower, upper, measured
 
 
 def _parse_fence(section: Any) -> Tuple[float, float]:

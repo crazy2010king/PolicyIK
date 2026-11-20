@@ -273,7 +273,7 @@ run_check "tests/validation-ladder" "真机验证阶梯回归（零硬件：判�
 
 # 9c) **真机闭环新增能力回归（零硬件）**：G5 电流闸去抖、跟踪误差评估、
 #     电流包络去抖口径、CLI 起点一致性守卫。
-run_check "tests/real-machine-closure" "真机闭环回归（零硬件：G5 去抖 / 跟踪误差 / 电流包络 / 起点守卫）" -- \
+run_check "tests/real-machine-closure" "真机闭环回归（零硬件：G5 去抖 / 跟踪误差 / 电流包络 / 起点守卫 / 限位交集 / SDK 超时）" -- \
     "$PYTHON" -m pytest -q tests/test_real_machine_closure.py
 
 # 10) **双臂几何与标定回归（零硬件）**（S04-T08 接入）。

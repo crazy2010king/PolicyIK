@@ -203,7 +203,10 @@
 - **目标**：五类物理故障都能进入安全态并按官方顺序恢复（§九 故障注入）。
 - **前置**：L7 通过；现场安全规程就位；急停可用。
 - **命令**：`python3 scripts/fault_inject.py --hardware --json`
+  （可全自动的那一类：`python3 scripts/fault_chain_test.py --case gripper_not_at_target --json`）
 - **判据**：`faults_injected ≥ 5`；`faults_recovered ≥ 5`。
+- **实测**：夹爪未到位这一类已在真机闭合（注入→检测→`holding`→恢复→`ready` ✅）；
+  其余四类需人手；**软件急停无效**（`-4`）⇒ 急停态只能用物理急停。
 - **五类**：拔网线（`link_down`）/ 物体掉落（`gripper_offline`）/ 夹爪夹空
   （`gripper_not_at_target`）/ 关节超限位（`joint_error`）/ 供电跌落（`power_supply_drop`）。
 - **不通过时**：恢复卡在 `resync_q` → 帧不完整 / 错误码未清 / 未全轴使能；
@@ -423,7 +426,14 @@ python3 scripts/real_machine_ladder.py --stage L8 --allow-motion \
 17. **软件急停在这台控制器上无效**：`rm_set_arm_emergency_stop(True)` 返回 `-4`
     （超时拒绝）⇒ 急停必须用物理急停；且一次被拒调用会让同连接的
     `rm_set_realtime_push` **不再返回** ⇒ 我方给所有非实时路径的 SDK 调用加了超时
-    （`ArmBinding.call(timeout_s=...)` + `SdkCallTimeout`）。
+    （`ArmBinding.call(timeout_s=...)` + `SdkCallTimeout`）；
+18. **L11 夹爪未到位链在真机闭合**：注入（闭合到 0，空夹回读 -1）→ 检测
+    `gripper_not_at_target` → 安全态 `holding` → 恢复 9 步 → `ready`（ok=True）；
+19. **厂商 `joint_num` 是 1-based（1~7）**：按 0-based 调用会让恢复流程的
+    「放宽限位 / 恢复限位 / 上使能 / 清错」全部**打错轴** ⇒ 恢复是假绿灯；
+    且**必须检查 SDK 返回码**（控制器拒绝时返回 1，不抛异常）；
+20. **模型软限位在 J1/J3/J5/J6 上比控制器更宽**（控制器 J1 ±125.998° vs 模型 ±174.0°）
+    ⇒ 有效限位必须是**模型 ∩ 控制器**（设备配置 `controller_joint_limits` 段 + 安全层交集）。
 
 ### 7.2 仍未确认（**不得当作通过**）
 
