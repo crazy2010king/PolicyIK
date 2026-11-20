@@ -450,6 +450,204 @@ def test_cli_accepts_offset_string_and_calibration_file(urdf, tmp_path):
     assert rc == 2
 
 
+# ---------------------------------------------------------------- 残差归因判别器
+def _replicate(samples, n):
+    """把第 0 个样本复制 n 份（模拟“同一位形重复采样”）。"""
+    return [json.loads(json.dumps(samples[0])) for _ in range(n)]
+
+
+def test_constant_base_offset_is_judged_base_frame_offset(urdf):
+    """恒定 base 系平移 → residual_kind=base_frame_offset。"""
+    samples = _samples_with_ctrl_transform(urdf, n=10, seed=31,
+                                           left=_translation(0.005, 0.0, 0.0))
+    rep = fk_cross.cross_check(samples, urdf)
+    attr = rep["attribution"]
+    assert attr["residual_kind"] == "base_frame_offset"
+    assert attr["consistency_base"] >= 0.8
+    assert attr["consistency_tip"] < 0.8
+    assert attr["diversity"]["sufficient"] is True
+    assert attr["diversity"]["distinct_configs"] == 10
+    # 旧字段保持向后兼容
+    assert attr["pattern"] == "systematic_translation"
+    assert attr["consistency"] == pytest.approx(attr["consistency_base"], abs=1e-9)
+
+
+def test_constant_tip_offset_is_judged_tool_frame_offset(urdf):
+    """恒定 tip(Link7) 系偏置 → residual_kind=tool_frame_offset。"""
+    samples = _samples_with_ctrl_transform(urdf, n=10, seed=37,
+                                           right=_translation(0.010, 0.0, 0.0))
+    rep = fk_cross.cross_check(samples, urdf)
+    attr = rep["attribution"]
+    assert attr["residual_kind"] == "tool_frame_offset"
+    assert attr["consistency_tip"] >= 0.8
+    assert attr["consistency_base"] < 0.8
+    assert attr["diversity"]["sufficient"] is True
+
+
+def test_configuration_dependent_noise_is_orientation_dependent(urdf):
+    """随位形变化的扰动 → residual_kind=orientation_dependent。"""
+    samples = _samples_with_ctrl_transform(urdf, n=12, seed=41)
+    rng = np.random.default_rng(43)
+    for s in samples:
+        # 每个位形一个不同方向的随机扰动（建模/零位误差的典型形态）
+        v = rng.normal(0.0, 1.0, 3)
+        v = v / np.linalg.norm(v) * 0.005      # 5 mm
+        s["controller_pose"]["x"] -= float(v[0])
+        s["controller_pose"]["y"] -= float(v[1])
+        s["controller_pose"]["z"] -= float(v[2])
+    rep = fk_cross.cross_check(samples, urdf)
+    attr = rep["attribution"]
+    assert attr["residual_kind"] == "orientation_dependent"
+    assert attr["consistency_base"] < 0.8
+    assert attr["consistency_tip"] < 0.8
+    assert attr["diversity"]["sufficient"] is True
+
+
+def test_repeated_same_configuration_is_insufficient_diversity(urdf):
+    """同一位形重复 20 次 → insufficient_diversity（不得据此判成工具偏置）。"""
+    samples = _samples_with_ctrl_transform(urdf, n=1, seed=47,
+                                           right=_translation(0.010, 0.0, 0.0))
+    rep = fk_cross.cross_check(_replicate(samples, 20), urdf)
+    attr = rep["attribution"]
+    assert attr["residual_kind"] == "insufficient_diversity"
+    assert attr["residual_kind"] != "tool_frame_offset"
+    assert attr["diversity"]["sufficient"] is False
+    assert attr["diversity"]["distinct_configs"] == 1
+    assert attr["diversity"]["position_spread_mm"] == pytest.approx(0.0, abs=1e-9)
+    assert attr["diversity"]["reasons"]
+    # 提示必须写明“同一位形重复采样不能判定偏置性质”
+    joined = " ".join(attr["hints"])
+    assert "同一位形重复采样不能判定偏置性质" in joined
+    assert "insufficient_diversity" in joined
+
+
+def test_insufficient_diversity_wins_over_within_tolerance(urdf):
+    """多样性不足优先：重复同一位形且残差在阈值内也不给“已判定”结论。"""
+    samples = _samples_with_ctrl_transform(urdf, n=1, seed=53)
+    rep = fk_cross.cross_check(_replicate(samples, 20), urdf)
+    assert rep["attribution"]["residual_kind"] == "insufficient_diversity"
+    assert rep["attribution"]["pattern"] == "within_tolerance"   # 旧字段不变
+
+
+def test_diverse_zero_offset_is_within_tolerance(urdf):
+    """多样位形 + 零偏移 → residual_kind=within_tolerance。"""
+    samples = _synth(urdf, n=20, seed=42, offset_mm=0.0)
+    rep = fk_cross.cross_check(samples, urdf)
+    attr = rep["attribution"]
+    assert attr["residual_kind"] == "within_tolerance"
+    assert attr["diversity"]["sufficient"] is True
+    assert attr["diversity"]["distinct_configs"] == 20
+    assert attr["diversity"]["position_spread_mm"] > 1.0
+    assert attr["diversity"]["orientation_spread_deg"] > 0.5
+
+
+def test_offset_estimates_recover_the_injected_offset(urdf):
+    """建议偏置估计：能反推出注入的偏置（修正量 = controller - fk）。"""
+    tip = np.array([0.010, -0.004, 0.002])
+    samples = _samples_with_ctrl_transform(urdf, n=10, seed=59,
+                                           right=_translation(*tip))
+    rep = fk_cross.cross_check(samples, urdf)
+    est = rep["attribution"]["offset_estimates"]
+    assert est is not None
+    tip_est = est["tip_frame"]
+    assert tip_est["frame"] == "tip_link7"
+    # 建议偏置 = 注入偏置（修正量口径：controller - fk）
+    assert tip_est["suggested_offset"]["x"] == pytest.approx(tip[0], abs=1e-9)
+    assert tip_est["suggested_offset"]["y"] == pytest.approx(tip[1], abs=1e-9)
+    assert tip_est["suggested_offset"]["z"] == pytest.approx(tip[2], abs=1e-9)
+    assert tip_est["magnitude_mm"] == pytest.approx(
+        float(np.linalg.norm(tip)) * 1000.0, abs=1e-6)
+    assert tip_est["uncertainty_mm"] < 1e-6      # 恒定偏置 → 不确定度≈0
+    assert est["base_frame"]["frame"] == "base"
+
+    # 估计出的偏置真的能消除残差（自证，不是“理论抵消”）
+    fixed = fk_cross.cross_check(samples, urdf,
+                                 tool_offset=tip_est["suggested_offset"])
+    assert fixed["corrections"]["corrected"]["max_pos_dev_mm"] < 1e-6
+    assert fixed["ok_corrected"] is True
+
+
+def test_base_offset_estimate_cancels_base_residual(urdf):
+    """base 系偏置的建议估计 + base_offset 施加 → 残差归零。"""
+    samples = _samples_with_ctrl_transform(urdf, n=10, seed=61,
+                                           left=_translation(0.0, 0.005, 0.0))
+    rep = fk_cross.cross_check(samples, urdf)
+    est = rep["attribution"]["offset_estimates"]["base_frame"]
+    assert est["suggested_offset"]["y"] == pytest.approx(0.005, abs=1e-9)
+    fixed = fk_cross.cross_check(samples, urdf,
+                                 base_offset=est["suggested_offset"])
+    assert fixed["corrections"]["corrected"]["max_pos_dev_mm"] < 1e-6
+
+
+def test_fk_recheck_fields_expose_residual_kind(urdf):
+    """fk_recheck_fields 同步暴露 residual_kind / diversity / offset_estimates。"""
+    samples = _samples_with_ctrl_transform(urdf, n=10, seed=67,
+                                           right=_translation(0.010, 0.0, 0.0))
+    rep = fk_cross.cross_check(samples, urdf)
+    fields = fk_cross.fk_recheck_fields(rep)
+    assert set(["method", "samples", "max_pos_dev_mm", "max_ori_dev_deg",
+                "conclusion"]) <= set(fields)
+    assert fields["residual_kind"] == "tool_frame_offset"
+    # 旧 pattern 仍是 **base 系**口径 → tip 系偏置在 base 系方向分散 → scattered
+    assert fields["attribution_pattern"] == "scattered"
+    assert fields["consistency_tip"] >= 0.8
+    assert fields["consistency_base"] < 0.8
+    assert fields["diversity"]["distinct_configs"] == 10
+    assert fields["diversity"]["sufficient"] is True
+    assert fields["offset_estimates"]["tip_frame"]["frame"] == "tip_link7"
+    # 报告（含新字段）必须仍能直接 JSON 落盘
+    back = json.loads(json.dumps(rep, ensure_ascii=False))
+    assert back["attribution"]["residual_kind"] == "tool_frame_offset"
+    assert back["attribution"]["offset_estimates"]["tip_frame"]["frame"] == "tip_link7"
+    assert back["attribution"]["diversity"]["distinct_configs"] == 10
+
+
+def test_residual_kinds_are_from_the_declared_enum(urdf):
+    """residual_kind 只能取声明的 5 个值（防止拼写漂移）。"""
+    assert set(fk_cross.RESIDUAL_KINDS) == {
+        "within_tolerance", "base_frame_offset", "tool_frame_offset",
+        "orientation_dependent", "insufficient_diversity"}
+    samples = _synth(urdf, n=6, seed=71)
+    rep = fk_cross.cross_check(samples, urdf)
+    assert rep["attribution"]["residual_kind"] in fk_cross.RESIDUAL_KINDS
+
+
+# ---------------------------------------------------------------- 边界与负载
+def test_single_sample_is_insufficient_diversity(urdf):
+    """边界：只采 1 组位形 → 多样性不足（不崩，也不给偏置结论）。"""
+    samples = _samples_with_ctrl_transform(urdf, n=1, seed=73)
+    rep = fk_cross.cross_check(samples, urdf)
+    attr = rep["attribution"]
+    assert attr["residual_kind"] == "insufficient_diversity"
+    assert attr["diversity"]["distinct_configs"] == 1
+    assert attr["diversity"]["sufficient"] is False
+    assert attr["diversity"]["position_spread_mm"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_zero_deviation_does_not_divide_by_zero(urdf):
+    """边界：偏差恒为 0 → 一致性取 0.0（不出现 NaN / ZeroDivisionError）。"""
+    samples = _synth(urdf, n=3, seed=79, offset_mm=0.0)
+    rep = fk_cross.cross_check(samples, urdf)
+    attr = rep["attribution"]
+    assert attr["consistency"] == 0.0
+    assert attr["consistency_base"] == 0.0
+    assert attr["consistency_tip"] == 0.0
+    assert attr["max_dev_mm"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_diversity_spread_computation_is_capped(urdf):
+    """负载：样本数超上限 → 展布统计等距抽样（不产生 O(n^2) 爆炸）。"""
+    n = fk_cross.DIVERSITY_SPREAD_SAMPLE_CAP + 40
+    samples = _synth(urdf, n=n, seed=83, offset_mm=0.0)
+    rep = fk_cross.cross_check(samples, urdf)
+    div = rep["attribution"]["diversity"]
+    assert div["samples"] == n
+    assert div["distinct_configs"] == n          # distinct 按全量统计
+    assert div["spread_computed_on"] == fk_cross.DIVERSITY_SPREAD_SAMPLE_CAP
+    assert div["sufficient"] is True
+    assert rep["attribution"]["residual_kind"] == "within_tolerance"
+
+
 # ---------------------------------------------------------------- 约束
 def _module_ast():
     import ast

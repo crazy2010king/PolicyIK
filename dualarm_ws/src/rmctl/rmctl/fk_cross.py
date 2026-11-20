@@ -43,6 +43,31 @@ CONTROLLER_POSE_USAGE = "仅用于 FK 交叉校验，不得作为规划真值"
 # 设计 §5.3 的排查序
 TROUBLESHOOT_ORDER = ("zero_offset", "tool_frame", "mdh_offset")
 
+# ------------------------------------------------------------------ 归因判别器
+# 残差性质分类（残差是什么"性质"，而不是"多大"）
+RESIDUAL_KINDS = (
+    "within_tolerance",       # 残差在阈值内
+    "base_frame_offset",      # 恒定的 base 系平移（基座/世界系刚体偏置）
+    "tool_frame_offset",      # 恒定的 tip(Link7) 系偏置（法兰→工具）
+    "orientation_dependent",  # 随位形变化的残差（零位 / MDH / 单关节）
+    "insufficient_diversity",  # 样本多样性不足 → 不能对偏置性质下结论
+)
+
+# 偏差方向一致性阈值：|平均偏差向量| / 最大偏差 ≥ 该值 → 该系下方向一致
+CONSISTENCY_THRESHOLD = 0.8
+
+# 样本多样性门槛（任一项不满足 → insufficient_diversity）
+#
+# 背景：2026-11-19 那次 75.0314 mm 被判成"系统性平移"，根因是 20 个样本
+# **其实是同一位形重复**（dev_spread_mm = 0.0468 mm）。重复同一位形既不能
+# 证明工具偏置，也不能排除基座系偏置或建模误差 —— 因此多样性是**先决条件**。
+DIVERSITY_MIN_DISTINCT_CONFIGS = 3
+DIVERSITY_MIN_POSITION_SPREAD_MM = 1.0
+DIVERSITY_MIN_ORIENTATION_SPREAD_DEG = 0.5
+
+# 多样性展布统计的样本上限（展布统计是 O(n^2)，样本过多时等距抽样以控制耗时）
+DIVERSITY_SPREAD_SAMPLE_CAP = 512
+
 _TROUBLESHOOT_TEXT = {
     "zero_offset": "查零位：示教器凹槽对齐照片、joint1-7 zero_deg 读数、"
                    "换电池/拆装/冲击/固件升级后是否漂移",
@@ -172,15 +197,149 @@ def _sample_pose(sample, index):
 
 
 # ------------------------------------------------------------------ 归因
-def _attribution(devs, tol_mm):
-    """按设计 §5.3 给出初步归因提示。
+def _consistency(vectors):
+    """偏差方向一致性 = |平均偏差向量| / 最大偏差模长。
 
-    devs: 逐样本偏差向量（mm，fk - controller）。
+    ≈1 → 所有样本偏差方向一致（该坐标系下是恒定偏置）
+    ≈0 → 偏差互相抵消（个别样本/个别关节异常）
+    """
+    if vectors is None or len(vectors) == 0:
+        return None
+    arr = np.asarray(vectors, dtype=float).reshape(-1, 3)
+    mags = np.linalg.norm(arr, axis=1)
+    max_mag = float(mags.max())
+    if max_mag <= 1e-12:
+        return 0.0
+    return float(np.linalg.norm(arr.mean(axis=0)) / max_mag)
+
+
+def _sample_diversity(joint_configs, positions, rotations):
+    """样本多样性统计（distinct 位形数 / 位置展布 / 姿态展布）。
+
+    多样性不足时**不能**对残差性质（工具偏置 vs 基座偏置 vs 建模误差）下结论。
+
+    展布统计是 O(n^2)；样本数超过 ``DIVERSITY_SPREAD_SAMPLE_CAP`` 时按等距
+    抽样统计（distinct 位形数仍按全量统计），避免样本数放大带来的耗时平方。
+    """
+    n = len(positions)
+    distinct = 0
+    if joint_configs:
+        distinct = len({tuple(np.round(np.asarray(c, dtype=float), 6))
+                        for c in joint_configs})
+    idx = np.arange(n)
+    if n > DIVERSITY_SPREAD_SAMPLE_CAP:
+        idx = np.unique(np.linspace(0, n - 1,
+                                    DIVERSITY_SPREAD_SAMPLE_CAP).astype(int))
+    P = np.asarray([np.asarray(positions[i], dtype=float) for i in idx],
+                   dtype=float).reshape(-1, 3)
+    if len(P) > 1:
+        sq = np.sum(P * P, axis=1)
+        d2 = np.maximum(sq[:, None] + sq[None, :] - 2.0 * (P @ P.T), 0.0)
+        pos_spread = float(np.sqrt(d2.max())) * 1000.0     # m → mm
+    else:
+        pos_spread = 0.0
+    ori_spread = 0.0
+    Rs = [rotations[i] for i in idx
+          if rotations and rotations[i] is not None]
+    if len(Rs) > 1:
+        Rf = np.asarray([np.asarray(r, dtype=float) for r in Rs])
+        # tr(R_i^T R_j) = <R_i, R_j>_F（逐元素内积）
+        tr = np.einsum("ijk,ijk->ij", Rf, Rf)
+        cos_t = np.clip((tr - 1.0) / 2.0, -1.0, 1.0)
+        ori_spread = float(np.arccos(cos_t).max()) * RAD2DEG
+    reasons = []
+    if distinct < DIVERSITY_MIN_DISTINCT_CONFIGS:
+        reasons.append("distinct 位形数 %d < %d" % (distinct, DIVERSITY_MIN_DISTINCT_CONFIGS))
+    if pos_spread < DIVERSITY_MIN_POSITION_SPREAD_MM:
+        reasons.append("位置展布 %.4f mm < %.4f mm"
+                       % (pos_spread, DIVERSITY_MIN_POSITION_SPREAD_MM))
+    if ori_spread < DIVERSITY_MIN_ORIENTATION_SPREAD_DEG:
+        reasons.append("姿态展布 %.4f° < %.4f°"
+                       % (ori_spread, DIVERSITY_MIN_ORIENTATION_SPREAD_DEG))
+    return {
+        "samples": int(n),
+        "distinct_configs": int(distinct),
+        "position_spread_mm": float(pos_spread),
+        "orientation_spread_deg": float(ori_spread),
+        "sufficient": bool(not reasons),
+        "reasons": reasons,
+        "spread_computed_on": int(len(idx)),
+        "requirements": {
+            "min_distinct_configs": DIVERSITY_MIN_DISTINCT_CONFIGS,
+            "min_position_spread_mm": DIVERSITY_MIN_POSITION_SPREAD_MM,
+            "min_orientation_spread_deg": DIVERSITY_MIN_ORIENTATION_SPREAD_DEG,
+            "spread_sample_cap": DIVERSITY_SPREAD_SAMPLE_CAP,
+        },
+    }
+
+
+def _offset_estimate(vectors, frame):
+    """偏置估计：某坐标系下的平均偏移 + 样本标准差（不确定度）。
+
+    符号口径：``vectors`` 是偏差 ``fk - controller``（mm）；本函数返回的是
+    **待施加的修正量** ``controller - fk``（= -偏差均值），因此把它直接写进
+    ``calibration.tcp``（tip 系）/ ``calibration.base_to_base``（base 系）后
+    再跑一次交叉校验，残差即被压下去。
+    """
+    arr = np.asarray(vectors, dtype=float).reshape(-1, 3)
+    correction = -arr.mean(axis=0)
+    if arr.shape[0] > 1:
+        std = arr.std(axis=0, ddof=1)
+    else:
+        std = np.zeros(3)
+    return {
+        "frame": frame,
+        "mean_mm": [float(v) for v in correction],
+        "std_mm": [float(v) for v in std],
+        "magnitude_mm": float(np.linalg.norm(correction)),
+        "uncertainty_mm": float(np.linalg.norm(std)),
+        "suggested_offset": {
+            "x": float(correction[0]) / 1000.0,
+            "y": float(correction[1]) / 1000.0,
+            "z": float(correction[2]) / 1000.0,
+            "frame": frame,
+        },
+        "note": ("修正量 = controller - fk 的系内均值（可直接写入 calibration.%s）；"
+                 "仅估计平移分量，姿态偏置需另做姿态标定"
+                 % ("tcp" if frame == "tip_link7" else "base_to_base")),
+    }
+
+
+def _attribution(devs, tol_mm, tip_devs=None, positions=None, rotations=None,
+                 joint_configs=None):
+    """按设计 §5.3 给出归因提示，并**判定残差性质**（residual_kind）。
+
+    参数
+    ----
+    devs : list[np.ndarray]
+        逐样本偏差向量（mm，base 系，``fk - controller``）。
+    tol_mm : float
+        位置判定阈值（mm）。
+    tip_devs : list[np.ndarray] | None
+        逐样本偏差向量在 **tip(Link7) 系** 的表达（mm），
+        由 ``R_link7^T · dev_base`` 得到。
+    positions / rotations / joint_configs : list
+        自研 FK 的末端位置（m）、末端旋转矩阵、关节向量（rad）——用于多样性统计。
+
+    返回
+    ----
+    dict：保留既有键（``pattern`` / ``consistency`` / ``mean_vector_mm`` /
+    ``mean_dev_mm`` / ``max_dev_mm`` / ``hints`` / ``next_checks`` /
+    ``next_check_detail``，**向后兼容**），并新增：
+
+    * ``residual_kind``：残差性质（见 ``RESIDUAL_KINDS``）
+    * ``consistency_base`` / ``consistency_tip``：两个坐标系下的方向一致性
+    * ``diversity``：样本多样性统计与门槛判定
+    * ``offset_estimates``：建议偏置估计（tip / base 系平均偏移 + 不确定度）
     """
     if not devs:
         return {"pattern": "no_samples", "consistency": None,
-                "mean_vector_mm": None, "hints": [], "next_checks": []}
-    arr = np.asarray(devs, dtype=float)
+                "consistency_base": None, "consistency_tip": None,
+                "residual_kind": "insufficient_diversity",
+                "mean_vector_mm": None, "hints": [], "next_checks": [],
+                "next_check_detail": [], "diversity": None,
+                "offset_estimates": None}
+    arr = np.asarray(devs, dtype=float).reshape(-1, 3)
     mean_vec = arr.mean(axis=0)
     mags = np.linalg.norm(arr, axis=1)
     mean_mag = float(mags.mean())
@@ -195,6 +354,34 @@ def _attribution(devs, tol_mm):
         pattern = "systematic_translation"
     else:
         pattern = "scattered"
+
+    # ---- base 系 / tip 系 双口径一致性 ----
+    consistency_base = _consistency(arr)
+    consistency_tip = _consistency(tip_devs)
+
+    # ---- 样本多样性 ----
+    diversity = _sample_diversity(joint_configs or [], positions or [],
+                                   rotations or [])
+    if not positions:
+        diversity["sufficient"] = False
+        diversity["reasons"] = list(diversity["reasons"]) or ["缺少 FK 位姿样本"]
+
+    # ---- 残差性质判定 ----
+    if not diversity["sufficient"]:
+        residual_kind = "insufficient_diversity"
+    elif max_mag <= tol_mm:
+        residual_kind = "within_tolerance"
+    elif consistency_tip is None:
+        residual_kind = "orientation_dependent"
+    elif (consistency_tip >= CONSISTENCY_THRESHOLD
+          and consistency_base < CONSISTENCY_THRESHOLD):
+        residual_kind = "tool_frame_offset"
+    elif (consistency_base >= CONSISTENCY_THRESHOLD
+          and consistency_tip < CONSISTENCY_THRESHOLD):
+        residual_kind = "base_frame_offset"
+    else:
+        residual_kind = "orientation_dependent"
+
     hints = []
     if pattern == "within_tolerance":
         hints.append("全部样本在阈值内：自研 FK 与控制器位姿一致，无需排查")
@@ -208,12 +395,54 @@ def _attribution(devs, tol_mm):
                          % consistency)
         hints.append("按设计 §5.3 顺序排查：零位 → 工具系 → MDH 偏置")
         next_checks = list(TROUBLESHOOT_ORDER)
+
+    # ---- 残差性质提示（判别器口径）----
+    if residual_kind == "within_tolerance":
+        hints.append("residual_kind=within_tolerance：残差在阈值内，无需标定")
+    elif residual_kind == "insufficient_diversity":
+        hints.append("residual_kind=insufficient_diversity：样本多样性不足"
+                     "（%s）；**同一位形重复采样不能判定偏置性质**，"
+                     "请补采有界多样位形后复测"
+                     % ("；".join(diversity["reasons"]) or "位形/展布未达门槛"))
+    elif residual_kind == "base_frame_offset":
+        hints.append("residual_kind=base_frame_offset：偏差在 base 系方向一致"
+                     "（consistency_base=%.2f）而在 tip 系不一致"
+                     "（consistency_tip=%.2f）→ 基座/世界系刚体偏置："
+                     "查 URDF 清洗、基座安装，或改标 calibration.base_to_base"
+                     % (consistency_base, consistency_tip))
+    elif residual_kind == "tool_frame_offset":
+        hints.append("residual_kind=tool_frame_offset：偏差在 tip(Link7) 系方向一致"
+                     "（consistency_tip=%.2f）而在 base 系不一致"
+                     "（consistency_base=%.2f）→ 法兰→工具偏置："
+                     "标定 calibration.tcp 后复测"
+                     % (consistency_tip, consistency_base))
+    else:
+        hints.append("residual_kind=orientation_dependent：偏差随位形变化"
+                     "（consistency_base=%.2f / consistency_tip=%.2f）→ "
+                     "查零位与 MDH 偏置" % (consistency_base, consistency_tip))
+        if (consistency_base >= CONSISTENCY_THRESHOLD
+                and consistency_tip >= CONSISTENCY_THRESHOLD):
+            hints.append("base 与 tip 系一致性同时很高：位形变化不足以区分坐标系，"
+                         "结论只能取 orientation_dependent（不写任何偏置）")
+
+    offset_estimates = None
+    if tip_devs is not None and len(tip_devs):
+        offset_estimates = {
+            "tip_frame": _offset_estimate(tip_devs, "tip_link7"),
+            "base_frame": _offset_estimate(arr, "base"),
+        }
+
     return {
         "pattern": pattern,
         "consistency": consistency,
+        "consistency_base": consistency_base,
+        "consistency_tip": consistency_tip,
+        "residual_kind": residual_kind,
         "mean_vector_mm": [float(v) for v in mean_vec],
         "mean_dev_mm": mean_mag,
         "max_dev_mm": max_mag,
+        "diversity": diversity,
+        "offset_estimates": offset_estimates,
         "hints": hints,
         "next_checks": next_checks,
         "next_check_detail": [_TROUBLESHOOT_TEXT[k] for k in next_checks],
@@ -318,6 +547,10 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
 
     details = []
     devs = []
+    tip_devs = []
+    fk_positions = []
+    fk_rotations = []
+    joint_configs = []
     dev_corrs = []
     ori_devs = []
     ori_corr_devs = []
@@ -332,9 +565,15 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
         except Exception as exc:
             raise FkCrossError("样本 #%d 的 FK 计算失败: %r" % (i, exc))
         fk_pos = np.asarray(T[:3, 3], dtype=float)
+        fk_rot = np.asarray(T[:3, :3], dtype=float)
         dev = (fk_pos - ctrl_pos) * 1000.0            # mm
         dev_mm = float(np.linalg.norm(dev))
         devs.append(dev)
+        # tip(Link7) 系偏差：R_link7^T · dev_base（把 base 系偏差转到法兰系）
+        tip_devs.append(fk_rot.T @ dev)
+        fk_positions.append(fk_pos)
+        fk_rotations.append(fk_rot)
+        joint_configs.append(q)
 
         ori_deg, ori_state = None, "not_provided"
         if ctrl_rot is not None:
@@ -470,7 +709,9 @@ def cross_check(samples, urdf_path=None, pos_tol_mm=DEFAULT_POS_TOL_MM,
         "violations": violations,
         "orientation_violations": ori_violations,
         "samples_detail": details,
-        "attribution": _attribution(devs, pos_tol_mm),
+        "attribution": _attribution(devs, pos_tol_mm, tip_devs=tip_devs,
+                                    positions=fk_positions, rotations=fk_rotations,
+                                    joint_configs=joint_configs),
         "controller_pose_usage": CONTROLLER_POSE_USAGE,
         "troubleshoot_order": list(TROUBLESHOOT_ORDER),
     }
@@ -563,6 +804,10 @@ def fk_recheck_fields(report):
     * ``max_ori_dev_deg``：最大姿态偏差（deg，判定 < 0.05；未提供姿态时为 null）
     * ``conclusion``：结论文本
     * ``corrections``：本次使用的标定偏置与 raw/corrected 对比（新增键）
+    * ``residual_kind``：残差性质（within_tolerance / base_frame_offset /
+      tool_frame_offset / orientation_dependent / insufficient_diversity）
+    * ``diversity``：样本多样性统计（distinct 位形数 / 位置展布 / 姿态展布）
+    * ``offset_estimates``：建议偏置估计（tip / base 系平均偏移 + 不确定度）
 
     只做**格式转换**，不写盘、不改状态位（status 的 measured/blocked 判定属真机窗口）。
     """
@@ -578,6 +823,7 @@ def fk_recheck_fields(report):
                          report["violations"] or "无"))
     max_ori = ori["max_deg"]
     corr = report.get("corrections") or {}
+    attribution = report.get("attribution") or {}
     fields = {
         "method": ("rmctl.fk_cross（自研 FK vs 控制器位姿交叉校验，%d 组位形）"
                    % report["samples"]),
@@ -599,6 +845,22 @@ def fk_recheck_fields(report):
             "improved": bool(corr.get("improved")),
             "ok_corrected": bool(report.get("ok_corrected", report["ok"])),
         }
+    if attribution:
+        fields["residual_kind"] = attribution.get("residual_kind")
+        fields["attribution_pattern"] = attribution.get("pattern")
+        fields["consistency_base"] = attribution.get("consistency_base")
+        fields["consistency_tip"] = attribution.get("consistency_tip")
+        diversity = attribution.get("diversity")
+        if diversity:
+            fields["diversity"] = {
+                "distinct_configs": diversity.get("distinct_configs"),
+                "position_spread_mm": diversity.get("position_spread_mm"),
+                "orientation_spread_deg": diversity.get("orientation_spread_deg"),
+                "sufficient": diversity.get("sufficient"),
+            }
+        estimates = attribution.get("offset_estimates")
+        if estimates:
+            fields["offset_estimates"] = estimates
     return fields
 
 
