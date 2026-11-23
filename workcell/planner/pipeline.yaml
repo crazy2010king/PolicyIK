@@ -15,7 +15,8 @@ planning_time_s: 5.0            # 单次规划时间上限（秒）
 #   **点数线性决定内存** → 降点数是唯一能把 RSS 从 GB 拉回 MB 的杠杆。
 #   代价：点数变少 → 稠密化后的校验暴露出真实的 jerk/加速度峰值 →
 #   需要 ~2.0–2.5× 保路径降速才能过四道校验
-#   （配套：profiles.yaml::max_time_scaling 1.5 → 3.0）。
+#   （配套：profiles.yaml::max_time_scaling 1.5 → 3.0 → 6.0，
+#    S13 实测限值收紧后需要 5.047× 降速，见 profiles.yaml 注释）。
 planner_range: 0.3              # S08/T04 固化档位（实测依据见上）
 deterministic: true             # 确定性开关（同 seed → 同结果）
 # 厂商 profile 档位（S08/T02 接线；取值由 T04 依实测固化）

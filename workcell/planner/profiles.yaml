@@ -11,10 +11,18 @@ timeout_ms: 20000               # 服务端硬超时（毫秒）：超时 → �
 #   1.79–2.42（joint_small_local 1.99 / joint_cross_zero 2.42 / cartesian 1.79）。
 #   上限 1.5 时这些场景会因「需要人工放宽」而 FAILED（与 S07 的 SUCCESS 结论冲突）。
 #   → 上限提到 3.0（> 实测最大值 2.42，留 ~24% 余量）。
+#   S13 实测限值回填后（2026-11-23）：joint_limits.yaml 的 acceleration 由 5.2359
+#   逐关节收紧到 1.7557~2.4366 rad/s^2（真机阶梯实测包络的保守下界）→
+#   规划轨迹的加速度峰值（joint1 6.10 / joint2 8.86 rad/s^2）需要的降速系数
+#   从 2.42 升到 **5.047**（joint_cross_zero 场景实测）→ 超出 3.0 上限 →
+#   场景 SUCCESS→FAILED（golden 回归红，见 S13-T4 的 blocker 记录）。
+#   → 上限提到 6.0（> 实测最大值 5.047，留 ~19% 余量）。**放宽方向是「允许多慢」，
+#   不是放宽限值**：四道校验的限值仍由 joint_limits.yaml（收紧后的实测值）判定，
+#   降速后的轨迹仍必须通过同一套校验。
 #   注意：这**不放宽四道校验的限值**，只放宽「允许多慢地走」——
 #   降速后轨迹仍必须通过同一套校验；且「越限」场景靠请求里的
 #   constraints.time_scaling=1.0 把上限压回 1.0 → 仍然 FAILED（红线不变）。
-max_time_scaling: 3.0           # 允许的最大时间缩放系数（S08/T04 实测固化）
+max_time_scaling: 6.0           # 允许的最大时间缩放系数（S08/T04 实测 3.0；S13 实测限值收紧后 → 6.0）
 collision_margin_m: 0.005       # 碰撞裕度（米）
 verify:
   continuous: true              # 是否做连续碰撞复检（四道校验之一）

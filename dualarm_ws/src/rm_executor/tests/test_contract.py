@@ -276,9 +276,17 @@ def test_check_time_domain_limits_bad_shape_blocked(joint_limits):
 
 
 def test_check_time_domain_limits_uses_hardware_layer_source(repo_root):
-    """不限值注入时，限值来源必须是硬件层 rm_hw_bridge.limits。"""
+    """不限值注入时，限值来源必须是硬件层 rm_hw_bridge.limits。
+
+    幅度 0.002 rad 的原因（S13 起）：限值来源改为**真机实测**的收紧值后
+    （joint_limits.yaml 的 acceleration 逐关节收紧到 1.7557~2.4366 rad/s²，
+    S13 真机阶梯实测包络的保守下界），三点折线的中心差分加速度 = 400 × 幅度
+    （幅度 0.01 → 4.0 rad/s² > 1.7557 rad/s² 会被判越界）。本用例的断言对象
+    是「限值来源」而不是「这条轨迹有多大」，因此把幅度改到 0.002 rad
+    （加速度 0.8 rad/s²，在收紧后的限值内）即可保持断言原意。
+    """
     times = [0.0, 0.05, 0.1]
-    points = [[0.0] * 7, [0.01] * 7, [0.0] * 7]
+    points = [[0.0] * 7, [0.002] * 7, [0.0] * 7]
     res = contract.check_time_domain_limits(times, points, ws=repo_root)
     assert res["status"] == "ok", res
     assert any("rm_hw_bridge.limits" in e for e in res["evidence"])
