@@ -1,0 +1,304 @@
+# rm_hw_bridge 符号契约（**唯一真值** / single source of truth）
+#
+# 本文件是「哪些 RM-API2 符号允许被调用、哪些被禁止」的机器可读清单。
+# loader.py（装载器）与 audit.py（静态审计器）**都只读本文件**，
+# 杜绝「清单写在代码里、注释写在别处」的双真值漂移。
+#
+# 上游真值链：
+#   vendor/rm_api2/include/*.h  →  rm_hw_bridge/abi_spec.yaml（ABI 规格）
+#   →  rm_hw_bridge/generated/rm_api2_ctypes.py（ctypes 绑定）
+#   →  本文件（**调用许可**清单：core / support / blacklist）
+#
+# 三个分区的语义：
+#   core     —— **恰好 22** 个核心符号，计入 limits.core_count；缺一即契约破损。
+#   support  —— 工程必需但**不计入 22**（共 22 个），必须显式标注理由；同样受白名单约束。
+#   blacklist—— **禁止调用**（静态审计按「调用形态」拦截）。
+#
+# forbidden_imports 的 scope 语义：
+#   repo      —— 全仓禁止（厂商 Python 封装包 / MoveIt 依赖，任何层都不许引）。
+#   hardware  —— **仅硬件层包 rm_hw_bridge/ 内禁止**；rmctl 侧允许
+#                import tesseract_robotics（那是规划内核，合规）。
+#   <层名>    —— 除 repo / hardware 外，scope 也可写 rules.layers 里声明的层名
+#                （如 executor / safety），audit.py 按层目录判定（见 rules.layers）。
+#
+# rules.*_must_not_import 是**层反向依赖禁令**（独立于 forbidden_imports）：
+#   命中即报 reverse-dependency 违规。
+
+sdk:
+  name: RM-API2
+  version: "1.1.7"
+  abi_spec: rm_hw_bridge/abi_spec.yaml
+  generated: rm_hw_bridge/generated/rm_api2_ctypes.py
+
+# ---------------------------------------------------------------------------
+# 核心符号：恰好 22 个（limits.core_count 自校验）
+# ---------------------------------------------------------------------------
+core:
+  - name: rm_init
+    purpose: 初始化 SDK（线程模式：三线程模式才收得到 UDP 主动上报）
+    unit: "-"
+    argtypes: "mode: rm_thread_mode_e -> int"
+  - name: rm_create_robot_arm
+    purpose: 创建机械臂实例（失败时返回非空指针且 id == -1，须读 id 判失败）
+    unit: "-"
+    argtypes: "ip: const char*, port: int -> rm_robot_handle*"
+  - name: rm_delete_robot_arm
+    purpose: 删除机械臂实例（句柄释放的唯一入口）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle* -> int"
+  - name: rm_set_realtime_push
+    purpose: 设置 UDP 主动上报（配置结构体按值传递）
+    unit: "周期 ms"
+    argtypes: "handle: rm_robot_handle*, config: rm_realtime_push_config_t -> int"
+  - name: rm_get_joint_degree
+    purpose: 获取关节角度
+    unit: "°"
+    argtypes: "handle: rm_robot_handle*, joint: float* -> int"
+  - name: rm_get_current_arm_state
+    purpose: 获取机械臂当前状态（工作/拖动/停止等）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, state: rm_current_arm_state_t* -> int"
+  - name: rm_get_arm_all_state
+    purpose: 获取机械臂所有状态（R004 全字段快照的数据源）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, state: rm_arm_all_state_t* -> int"
+  - name: rm_get_joint_err_flag
+    purpose: 获取关节错误标志与抱闸状态
+    unit: "位标志"
+    argtypes: "handle: rm_robot_handle*, err_flag: uint16*, brake_state: uint16* -> int"
+  - name: rm_get_arm_current_trajectory
+    purpose: 获取当前机械臂规划类型与轨迹数据
+    unit: "°"
+    argtypes: "handle: rm_robot_handle*, type: rm_arm_current_trajectory_e*, data: float* -> int"
+  - name: rm_movej
+    purpose: 关节空间运动（**阻塞式**调用）
+    unit: "° / °·s⁻¹"
+    argtypes: "handle: rm_robot_handle*, joint: const float*, v: int, r: int, trajectory_connect: int, block: int -> int"
+  - name: rm_movej_canfd
+    purpose: 角度透传（配置结构体按值传递；joint 缓冲须在调用期间存活）
+    unit: "°"
+    argtypes: "handle: rm_robot_handle*, config: rm_movej_canfd_mode_t -> int"
+  - name: rm_set_delete_current_trajectory
+    purpose: 删除当前轨迹
+    unit: "-"
+    argtypes: "handle: rm_robot_handle* -> int"
+  - name: rm_set_arm_stop
+    purpose: 急停
+    unit: "-"
+    argtypes: "handle: rm_robot_handle* -> int"
+  - name: rm_set_arm_slow_stop
+    purpose: 缓停
+    unit: "-"
+    argtypes: "handle: rm_robot_handle* -> int"
+  - name: rm_set_arm_pause
+    purpose: 暂停
+    unit: "-"
+    argtypes: "handle: rm_robot_handle* -> int"
+  - name: rm_set_arm_continue
+    purpose: 继续
+    unit: "-"
+    argtypes: "handle: rm_robot_handle* -> int"
+  - name: rm_set_joint_drive_max_speed
+    purpose: 设置关节最大速度（驱动器限值下发）
+    unit: "°/s"
+    argtypes: "handle: rm_robot_handle*, joint_num: int, max_speed: float -> int"
+  - name: rm_set_joint_drive_max_acc
+    purpose: 设置关节最大加速度（驱动器限值下发）
+    unit: "°/s²"
+    argtypes: "handle: rm_robot_handle*, joint_num: int, max_acc: float -> int"
+  - name: rm_set_joint_drive_min_pos
+    purpose: 设置关节最小限位（驱动器限值下发）
+    unit: "°"
+    argtypes: "handle: rm_robot_handle*, joint_num: int, min_pos: float -> int"
+  - name: rm_set_joint_drive_max_pos
+    purpose: 设置关节最大限位（驱动器限值下发）
+    unit: "°"
+    argtypes: "handle: rm_robot_handle*, joint_num: int, max_pos: float -> int"
+  - name: rm_set_collision_state
+    purpose: 设置碰撞检测状态（安全开关）
+    unit: "分级 0..8"   # 厂商头文件 rm_interface.h：0=不检测，8=最灵敏
+    argtypes: "handle: rm_robot_handle*, collision_stage: int -> int"
+  - name: rm_set_self_collision_enable
+    purpose: 设置自碰撞检测使能（安全开关）
+    unit: "bool"
+    argtypes: "handle: rm_robot_handle*, state: bool -> int"
+
+# ---------------------------------------------------------------------------
+# 支持层符号：工程必需，但**不计入 22**（必须显式写明理由）
+# ---------------------------------------------------------------------------
+support:
+  - name: rm_set_log_call_back
+    reason: 接管 SDK 的 printf 噪声，避免污染 rmctl 输出与日志
+    unit: "-"
+    argtypes: "LogCallback: rm_log_callback_ptr, level: int -> void"
+  - name: rm_set_timeout
+    reason: SDK 通信超时（真机不可达时可控地快速失败，而不是无限挂住）
+    unit: "s"
+    argtypes: "timeout: int -> void"
+  - name: rm_get_robot_info
+    reason: 版本矩阵 / 机械臂型号（判定控制器固件与机型是否匹配）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, robot_info: rm_robot_info_t* -> int"
+  - name: rm_get_arm_software_info
+    reason: 控制器/软件版本矩阵读数（产品版本/控制器版本/算法库/ctrl/动力学/plan/com/流程图 版本与编译时间）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, software_info: rm_arm_software_version_t* -> int"
+  - name: rm_get_realtime_push
+    reason: 主动上报配置回读（下发后确认真的生效）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, config: rm_realtime_push_config_t* -> int"
+  - name: rm_realtime_arm_state_call_back
+    reason: UDP 主动上报回调注册（**进程级全局单例**，同进程仅一路臂）
+    unit: "-"
+    argtypes: "realtime_callback: rm_realtime_arm_state_callback_ptr -> void"
+
+  # --- 夹爪快路径（厂商手爪控制协议；与末端 Modbus 互斥）
+  - name: rm_set_gripper_route
+    reason: 设定夹爪开口行程上下限（开合范围边界，夹爪协议初始化必需）
+    unit: "无量纲 0~1000"
+    argtypes: "handle: rm_robot_handle*, min_limit: int, max_limit: int -> int"
+  - name: rm_set_gripper_release
+    reason: 松开夹爪（快路径：开口到最大位）
+    unit: "speed 无量纲 1~1000 / timeout s"
+    argtypes: "handle: rm_robot_handle*, speed: int, block: bool, timeout: int -> int"
+  - name: rm_set_gripper_pick
+    reason: 力控夹取夹爪（快路径：夹到判定的主下发接口）
+    unit: "speed 无量纲 1~1000 / force 无量纲 50~1000 / timeout s"
+    argtypes: "handle: rm_robot_handle*, speed: int, force: int, block: bool, timeout: int -> int"
+  - name: rm_set_gripper_pick_on
+    reason: 持续力控夹取夹爪（快路径：保持夹持力的下发接口）
+    unit: "speed 无量纲 1~1000 / force 无量纲 50~1000 / timeout s"
+    argtypes: "handle: rm_robot_handle*, speed: int, force: int, block: bool, timeout: int -> int"
+  - name: rm_set_gripper_position
+    reason: 夹爪开到指定开口（快路径：半开/指定开度）
+    unit: "position 无量纲 1~1000 / timeout s"
+    argtypes: "handle: rm_robot_handle*, position: int, block: bool, timeout: int -> int"
+  - name: rm_get_gripper_state
+    reason: 读夹爪状态（六类判定：夹到/夹空/堵转/过温/离线 的唯一数据源）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, state: rm_gripper_state_t* -> int"
+
+  # --- Modbus-RTU 主路径（通用夹爪/外设寄存器读写）
+  - name: rm_set_modbus_mode
+    reason: 打开通讯端口 Modbus RTU 模式（主路径前置；机械臂启动后必须先调）
+    unit: "baudrate bps / timeout 百毫秒"
+    argtypes: "handle: rm_robot_handle*, port: int, baudrate: int, timeout: int -> int"
+  - name: rm_close_modbus_mode
+    reason: 关闭通讯端口 Modbus RTU 模式（关闭后自动切回机械臂控制模式，协议生命周期必需）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, port: int -> int"
+  - name: rm_read_holding_registers
+    reason: 读保持寄存器（通用夹爪状态/参数寄存器读取）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, params: rm_peripheral_read_write_params_t, data: int* -> int"
+  - name: rm_read_input_registers
+    reason: 读输入寄存器（通用夹爪输入寄存器读取）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, params: rm_peripheral_read_write_params_t, data: int* -> int"
+  - name: rm_write_registers
+    reason: 写多个寄存器（通用夹爪参数下发）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, params: rm_peripheral_read_write_params_t, data: int* -> int"
+  - name: rm_write_single_register
+    reason: 写单个寄存器（通用夹爪单参数下发）
+    unit: "-"
+    argtypes: "handle: rm_robot_handle*, params: rm_peripheral_read_write_params_t, data: int -> int"
+
+  # --- RM Plus 末端生态协议
+  - name: rm_set_rm_plus_mode
+    reason: 设置末端生态协议模式（RM Plus 通道波特率协商）
+    unit: "波特率（0 禁用 / 9600 / 115200 / 256000 / 460800）"
+    argtypes: "handle: rm_robot_handle*, mode: int -> int"
+  - name: rm_get_rm_plus_mode
+    reason: 查询末端生态协议模式（RM Plus 通道回读，确认真的生效）
+    unit: "波特率（0 禁用 / 9600 / 115200 / 256000 / 460800）"
+    argtypes: "handle: rm_robot_handle*, mode: int* -> int"
+
+  # --- 工具端电压
+  - name: rm_set_tool_voltage
+    reason: 设置工具端电源输出（夹爪/传感器供电档位：0V/5V/12V/24V）
+    unit: "档位 0/1/2/3（0V/5V/12V/24V）"
+    argtypes: "handle: rm_robot_handle*, voltage_type: int -> int"
+  - name: rm_get_tool_voltage
+    reason: 获取工具端电源输出（供电档位回读，确认夹爪供电正常）
+    unit: "档位 0/1/2/3（0V/5V/12V/24V）"
+    argtypes: "handle: rm_robot_handle*, voltage_type: int* -> int"
+
+# ---------------------------------------------------------------------------
+# 黑名单：**禁止调用**（按调用形态静态拦截；字符串常量不算调用）
+# ---------------------------------------------------------------------------
+blacklist:
+  symbols:
+    - rm_movep_canfd
+    - rm_movep_follow
+    - rm_movel
+    - rm_moves
+    - rm_movec
+    - rm_movej_p
+    - rm_set_pos_step
+    - rm_set_ort_step
+    - rm_set_teach_frame
+    - rm_set_manual_tool_frame
+    - rm_change_tool_frame
+    - rm_update_tool_frame
+    - rm_set_joint_zero_pos
+  prefixes:
+    - rm_algo_
+  notes: >-
+    rm_algo_* 是厂商解算/规划内核（.so 实测导出 60 个 rm_algo_* 符号），
+    本层不暴露，避免把厂商规划当成本项目真值；rm_set_joint_zero_pos
+    零位标定只能走示教器受控流程。
+
+# ---------------------------------------------------------------------------
+# 禁止的 import
+# ---------------------------------------------------------------------------
+forbidden_imports:
+  - name: Robotic_Arm
+    scope: repo
+    reason: 厂商 Python 封装包（实测含 273 处 rm_algo_* 引用），会绕过本层白名单
+  - name: "tesseract*"
+    scope: hardware
+    reason: 厂商解算/规划内核；硬件层不得依赖（rmctl 侧作为规划内核允许）
+  - name: "moveit*"
+    scope: repo
+    reason: MoveIt 依赖链；本项目用厂商规划内核，不引入第二套规划栈
+
+# ---------------------------------------------------------------------------
+# 其它代码层禁令
+# ---------------------------------------------------------------------------
+rules:
+  # 层 → 包根的**声明式映射**（audit.py 按层判定，不再硬编码 HARDWARE_ROOT）
+  #   hardware   —— 硬件层（唯一允许直接接触 SDK 的层）
+  #   safety     —— 安全层（rm_safety：失效安全停机四级链路；判据纯函数）
+  #   executor   —— 执行层（10 ms 单时钟执行器，只允许依赖 hardware 层）
+  #   experience —— 体验层（rmctl，可依赖 hardware / safety / executor）
+  layers:
+    hardware: rm_hw_bridge
+    safety: rm_safety
+    executor: rm_executor
+    experience: rmctl
+
+  # 硬件层不得反向依赖体验层（rmctl），否则厂商解耦失效
+  hardware_must_not_import:
+    - rmctl
+
+  # 安全层不得反向依赖体验层（rmctl）/ 执行层（rm_executor）/ 规划内核（tesseract*）
+  # —— 「安全判据独立于规划器 / 独立于执行层」这条红线的**代码层强制**：
+  #    安全层只允许被下游消费（rm_executor / rmctl 都 import rm_safety），
+  #    绝不允许反向 import 它们（否则判据会被执行层/体验层的实现细节污染）。
+  safety_must_not_import:
+    - rmctl
+    - rm_executor
+    - "tesseract*"
+
+  # 执行层不得反向依赖体验层（rmctl），也不得依赖规划内核（tesseract*）
+  executor_must_not_import:
+    - rmctl
+    - "tesseract*"
+
+# ---------------------------------------------------------------------------
+# 自校验限额
+# ---------------------------------------------------------------------------
+limits:
+  core_count: 22
+  support_count: 22

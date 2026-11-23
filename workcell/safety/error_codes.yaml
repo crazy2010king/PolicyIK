@@ -1,0 +1,51 @@
+# 控制器错误码 → 故障类 / 安全等级 映射表（**声明式唯一真值**）
+#
+# 重要口径（**不得在验收表述里说成厂商码表**）：
+#   RM-API2 `err[]` 的**厂商错误码表本轮未取得**（真机窗口前无法离线核对）。
+#   本文件是**工程声明映射**（engineering_declared）：码值与故障类的对应关系
+#   由本项目自行声明，用于离线判据单测与注入用例；等真机窗口拿到厂商码表后
+#   必须**逐条回填**（改 code / class / level_hint / source），并把 status
+#   从 `unverified_offline` 改成 `verified_on_robot`。
+#
+# 规则：
+#   * 每个 code **必须**写 source（来源可追溯），否则读表时产生 warning；
+#   * 未知码 → class=unknown → 等级按 defaults.unknown_level = L3（保守）；
+#   * class 语义：
+#       collision   碰撞保护触发      → L3 缓停（人工复位，不自动清错误码）
+#       over_limit  运行期越限        → L2 暂停
+#       protection  控制器保护停      → L4 急停
+#       driver      驱动/伺服层报错    → 仅记录证据（非安全故障类）
+#       comm        通信层报错        → 仅记录证据（断流另有专门判据）
+#       unknown     未知码            → L3 缓停（保守）
+version: 1
+status: unverified_offline
+source: engineering_declared/S04-2026-11-13
+defaults:
+  unknown_class: unknown
+  unknown_level: L3
+codes:
+  - code: 90001
+    class: collision
+    level_hint: L3
+    note: 控制器碰撞保护触发（工程声明映射码，厂商码表未取得）
+    source: engineering_declared/S04-2026-11-13
+  - code: 90002
+    class: over_limit
+    level_hint: L2
+    note: 运行期位置/速度越声明限位（工程声明映射码，厂商码表未取得）
+    source: engineering_declared/S04-2026-11-13
+  - code: 90003
+    class: protection
+    level_hint: L4
+    note: 控制器保护停 / 已进入停机状态（工程声明映射码，厂商码表未取得）
+    source: engineering_declared/S04-2026-11-13
+  - code: 90004
+    class: driver
+    level_hint: L3
+    note: 驱动/伺服层报错（仅记录证据，不单独触发安全动作）
+    source: engineering_declared/S04-2026-11-13
+  - code: 90005
+    class: comm
+    level_hint: L3
+    note: 通信层报错（仅记录证据；断流由 stream_age_ms 判据单独处理）
+    source: engineering_declared/S04-2026-11-13

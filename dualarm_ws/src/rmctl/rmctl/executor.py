@@ -1,7 +1,18 @@
-"""执行层（原型版）。
+"""执行层（**legacy 原型**）。
 
-MockExecutor：以 10 ms 真实时钟回放轨迹，逐拍更新环境状态并统计跟踪误差 —— 单臂先"动起来"。
-SdkExecutor：真机接入点。按设计 §1.3 白名单直连 RM-API2（rm_movej_canfd 关节角透传）。
+.. warning::
+
+   **本模块是 legacy 回放路径，不作验收证据。**
+
+   * :class:`MockExecutor` —— 离线按 10 ms 栅格**回放**轨迹（不接硬件）。
+     保留它是为了兼容既有脚本与 ``rmctl repl``；**任何验收结论都不得引用
+     它的统计**（它没有限值复检、没有反馈闭环、没有真机下行）。
+   * :class:`SdkExecutor` —— **真机路径已迁至** ``rm_executor``（进程角色
+     ``rm_runtime``）。本类不再实现任何真机逻辑，只保留迁移指引，
+     以免形成「两套真相」。
+
+   验收口径唯一：``rm_executor.cli`` / ``rm_executor.runtime`` 产出的
+   **统一报告**（离线 fake 与真机 live 同一 schema）。
 """
 import time
 
@@ -16,7 +27,14 @@ class ExecResult(object):
 
 
 class MockExecutor(object):
-    """模拟执行器：不接硬件，按 10 ms 拍回放并实时更新机器人状态。"""
+    """**【legacy】** 模拟执行器：不接硬件，按 10 ms 拍回放并实时更新机器人状态。
+
+    .. warning::
+       **legacy 路径，不作验收证据**（无四道校验、无限值复检、无反馈闭环）。
+       验收请用 ``rmctl run --executor rm_executor``（离线）或
+       ``rmctl run --live``（真机），报告 schema 见
+       ``docs/rm_executor执行线程契约.md``。
+    """
 
     def __init__(self, model, period=0.010):
         self.model = model
@@ -57,9 +75,18 @@ class MockExecutor(object):
 
 
 class SdkExecutor(object):
-    """真机执行器接口（尚未接线）。
+    """**【已迁出】** 真机执行器 —— 真机路径已迁至 ``rm_executor``。
 
-    实现要点（设计 §5.7）：
+    迁移说明（避免两套真相）：
+
+    * 真机执行请用 ``python3 -m rm_executor.cli --traj <traj.json> --mode live
+      --ip <ip> --port 8080 --report <report.json>``；
+    * 真机窗口的角色入口是 ``python3 -m rm_executor.runtime --arm left
+      --traj <traj.json> --report <report.json>``（进程角色 ``rm_runtime``）；
+    * 本类**不再实现**任何真机逻辑（``connect`` / ``run`` 只给迁移指引），
+      以免与 ``rm_executor`` 形成两套真机真相。
+
+    原设计要点（设计 §5.7，已由 ``rm_executor`` 承担）：
       1. rm_init(RM_TRIPLE_MODE_E)
       2. rm_create_robot_arm(ip, 8080)
       3. rm_set_realtime_push(cycle=5ms 的倍数, ip=本机, port=与另一臂不同)
@@ -77,8 +104,12 @@ class SdkExecutor(object):
 
     def connect(self):
         raise NotImplementedError(
-            "真机执行器未接线：需要 RM_API2 运行时 + 已配置的臂 IP。"
-            "请在有硬件的机器上安装 RM_API2，然后实现 connect/run/stop 三步。")
+            "真机执行路径已迁至 rm_executor：\n"
+            "  python3 -m rm_executor.cli --traj <traj.json> --mode live "
+            "--ip <ip> --port 8080 --report <report.json>\n"
+            "  python3 -m rm_executor.runtime --arm left --traj <traj.json> "
+            "--report <report.json>    # 真机窗口入口（进程角色 rm_runtime）")
 
     def run(self, times, points, on_tick=None, realtime=True):
-        raise NotImplementedError("真机执行器未接线（见类文档的 7 步实现要点）")
+        raise NotImplementedError(
+            "真机执行路径已迁至 rm_executor（见 connect() 的迁移指引）")

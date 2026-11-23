@@ -1,0 +1,161 @@
+{
+  "schema": "rmctl.rm75_s14_real_machine_window/1",
+  "status": "blocked",
+  "executed_on": "2026-11-23T15:22:11+08:00 … 2026-11-23T16:10:00+08:00",
+  "milestone": "M001-3kzz40",
+  "slice": "S14",
+  "arm": "left",
+  "endpoint": {
+    "ip": "192.168.1.18",
+    "port": 8080,
+    "udp_port": 8091
+  },
+  "executed_on_host": {
+    "host": "172.16.119.199:2224",
+    "container": "ros_dev",
+    "worktree": ".gsd-worktrees/M001-3kzz40",
+    "why": "本机不通 ≠ 真机不可达：控制臂 192.168.1.18 只在远端主机所在网段可达"
+  },
+  "window_gate": {
+    "status": "ok",
+    "checks": {
+      "ip_reachable": "3 发 3 收，0% 丢包（rtt 0.434/0.503/0.616 ms）",
+      "tcp_reachable": "TCP 192.168.1.18:8080 可连接",
+      "udp_ports_free": "8091 / 8092 空闲",
+      "sdk_loadable": "rm_hw_bridge 可导入且关键符号齐全",
+      "probe_precheck": "7/7 只读前置检查通过（7 轴全部使能、arm_err / joint_err_code 全 0、控制器 RM_NO_PLANNING_E + RM_IDLE_E、当前位形在限值内）"
+    },
+    "note": "门禁在 SDK 路径写错时曾判 blocked（找不到 libapi_c.so）；修正 RM_API2_LIB 绝对路径后只读门禁与前置检查全部通过"
+  },
+  "long_run": {
+    "status": "error",
+    "planned_duration_s": 600.0,
+    "achieved": false,
+    "attempts": [
+      {
+        "attempt": 1,
+        "duration_s": 145.2357498650672,
+        "ticks": 14431,
+        "follow_err_rms_deg": 0.0031723834638926864,
+        "follow_err_max_deg": 0.009000019884542909,
+        "pre_position_hold_ms": 202.18683895654976,
+        "events": [
+          "pre_position_ok",
+          "feedback_stream_lag",
+          "feedback_stream_lost",
+          "safety_l4_emergency_stop",
+          "fault_stream_lost"
+        ],
+        "protection_stop": false,
+        "reason": "主因故障 stream_lost → L4",
+        "interpretation": "UDP 反馈在 145 s 处断流 → 执行层判 L4 断流并下发电机急停（安全链路**真机实证**：断流 → L4 停机生效，控制器保护停未触发）"
+      },
+      {
+        "attempt": 2,
+        "duration_s": 251.27948781708255,
+        "ticks": 25033,
+        "follow_err_rms_deg": 0.002891296315080688,
+        "follow_err_max_deg": 0.007000053404859319,
+        "pre_position_hold_ms": 202.1956869866699,
+        "events": [
+          "pre_position_ok",
+          "feedback_stream_lag",
+          "feedback_stream_lost",
+          "safety_l4_emergency_stop",
+          "fault_stream_lost"
+        ],
+        "protection_stop": false,
+        "reason": "主因故障 stream_lost → L4",
+        "interpretation": "第二次尝试在 251 s 处同样被真实断流打断（两次断流时刻不同 → 非固定时长触发的确定性缺陷）；跟踪误差全程 RMS ≈ 0.003°"
+      }
+    ],
+    "criteria_met": {
+      "zero_protection_stop": true,
+      "follow_error_rms_le_0p3deg": true,
+      "duration_ge_600s": false
+    },
+    "conclusion": "**600 s 连续执行未达成**：两次真机长跑分别在 145 s / 251 s 处被**真实**的 UDP 反馈断流打断，L4 急停按设计生效（这同时构成「断流 → 200 ms 内 L4 停机」的真机证据，但 600 s 时长判据未达成）"
+  },
+  "stream_loss_drill": {
+    "status": "error",
+    "exit_code": 139,
+    "exit_code_meaning": "SIGSEGV（进程 core dump）",
+    "crash_site": "scripts/rm75_stream_loss_drill.py::_cut → ArmLink.set_realtime_push_enabled(False)",
+    "root_causes": [
+      {
+        "layer": "本项目（已修复）",
+        "finding": "ArmLink.set_realtime_push_enabled 引用了两个**并不存在**的私有属性 `_udp_port` / `_realtime_target_ip`（真实属性名为公开的 `udp_port` / `realtime_target_ip`）→ 真机上抛 AttributeError，线程内异常导致进程 core dump",
+        "fix": "dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/bridge.py 改为读公开属性；新增守卫测试 dualarm_ws/src/rm_hw_bridge/tests/test_realtime_push_toggle.py（7 例，含「udp_port=None 不抛异常」「未连接不调 SDK」「SDK 非 0 返回码判 error」三条负例）",
+        "verified": "修复后在真机上单独调用 set_realtime_push_enabled(False) → rc=0、无崩溃（DONE_NO_CRASH，退出码 0）"
+      },
+      {
+        "layer": "厂商 SDK（未闭合）",
+        "finding": "修复上述缺陷后，**断流演练**仍在「执行器正在流式下发 + 另一个连接关主动上报」的组合下使进程 SIGSEGV（退出码 139）→ 专用断流演练未能产出证据",
+        "hypothesis": "RM-API2 1.1.7 在「关主动上报」与「另一客户端正在流式」并发时崩溃（厂商库行为，非本项目调用越界：所用符号 rm_set_realtime_push 在契约 support 名单内，属纯配置类）",
+        "next_action": "隔离实验（下一真机窗口）：① 单独连接关上报（已验证不崩）；② 执行器流式中由**同一连接**关闭上报（避免第二连接）；③ 记录厂商 stderr / core dump 供厂商侧定位"
+      }
+    ]
+  },
+  "ladder": {
+    "status": "not_executed",
+    "reason": "本轮长跑与断流演练未通过，窗口编排器按纪律不再续跑阶梯（避免在状态未澄清时继续让臂运动）",
+    "note": "joint2..joint7 的阶梯 acc/jerk 已在本日 02:38 的 S13-T3 窗口完成并入库（workcell/baselines/evidence/rm75_s13_acc_jerk.json，status=ok，18 个样本全部回原位）"
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "blocking",
+      "title": "执行层 600 s 长跑被真实 UDP 断流打断（145 s / 251 s 两次）",
+      "detail": "两次长跑均在流式执行中断流 → L4 急停生效。跟踪误差 RMS ≈ 0.003°、控制器保护停未触发，说明**关节级透传与闭环跟踪本身稳定**；断的是**反馈通道**（UDP 主动上报）",
+      "known_lead": "2026-11-19 的反馈通道专项采集（udp_stability 600 s）曾实测 24002 帧 / 断流窗口 0 / 实测周期 24.998 ms → 控制器在**无流式下发**时可稳定上报 600 s；因此差异点在「流式下发 + 反馈上报并发」的组合",
+      "next_action": "在下一真机窗口做隔离实验：① 流式下发期间采集反馈帧数与最后一帧时刻，定位断流是否由 SDK 回调线程退出或控制器侧停止上报引起；② 对比只跑反馈通道（已 600 s 通过）与流式 + 反馈的差异；③ 若确认为厂商 SDK 行为，向厂商提单并同时保留「反馈断流 → L4 停机」的真机证据（已达成）"
+    },
+    {
+      "id": "F2",
+      "severity": "blocking",
+      "title": "断流演练进程 SIGSEGV（退出码 139）",
+      "detail": "本项目侧缺陷（引用不存在的私有属性）已定位并修复 + 加守卫测试；剩余崩溃发生在「流式下发 + 另一连接关主动上报」的并发组合，指向厂商 SDK",
+      "next_action": "见 stream_loss_drill.root_causes[1].next_action"
+    },
+    {
+      "id": "F3",
+      "severity": "fixed",
+      "title": "ArmLink.set_realtime_push_enabled 引用不存在的私有属性",
+      "detail": "真机首次暴露；离线测试从未覆盖该方法（无任何用例）",
+      "fix": "改读公开属性 + 新增 7 例守卫测试"
+    },
+    {
+      "id": "F4",
+      "severity": "info",
+      "title": "执行层 600 s 长跑与 UDP 断流复现仍未达成（判据 2）",
+      "detail": "R001 notes 明写这两项「仍待完成（保留在本里程碑范围内，未降级）」；本轮已把「窗口不可用」的旧借口换成**真实原因**（反馈通道断流 + 厂商 SDK 崩溃），并给出可执行的隔离实验清单",
+      "next_action": "按 F1 / F2 的 next_action 在下一真机窗口继续；未达成前 R001 保持 active"
+    }
+  ],
+  "fk_recheck": {
+    "status": "unchanged",
+    "detail": "FK 残差未在本轮复测（S15 未执行）：raw max_pos_dev_mm=151.4599965940379、mean=130.52497715424983、max_ori_dev_deg=179.96515240614366、residual_kind=orientation_dependent（见 workcell/baselines/evidence/rm75_s11_fk_recheck.json）",
+    "note": "**V6 不得被表述为 pass**；根因闭合移交 M002-o62zc6/T03"
+  },
+  "source": "远端主机 172.16.119.199:2224 → 容器 ros_dev；脚本 scripts/rm75_window_run.py（单一入口）/ scripts/rm75_long_run.py / scripts/rm75_stream_loss_drill.py / scripts/rm75_window_gate.py",
+  "method": "只读门禁（ping + TCP + UDP 端口占用 + SDK 可加载 + 探针前置检查）→ 执行层 live 长跑（10 ms 关节级透传 + 反馈闭环）→ 断流演练（关主动上报 → 期望 200 ms 内 L4）",
+  "safety_notes": [
+    "全过程遵守「门禁不过 → 绝不运动」：门禁失败时编排器一次都不会调用运动 runner",
+    "长跑为单关节 ±0.2° 微动（delta_deg=0.2）、10 ms 栅格、每圈回原位；控制器保护停未触发（protection_stop=false）",
+    "断流演练中 L4 急停由执行层自动下发（rm_set_arm_stop），随后由人工在示教器复位",
+    "单连接纪律：一轮窗口建一次链、全程复用（控制器客户端上限 ≈5，第 6 次起建链失败）"
+  ],
+  "honesty": {
+    "no_fabricated_numbers": "本工件内所有数字均逐字取自真实运行报告（scripts/rm75_long_run.py 的输出与真机 stdout）；未用离线结果冒充真机结论",
+    "long_run_not_achieved": "600 s 时长判据**未达成**（145 s / 251 s 两次被打断）",
+    "drill_crashed": "断流演练**未产出**通过证据（进程 SIGSEGV），如实记录为 error",
+    "ladder_not_executed": "阶梯本轮未续跑（窗口编排器按纪律中止），但 joint2..7 阶梯 acc/jerk 已在 S13-T3 完成入库",
+    "fk_not_retested": "FK 残差本轮未复测，数值沿用 S11 工件（未改动）"
+  },
+  "next_action": "在下一真机窗口（远端主机 ros_dev）按 F1 / F2 的隔离实验清单执行：① 流式下发期间的反馈帧计数与断流时刻定位；② 同一连接关闭主动上报的断流演练；③ 若仍崩溃，保留 core dump 并向厂商反馈。判据 2 的两项（600 s 长跑、断流 200 ms 内 L4 专用演练）在达成前保持 R001 active。",
+  "artifacts": {
+    "long_run_reports": "build/reports/validation/long_run_600s.json（运行时目录，gitignore）",
+    "gate_report": "build/reports/validation/window_gate.json（运行时目录，gitignore）",
+    "window_outcome": "workcell/baselines/evidence/rm75_s10_window_outcome.json（结案工件，blocked）"
+  }
+}

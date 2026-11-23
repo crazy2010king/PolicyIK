@@ -6,6 +6,11 @@ import yaml
 
 from . import paths
 from .selfkin import UrdfModel
+from .vendor_env import VendorUnavailable, ensure_libstdcxx
+
+# 厂商 nanobind wheel 需要 GLIBCXX_3.4.31+：先预加载仓库自带的
+# .deps/libstdcxx（只读引用），再 import 厂商库。
+ensure_libstdcxx()
 
 
 def _locator():
@@ -26,8 +31,28 @@ class Model(object):
         self.urdf_path = paths.urdf_path(self.ws)
         self.srdf_path = paths.srdf_path(self.ws)
         self.urdf = UrdfModel(self.urdf_path)
-        from tesseract_robotics.planning import Robot
-        self.robot = Robot.from_files(self.urdf_path, self.srdf_path, _locator())
+        try:
+            from tesseract_robotics.planning import Robot
+        except ImportError as exc:
+            # 厂商规划内核不可用（如裸环境缺 GLIBCXX_3.4.31+）：
+            # 抛结构化异常，交由 CLI 走「NEEDS_HUMAN + 可粘贴 next_action」，
+            # 绝不吞异常、更不伪造模型能力。
+            raise VendorUnavailable(
+                "厂商规划内核不可用：%s（需要 GLIBCXX_3.4.31+ 的 libstdc++，"
+                "仓库自带 .deps/libstdcxx 可用）" % exc) from exc
+        try:
+            self.robot = Robot.from_files(self.urdf_path, self.srdf_path, _locator())
+        except Exception as exc:
+            # 厂商内核能 import，但模型加载失败（最常见：新 worktree 还没跑
+            # `rmctl init` 物化 build/model 的**绝对路径** URDF，Tesseract 的
+            # 资源定位器不认源码里的相对 mesh 路径）。
+            # 这里**不抛裸异常**：统一转成 VendorUnavailable，让 CLI 走
+            # 「退出码 3 + reason + 可粘贴 next_action」的诚实降级路径，
+            # 绝不伪造模型/执行能力。
+            raise VendorUnavailable(
+                "厂商规划内核加载模型失败：%s（若提示 mesh/URDF 解析失败，"
+                "先执行 `python3 -m rmctl init` 物化 build/model 绝对路径模型；"
+                "若提示 GLIBCXX，先 `source scripts/rmenv.sh`）" % exc) from exc
         self.joint_names = list(self.robot.get_joint_names(group))
         self.link_names = list(self.robot.get_link_names())
         self.limits = self._load_limits()

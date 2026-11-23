@@ -43,6 +43,9 @@ build/
 venv/
 target/
 vendor/
+# RM-API2 厂商头文件 + PROVENANCE（ABI 真相校验需要，许可见 PROVENANCE.md）
+!dualarm_ws/src/rm_hw_bridge/vendor/
+!dualarm_ws/src/rm_hw_bridge/vendor/**
 *.log
 coverage/
 .cache/

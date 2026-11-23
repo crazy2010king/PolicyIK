@@ -12,12 +12,32 @@ def _find_src(ws):
     return None
 
 
+def _is_repo_root(d):
+    """仓库根布局：同时含 dualarm_ws/src/rm_description 与 workcell/。
+
+    工位（workcell/）与 build/model 都挂在仓库根，不在 dualarm_ws/ 下——
+    路径解析必须认这一层，否则 workcell_dir() 会落到 dualarm_ws/workcell。
+    """
+    return (os.path.isdir(os.path.join(d, "dualarm_ws", "src", "rm_description"))
+            and os.path.isdir(os.path.join(d, "workcell")))
+
+
 def workspace_root(start=None):
     """向上查找工作区根；也可用 RM_WS 环境变量直接指定。"""
     env = os.environ.get(ENV_WS)
     if env and _find_src(env):
         return os.path.abspath(env)
     here = os.path.abspath(start or os.path.dirname(__file__))
+    # 优先仓库根（workcell/ 与 build/ 都在这一层）
+    cur = here
+    while True:
+        if _is_repo_root(cur):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    # 回退：把 dualarm_ws/ 本身当作工作区根（旧布局）
     cur = here
     while True:
         if _find_src(cur):
@@ -67,3 +87,8 @@ def joint_limits_path(ws=None):
 
 def workcell_dir(ws=None):
     return os.path.join(ws or workspace_root(), "workcell")
+
+
+def baselines_dir(ws=None):
+    """四类真机基线目录：<ws>/workcell/baselines（git 跟踪，模式同 workcell_dir）。"""
+    return os.path.join(workcell_dir(ws), "baselines")

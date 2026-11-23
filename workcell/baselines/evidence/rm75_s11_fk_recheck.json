@@ -1,0 +1,508 @@
+{
+  "schema": "rmctl.rm75_s11_fk_recheck/1",
+  "status": "ok",
+  "arm": "left",
+  "endpoint": {
+    "ip": "192.168.1.18",
+    "port": 8080,
+    "udp_ports": [
+      8091,
+      8092
+    ],
+    "note": "8092 属右臂，本轮未占用；右臂 192.168.1.19 在远端同样 No route to host"
+  },
+  "executed_on": {
+    "host": "172.16.119.199",
+    "ssh_port": 2224,
+    "user": "zy",
+    "container": "ros_dev",
+    "worktree": ".gsd-worktrees/M001-3kzz40",
+    "remote_repo_root": "/home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi",
+    "why": "本机不通 ≠ 真机不可达：控制臂 192.168.1.18 只在远端主机所在网段可达",
+    "command_template": "ssh -p 2224 zy@172.16.119.199 'docker exec -i ros_dev bash -lc \"cd <worktree> && source scripts/rmenv.sh && export RM_API2_LIB=$PWD/../../.deps/rm_api2/libapi_c.so && python3 ...\"'",
+    "sdk_lib": "sdk: /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.deps/rm_api2/libapi_c.so"
+  },
+  "generated_at": "2026-11-20T15:51:10",
+  "gate": {
+    "schema": "rmctl.rm75_window_gate/1",
+    "status": "ok",
+    "reason": "全部门禁通过（可进入真机窗口）",
+    "checks": [
+      {
+        "name": "ip_reachable",
+        "ok": true,
+        "detail": "3 packets transmitted, 3 received, 0% packet loss, time 2027ms / rtt min/avg/max/mdev = 0.428/0.443/0.471/0.019 ms",
+        "evidence": {
+          "command": "ping -c 3 -W 1 192.168.1.18"
+        }
+      },
+      {
+        "name": "tcp_reachable",
+        "ok": true,
+        "detail": "TCP 192.168.1.18:8080 可连接",
+        "evidence": {
+          "command": "nc -vz 192.168.1.18 8080"
+        }
+      },
+      {
+        "name": "udp_ports_free",
+        "ok": true,
+        "detail": "8091 本地 UDP 8091 空闲；8092 本地 UDP 8092 空闲",
+        "evidence": {
+          "command": "ss -ulnp | grep -E '8091|8092'",
+          "ports": [
+            {
+              "port": 8091,
+              "ok": true,
+              "detail": "本地 UDP 8091 空闲"
+            },
+            {
+              "port": 8092,
+              "ok": true,
+              "detail": "本地 UDP 8092 空闲"
+            }
+          ]
+        }
+      },
+      {
+        "name": "sdk_loadable",
+        "ok": true,
+        "detail": "rm_hw_bridge 可导入且关键符号齐全",
+        "evidence": {
+          "command": "python3 -c 'from rm_hw_bridge import bridge'"
+        }
+      },
+      {
+        "name": "probe_precheck",
+        "ok": true,
+        "detail": "探针前置检查 status=ok",
+        "evidence": {
+          "command": "python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --port 8080 --udp-port 8091 --precheck-only",
+          "report_status": "ok",
+          "failed_preflight_checks": []
+        }
+      }
+    ],
+    "attempted_actions": [
+      {
+        "action": "icmp_ping",
+        "command": "ping -c 3 -W 1 192.168.1.18",
+        "result": "3 packets transmitted, 3 received, 0% packet loss, time 2027ms / rtt min/avg/max/mdev = 0.428/0.443/0.471/0.019 ms",
+        "ok": true
+      },
+      {
+        "action": "tcp_connect",
+        "command": "nc -vz 192.168.1.18 8080",
+        "result": "TCP 192.168.1.18:8080 可连接",
+        "ok": true
+      },
+      {
+        "action": "udp_port_check",
+        "command": "ss -ulnp | grep -E '8091|8092'",
+        "result": "8091 本地 UDP 8091 空闲；8092 本地 UDP 8092 空闲",
+        "ok": true
+      },
+      {
+        "action": "sdk_import",
+        "command": "python3 -c 'from rm_hw_bridge import bridge'",
+        "result": "rm_hw_bridge 可导入且关键符号齐全",
+        "ok": true
+      },
+      {
+        "action": "probe_precheck",
+        "command": "python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --port 8080 --udp-port 8091 --precheck-only",
+        "result": "探针前置检查 status=ok",
+        "ok": true
+      }
+    ],
+    "next_action": [
+      "在示教器上重新使能 7 轴（joint_en_flag 全 1）",
+      "在示教器上清错误码复位（arm_err / joint_err_code 全 0）",
+      "ss -ulnp | grep -E '8091|8092'   # 确认本地 UDP 端口未被占用",
+      "python3 scripts/rm75_window_gate.py --ip 192.168.1.18 --out build/reports/validation/window_gate.json"
+    ],
+    "honesty": "本工件只记录只读门禁结果；未执行任何运动指令；不得据此声称真机长跑或断流已达标。",
+    "exit_code": 0,
+    "artifact_path": null,
+    "note": "门禁在远端主机执行；首次执行时 probe_precheck 因 RM_API2_LIB 未指向 <repo>/.deps/rm_api2/libapi_c.so 而 blocked，显式导出该变量后五项全通过。"
+  },
+  "snapshot": {
+    "status": "ok",
+    "reason": "状态快照采集成功（7 个关节，实时上报 1 帧）",
+    "joint_en_flag": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "arm_err": [
+      0
+    ],
+    "joint_err_code": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "controller_trajectory_type_name": "RM_NO_PLANNING_E",
+    "arm_current_status_name": "RM_IDLE_E",
+    "joint_deg": [
+      20.375999450683594,
+      42.058998107910156,
+      19.65399932861328,
+      -22.57200050354004,
+      -1.2259999513626099,
+      5.284999847412109,
+      -200.5330047607422
+    ],
+    "controller_pose": {
+      "position": {
+        "x": 0.31947100162506104,
+        "y": -0.06783299893140793,
+        "z": 0.7474219799041748,
+        "unit": "m"
+      },
+      "quaternion": {
+        "w": 0.9779767990112305,
+        "x": 0.04850395768880844,
+        "y": 0.15790313482284546,
+        "z": 0.12757495045661926
+      },
+      "euler": {
+        "rx": 0.1420000046491623,
+        "ry": 0.3009999990463257,
+        "rz": 0.2809999883174896,
+        "unit": "rad"
+      },
+      "scope": "cross_check_only"
+    },
+    "controller_pose_scope": "cross_check_only",
+    "verdict": "7 轴全部使能、臂级/关节级错误码全 0、控制器状态机 RM_NO_PLANNING_E + RM_IDLE_E —— 只读快照全部满足",
+    "artifact_path": "build/reports/validation/s11_connect_snapshot.json"
+  },
+  "fk_recheck": {
+    "method": "rmctl.hwcollect fk_cross（自研 FK vs 控制器位姿交叉校验，S11 有界多样位形采样）",
+    "command": "python3 -m rmctl.hwcollect fk_cross --arm left --ip 192.168.1.18 --samples 8 --fk-amplitude-deg 5 --seed 20261120 --out build/reports/validation/s11_fk_cross",
+    "started_at": "2026-11-20T15:47:09+08:00",
+    "finished_at": "2026-11-20T15:47:19+08:00",
+    "samples": 8,
+    "distinct_configs": 8,
+    "sampling": {
+      "source": "hardware",
+      "strategy": "bounded_single_joint_offset（单关节依次小幅偏转，测完回原位）",
+      "amplitude_deg": 5.0,
+      "samples": 8,
+      "distinct_configs": 8,
+      "joints": [
+        "joint1",
+        "joint2",
+        "joint3",
+        "joint4",
+        "joint5",
+        "joint6",
+        "joint7"
+      ],
+      "return_to_origin": true,
+      "speed_pct": 10,
+      "plan": [
+        {
+          "index": 0,
+          "joint": "joint1",
+          "delta_deg": -3.2996705046214565
+        },
+        {
+          "index": 1,
+          "joint": "joint2",
+          "delta_deg": -4.180188348553223
+        },
+        {
+          "index": 2,
+          "joint": "joint3",
+          "delta_deg": -3.8231677377896656
+        },
+        {
+          "index": 3,
+          "joint": "joint4",
+          "delta_deg": -3.7982966017545934
+        },
+        {
+          "index": 4,
+          "joint": "joint5",
+          "delta_deg": 1.222000002861023
+        },
+        {
+          "index": 5,
+          "joint": "joint6",
+          "delta_deg": 3.814595999284574
+        },
+        {
+          "index": 6,
+          "joint": "joint7",
+          "delta_deg": -3.4213023841177517
+        },
+        {
+          "index": 7,
+          "joint": "joint1",
+          "delta_deg": -3.3529975736300024
+        }
+      ]
+    },
+    "raw": {
+      "max_pos_dev_mm": 151.4599965940379,
+      "mean_pos_dev_mm": 130.52497715424983,
+      "max_ori_dev_deg": 179.96515240614366,
+      "ok": false
+    },
+    "corrected": {
+      "max_pos_dev_mm": 151.4599965940379,
+      "mean_pos_dev_mm": 130.52497715424983,
+      "max_ori_dev_deg": 179.96515240614366,
+      "ok": false
+    },
+    "residual_kind": "orientation_dependent",
+    "residual_kind_corrected": "orientation_dependent",
+    "consistency_base": 0.8386817143716787,
+    "consistency_tip": 0.8408004529072384,
+    "diversity": {
+      "samples": 8,
+      "distinct_configs": 8,
+      "position_spread_mm": 52.05566577537301,
+      "orientation_spread_deg": 7.774966324761061,
+      "sufficient": true,
+      "reasons": [],
+      "spread_computed_on": 8,
+      "requirements": {
+        "min_distinct_configs": 3,
+        "min_position_spread_mm": 1.0,
+        "min_orientation_spread_deg": 0.5,
+        "spread_sample_cap": 512
+      }
+    },
+    "offset_estimates": {
+      "tip_frame": {
+        "frame": "tip_link7",
+        "mean_mm": [
+          -0.0036590921240668983,
+          127.22593788908573,
+          -5.566015846153209
+        ],
+        "std_mm": [
+          31.33712949032238,
+          18.561737290709274,
+          4.155276768669727
+        ],
+        "magnitude_mm": 127.34763373359586,
+        "uncertainty_mm": 36.65815190331867,
+        "suggested_offset": {
+          "x": -3.6590921240668983e-06,
+          "y": 0.12722593788908573,
+          "z": -0.005566015846153209,
+          "frame": "tip_link7"
+        },
+        "note": "修正量 = controller - fk 的系内均值（可直接写入 calibration.tcp）；仅估计平移分量，姿态偏置需另做姿态标定"
+      },
+      "base_frame": {
+        "frame": "base",
+        "mean_mm": [
+          28.41349248802827,
+          -123.24710419087549,
+          -11.773478102532941
+        ],
+        "std_mm": [
+          29.408479626478687,
+          20.58809977862481,
+          12.18124609278042
+        ],
+        "magnitude_mm": 127.02672960221632,
+        "uncertainty_mm": 37.90925062314607,
+        "suggested_offset": {
+          "x": 0.028413492488028273,
+          "y": -0.12324710419087549,
+          "z": -0.011773478102532941,
+          "frame": "base"
+        },
+        "note": "修正量 = controller - fk 的系内均值（可直接写入 calibration.base_to_base）；仅估计平移分量，姿态偏置需另做姿态标定"
+      }
+    },
+    "attribution": {
+      "pattern": "systematic_translation",
+      "consistency": 0.8386817143716787,
+      "consistency_base": 0.8386817143716787,
+      "consistency_tip": 0.8408004529072384,
+      "residual_kind": "orientation_dependent",
+      "mean_vector_mm": [
+        -28.41349248802827,
+        123.24710419087549,
+        11.773478102532941
+      ],
+      "mean_dev_mm": 130.52497715424983,
+      "max_dev_mm": 151.4599965940379,
+      "diversity": {
+        "samples": 8,
+        "distinct_configs": 8,
+        "position_spread_mm": 52.05566577537301,
+        "orientation_spread_deg": 7.774966324761061,
+        "sufficient": true,
+        "reasons": [],
+        "spread_computed_on": 8,
+        "requirements": {
+          "min_distinct_configs": 3,
+          "min_position_spread_mm": 1.0,
+          "min_orientation_spread_deg": 0.5,
+          "spread_sample_cap": 512
+        }
+      },
+      "offset_estimates": {
+        "tip_frame": {
+          "frame": "tip_link7",
+          "mean_mm": [
+            -0.0036590921240668983,
+            127.22593788908573,
+            -5.566015846153209
+          ],
+          "std_mm": [
+            31.33712949032238,
+            18.561737290709274,
+            4.155276768669727
+          ],
+          "magnitude_mm": 127.34763373359586,
+          "uncertainty_mm": 36.65815190331867,
+          "suggested_offset": {
+            "x": -3.6590921240668983e-06,
+            "y": 0.12722593788908573,
+            "z": -0.005566015846153209,
+            "frame": "tip_link7"
+          },
+          "note": "修正量 = controller - fk 的系内均值（可直接写入 calibration.tcp）；仅估计平移分量，姿态偏置需另做姿态标定"
+        },
+        "base_frame": {
+          "frame": "base",
+          "mean_mm": [
+            28.41349248802827,
+            -123.24710419087549,
+            -11.773478102532941
+          ],
+          "std_mm": [
+            29.408479626478687,
+            20.58809977862481,
+            12.18124609278042
+          ],
+          "magnitude_mm": 127.02672960221632,
+          "uncertainty_mm": 37.90925062314607,
+          "suggested_offset": {
+            "x": 0.028413492488028273,
+            "y": -0.12324710419087549,
+            "z": -0.011773478102532941,
+            "frame": "base"
+          },
+          "note": "修正量 = controller - fk 的系内均值（可直接写入 calibration.base_to_base）；仅估计平移分量，姿态偏置需另做姿态标定"
+        }
+      },
+      "hints": [
+        "偏差方向高度一致（consistency=0.84）：疑似**整体平移**，典型原因是零位漂移",
+        "按设计 §5.3 顺序排查：零位 → 工具系 → MDH 偏置",
+        "residual_kind=orientation_dependent：偏差随位形变化（consistency_base=0.84 / consistency_tip=0.84）→ 查零位与 MDH 偏置",
+        "base 与 tip 系一致性同时很高：位形变化不足以区分坐标系，结论只能取 orientation_dependent（不写任何偏置）"
+      ],
+      "next_checks": [
+        "zero_offset",
+        "tool_frame",
+        "mdh_offset"
+      ],
+      "next_check_detail": [
+        "查零位：示教器凹槽对齐照片、joint1-7 zero_deg 读数、换电池/拆装/冲击/固件升级后是否漂移",
+        "查工具系：TCP/法兰偏置（workcell calibration.tcp 目前为 null，未标定前工具系误差必然存在）",
+        "查 MDH 偏置：官方 MDH 表 a/α/θ 偏置与清洗 URDF 逐项核对"
+      ]
+    },
+    "dev_vectors_mm": [
+      [
+        -11.119845502302494,
+        101.09878551725869,
+        4.60180668890775
+      ],
+      [
+        -91.74238919470434,
+        109.45790241655479,
+        38.005196899965064
+      ],
+      [
+        -25.54529551374496,
+        148.91431367899162,
+        10.587522226484513
+      ],
+      [
+        -51.123900884274875,
+        107.40801598299029,
+        21.178652879226824
+      ],
+      [
+        -17.09251328953082,
+        136.07767837075212,
+        7.090334487081296
+      ],
+      [
+        -2.7683654350079134,
+        146.67851989536754,
+        1.1520229543033889
+      ],
+      [
+        -16.841545059274598,
+        135.65686154356524,
+        6.976957940530659
+      ],
+      [
+        -11.074085025386148,
+        100.6847561215236,
+        4.595330743764059
+      ]
+    ],
+    "dev_spread_mm": 69.91991357778791,
+    "dev_interpretation": "偏差随位形变化：自研模型或零位需要复核（不是单纯的工具偏置）",
+    "calibration_applied": {
+      "tcp": null,
+      "base_to_base": null,
+      "source": "/home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/workcell/rm_workcell.yaml",
+      "note": "工位标定未标定（tcp/base_to_base 皆 null）→ raw 与 corrected 同值"
+    },
+    "within_tolerance": false,
+    "tolerances": {
+      "pos_mm": 1.0,
+      "ori_deg": 0.05
+    },
+    "artifact_path": "build/reports/validation/s11_fk_cross/fk_cross.left.json"
+  },
+  "branch_disposition": {
+    "rule": "residual_kind == orientation_dependent → 不写任何偏置",
+    "residual_kind": "orientation_dependent",
+    "calibration_written": false,
+    "calibration_tcp_written": false,
+    "calibration_base_to_base_written": false,
+    "rationale": "按 S11-T4 分支处置规则，只有 tool_frame_offset 才允许写 calibration.tcp 并复跑自证；orientation_dependent 一律不写偏置，只记录实测并给下一步命令。",
+    "why_not_tool_frame_offset": "偏差方向在 base 系与 tip 系的一致性同时很高（consistency_base=0.839 / consistency_tip=0.841）→ 说明 5° 单关节小扰动下的位形变化不足以区分坐标系；此时无法断言是法兰→工具偏置，写 tcp 会把「坐标系未判定」误记成「已标定」。"
+  },
+  "observed_findings": [
+    "位置残差：raw max_pos_dev_mm=151.460 / mean_pos_dev_mm=130.525（阈值 1.0 mm），8/8 样本越界。",
+    "姿态残差：raw max_ori_dev_deg=179.965（阈值 0.05°），且各样本姿态角差几乎恒定在约 180°（实测 179.965°），说明是基准/坐标系不一致而不是随机噪声。",
+    "位置残差向量随位形变化（dev_spread_mm=69.920，mean_dev_norm=127.027 mm）→ 不是常量刚体平移。",
+    "自研 FK 与控制器位姿差约 130 mm + 约 180°，量级远超标定偏置（mm 级）能解释的范围 → 不能靠 tcp/base_to_base 偏置解释，属 URDF 清洗 / 零位 / 控制器位姿参考系问题。",
+    "离线复核（未改代码）：把控制器四元数按 (w,x,y,z) 读，姿态角差由约 180° 变到约 137° 且随位形变化；把 FK 位置绕 base 轴做 180° 旋转后误差反而放大到 600~1600 mm → 排除「分量顺序读错」与「常量 180° 基座安装方向不匹配」两种解释。"
+  ],
+  "conclusion": "远端主机真机窗口 FK 复测已实测完成（8 组有界多样位形，幅度 5°，单关节依次，测完回原位，速度 10%）：raw max_pos_dev_mm=151.460、max_ori_dev_deg=179.965、residual_kind=orientation_dependent（base/tip 系一致性同时偏高 → 位形变化不足以区分坐标系）。按分支处置规则不写任何标定偏置（calibration.tcp 与 calibration.base_to_base 仍为 null）。残差量级（约 130 mm / 约 180°）远超 mm 级偏置可解释范围，指向 URDF 清洗 / 零位 / 控制器位姿参考系口径问题，而非法兰→工具偏置；该结论需移交 S11-T5 与 S13。",
+  "next_action": [
+    "在远端主机执行：python3 -m rmctl.hwcollect fk_cross --arm left --ip 192.168.1.18 --samples 8 --fk-amplitude-deg 5 --seed 20261120 --out build/reports/validation/s11_fk_cross",
+    "查零位：示教器凹槽对齐照片、joint1..7 零位读数（换电池/拆装/冲击/固件升级后是否漂移）",
+    "查 MDH：官方 MDH 表 a/α/θ 偏置与清洗 URDF（build/model/rm75_clean.urdf）逐项核对",
+    "确认控制器位姿参考系：控制器上报位姿属于 base / work / tool 哪个系、法兰 z 轴朝外还是朝内，与 URDF base_link 定义对齐",
+    "扩大位形多样性（仍保持幅度 ≤5°、单关节依次）：覆盖更多关节组合，用于区分 base 系偏置与 tip 系偏置",
+    "右臂 192.168.1.19 在远端为 No route to host（右臂不存在）→ 本轮不做右臂 FK 复测"
+  ],
+  "honesty": "本工件记录远端主机真机窗口的真实实测结果：门禁五项全通过、只读快照全部满足、8 组有界多样位形 FK 交叉校验已实跑；raw/corrected 数值均来自实测报告，未做任何伪造或占位。corrected 与 raw 同值，是因为工位标定未标定（tcp/base_to_base 皆 null），且按分支规则本次不写偏置。",
+  "exit_code": 0
+}

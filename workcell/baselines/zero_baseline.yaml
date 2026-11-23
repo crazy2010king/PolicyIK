@@ -1,0 +1,149 @@
+# 真机零位基线（设计 §5.8 零位治理；归档内容：固件版本 + 示教器截图 + 凹槽对齐照片 + 修正后 URDF 零位 + FK 一致性复测）
+# 约定：
+#   - 关节读数单位为「度」（SDK 返回度，内部换算 rad 只在代码里做一次）。
+#   - 未实测项一律写 null，禁止填占位数值；实测后把 status 改为 measured 并补齐证据。
+#   - 控制器位姿来自厂商运动学输出，仅用于 FK 交叉校验，不得作为规划真值（设计 §1.4 / R003）。
+kind: zero_baseline
+schema_version: 1
+version: 6                  # 基线修订号（单调递增）
+status: blocked            # pending / measured / blocked
+captured_at: null           # 采集时间（ISO8601）；未实测写 null
+arm: left                   # 本基线所属臂（left / right）——零位按臂独立
+firmware: null              # 控制器固件版本
+teachpendant_version: null  # 示教器版本
+blocked:
+  reason: >-
+    2026-11-13 真机窗口不可达（ping 100% 丢包，TCP 8080 连接超时），零位读数与 FK 一致性复测未能采集；
+    2026-11-19 连通性已恢复（远端主机 ping 192.168.1.18 正常、TCP 8080 可连、RM-API2 握手成功、
+    状态快照可读、最小动作验证通过），但**本基线要求的采集项一个都还没做**；
+    2026-11-20 **FK 一致性复测已在远端主机真机窗口完成**（工件
+    workcell/baselines/evidence/rm75_s11_fk_recheck.json，status=ok）：8 组**有界多样位形**
+    （单关节依次、幅度 ≤5°、每步测完回原位、速度 10%），raw max_pos_dev_mm=151.460、
+    max_ori_dev_deg=179.965、residual_kind=orientation_dependent（base/tip 系一致性同时偏高
+    → 位形变化不足以区分坐标系）→ 按分支规则**不写任何标定偏置**（calibration.tcp 与
+    calibration.base_to_base 仍为 null）。残差量级（约 130 mm / 约 180°）远超 mm 级偏置可解释范围，
+    指向 URDF 清洗 / 零位 / 控制器位姿参考系口径，而**不是**法兰→工具偏置。
+    即便如此，本基线的 status 是**全表口径**：控制器固件版本、示教器版本、每关节零位读数
+    （joint1..joint7 zero_deg 全部 null）、凹槽对齐照片（groove_photos 为空）**仍未采集**，
+    因此 status 保持 blocked —— **不得**据此推断零位，也**不得**因 FK 复测有实测值就把本表标 measured。
+    **2026-11-23（S13）口径更新**：控制器/软件版本已能经 SDK 只读读到（`rm_get_arm_software_info`，
+    见 partial_observations.software_versions），但**本表的 `firmware` / `teachpendant_version` /
+    每关节 `zero_deg` / `groove_photos` 一律保持 null** —— 本表是全表口径（零位读数与照片仍未采集，
+    示教器版本仍需人工读屏），版本读数只作观测归档，不得当成零位基线值。
+  attempted_actions:
+    - "门禁1 SDK 到位：RM-API2 1.1.7 已就位（.deps/rm_api2/libapi_c.so，rm_api_version() 实际返回 b'1.1.7'）"
+    - "门禁2 nm -D 复核：11 个白名单符号全部导出（rm_init / rm_create_robot_arm / rm_set_realtime_push / rm_get_joint_degree / rm_get_current_arm_state / rm_get_arm_all_state / rm_movej / rm_set_arm_stop / rm_set_arm_slow_stop / rm_set_arm_pause / rm_set_arm_continue）"
+    - "门禁3 网络连通（2026-11-13）：ping 192.168.1.18 与 192.168.1.19 均 100% 丢包；/dev/tcp 192.168.1.18/8080 连接超时"
+    - "门禁4 UDP 端口：ss -ulnp 未见 8091/8092 占用（本机侧无冲突，非阻塞原因）"
+    - "门禁5 环境可导入：rmctl.hwcollect 正常导入并成功装载 SDK（SDK 不再是阻塞点）"
+    - "真机路径实跑：zero_capture / fk_cross 落盘 status=error，证据 rm_get_joint_degree 返回码 -1"
+    - "2026-11-19 复测（远端主机）：连通性恢复，rmctl connect 读到 7 轴关节角；rm75_safe_probe 最小动作（0.3°/去程回程）通过 —— 但零位照片、固件/示教器版本**未执行**"
+    - "2026-11-19 真机实测：FK 一致性复测（rmctl.hwcollect fk_cross，20 组位形）→ 最大位置偏差 75.0314 mm（阈值 1 mm）、归因 systematic_translation（偏差方向一致 = 整体平移）、姿态项控制器未提供（不参与判定）；**该次 20 组其实是同一位形重复**（dev_spread_mm=0.0468），归因不成立，已被 S11 作废；见 partial_observations"
+    - "2026-11-20 远端主机真机窗口（172.16.119.199:2224 → 容器 ros_dev）：只读门禁五项全通过（ping 0% 丢包 rtt 0.44 ms、TCP 8080 可连、UDP 8091/8092 空闲、SDK 可导入、探针前置检查 ok）；只读快照 7 轴全部使能、arm_err/joint_err_code 全 0、控制器 RM_NO_PLANNING_E + RM_IDLE_E"
+    - "2026-11-20 远端真机实测（FK 交叉校验复测）：rmctl.hwcollect fk_cross --arm left --samples 8 --fk-amplitude-deg 5 --seed 20261120 → 8/8 互异位形，raw max_pos_dev_mm=151.460 / mean=130.525、max_ori_dev_deg=179.965、residual_kind=orientation_dependent、consistency_base=0.839 / consistency_tip=0.841 → **不写任何标定偏置**；工件 workcell/baselines/evidence/rm75_s11_fk_recheck.json"
+    - "2026-11-20 未做：控制器固件版本读取（rm_get_arm_software_version 不在 rm_hw_bridge 符号白名单内，无法经 SDK 读取）、示教器版本现场读数、示教器受控流程凹槽对齐与照片取证、每关节 zero_deg 读数"
+    - "2026-11-23（S13）版本读数路径打通：`rm_get_arm_software_info` 已进 rm_hw_bridge support 名单（21 → 22，core 仍 22）→ 远端主机只读实测读到 ctrl_version=V1.7.1-f95e896 / plan_version=V1.7.1-85f9432 / algorithm_version=1.5.5-c0d52d18 / product_version=RM75-BI（工件 workcell/baselines/evidence/rm75_s13_versions_connectivity.json，status=ok，零运动）"
+    - "2026-11-23（S13）仍未做：示教器版本现场读数、示教器受控流程凹槽对齐与照片取证（groove_photos）、每关节 zero_deg 读数 → 本表 `firmware` / `teachpendant_version` / `zero_deg` / `groove_photos` 保持 null，status 保持 blocked"
+  next_action: >-
+    按 docs/真机基线与实测限值归档说明.md §3 的**远端窗口口径**执行剩余采集项：
+    示教器受控流程对齐凹槽 → 照片取证（groove_photos）→ 读取控制器固件/示教器版本 →
+    python3 -m rmctl.hwcollect zero_capture 取 joint1..joint7 零位读数 →
+    python3 -m rmctl.hwcollect fk_cross 复测（远端主机：ssh -p 2224 zy@172.16.119.199
+    'docker exec -i ros_dev bash -lc "cd <worktree> && source scripts/rmenv.sh && python3 ..."'）→
+    回填本文件并把 status 改为 measured。
+    FK 侧未闭合项（与本表并行推进）：查零位漂移、核对官方 MDH 与清洗 URDF
+    （build/model/rm75_clean.urdf）、确认控制器位姿参考系（base/work/tool，法兰 z 轴朝向）。
+joints:
+  - name: joint1
+    zero_deg: null
+    unit: deg
+    groove_photo: null      # 示教器凹槽对齐照片引用（仓库相对路径）
+  - name: joint2
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint3
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint4
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint5
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint6
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+  - name: joint7
+    zero_deg: null
+    unit: deg
+    groove_photo: null
+# 已实测但**尚未进入基线值字段**的观测（status 仍是 blocked → 值字段必须为 null）。
+partial_observations:
+  captured_at: "2026-11-20"
+  arm: left
+  note: "以下为真机实测观测，**不是**零位基线值（status=blocked 时零位值字段必须为 null）"
+  fk_recheck:
+    method: "rmctl.hwcollect fk_cross（自研 FK vs 控制器位姿交叉校验，8 组有界多样位形：单关节依次、幅度 ≤5°、每步测完回原位、速度 10%）"
+    command: "python3 -m rmctl.hwcollect fk_cross --arm left --ip 192.168.1.18 --samples 8 --fk-amplitude-deg 5 --seed 20261120 --out build/reports/validation/s11_fk_cross"
+    executed_on: "远端主机 172.16.119.199:2224（容器 ros_dev）"
+    samples: 8
+    distinct_configs: 8
+    max_pos_dev_mm: 151.4599965940379
+    mean_pos_dev_mm: 130.52497715424983
+    max_ori_dev_deg: 179.96515240614366
+    conclusion: "FAIL：最大位置偏差 151.460 mm、均值 130.525 mm（阈值 1 mm）；姿态最大偏差 179.965°（阈值 0.05°，且各样本几乎恒定 ≈180° → 基准/坐标系不一致而非随机噪声）；residual_kind=orientation_dependent"
+    residual_kind: orientation_dependent
+    consistency_base: 0.8386817143716787
+    consistency_tip: 0.8408004529072384
+    attribution_pattern: systematic_translation
+    calibration_written: false
+    evidence: "workcell/baselines/evidence/rm75_s11_fk_recheck.json（schema rmctl.rm75_s11_fk_recheck/1，status=ok）"
+    root_cause_hypothesis: "**不是**法兰→工具偏置：残差量级（约 130 mm / 约 180°）远超 mm 级标定偏置可解释范围，且 base 系与 tip 系一致性同时偏高（0.839 / 0.841）→ 5° 单关节小扰动下的位形变化不足以区分坐标系，故判 orientation_dependent；指向 URDF 清洗（build/model/rm75_clean.urdf）/ 零位漂移 / 控制器位姿参考系（base/work/tool、法兰 z 轴朝向）三类问题"
+    next_checks: ["查零位：示教器凹槽对齐照片 + joint1..7 零位读数", "查 MDH：官方 MDH 表 a/α/θ 与清洗 URDF 逐项核对", "确认控制器位姿参考系与法兰 z 轴朝向", "扩大位形多样性（幅度仍 ≤5°、单关节依次）以区分 base 系偏置与 tip 系偏置"]
+  superseded_observation:
+    captured_at: "2026-11-19"
+    method: "rmctl.hwcollect fk_cross（20 组位形）"
+    samples: 20
+    max_pos_dev_mm: 75.03142324748
+    max_ori_dev_deg: null
+    conclusion: "FAIL：最大位置偏差 75.0314 mm；归因 systematic_translation"
+    invalidation_reason: "该 20 组样本**实为同一位形重复**（dev_spread_mm=0.0468 mm），不能证明偏置性质，其归因结论已被 S11 作废；保留仅作历史记录"
+  software_versions:
+    captured_at: "2026-11-23T06:40:55+00:00"
+    source: "workcell/baselines/evidence/rm75_s13_versions_connectivity.json"
+    method: "rm_get_arm_software_info 只读读数（support 名单符号；core 仍 22）+ rm_get_robot_info；单次读数"
+    samples: 1
+    product_version: "RM75-BI"
+    ctrl_version: "V1.7.1-f95e896"
+    ctrl_build_time: "2025/09/17 21:01:26"
+    plan_version: "V1.7.1-85f9432"
+    plan_build_time: "2025/09/17 21:01:44"
+    algorithm_version: "1.5.5-c0d52d18"
+    dynamic_model_version: "2"
+    robot_controller_version: 3
+    note: "本表 `firmware` / `teachpendant_version` 字段**仍为 null** —— 本表是全表口径（每关节零位读数与凹槽照片仍未采集）；版本读数仅作观测归档，不是零位基线值"
+groove_photos: []           # 凹槽对齐照片 + 示教器截图引用列表
+fk_recheck:
+  method: "rmctl.hwcollect fk_cross（自研 FK vs 控制器位姿交叉校验，8 组有界多样位形：单关节依次、幅度 ≤5°、每步测完回原位、速度 10%）"
+  samples: 8                # 复测样本组数（8 组互异位形）
+  distinct_configs: 8       # 互异位形数（多样性门槛：distinct ≥3、位置展布 ≥1 mm、姿态展布 ≥0.5°）
+  max_pos_dev_mm: 151.4599965940379  # 自研 FK 与控制器位姿的最大位置偏差（mm，判定 < 1）
+  max_ori_dev_deg: 179.96515240614366  # 最大姿态偏差（deg，判定 < 0.05）
+  residual_kind: orientation_dependent  # 残差归因：恒定 base 平移 / 恒定 tip 偏置 / 随位形变化 / 多样性不足
+  conclusion: "FAIL：8/8 样本位置越界（max 151.460 mm / mean 130.525 mm，阈值 1 mm），姿态 max 179.965°（阈值 0.05°）；residual_kind=orientation_dependent（base/tip 系一致性同时偏高 → 位形变化不足以区分坐标系）→ 按分支规则不写任何标定偏置；残差量级指向 URDF 清洗 / 零位 / 控制器位姿参考系，而非法兰→工具偏置"
+  evidence: "workcell/baselines/evidence/rm75_s11_fk_recheck.json"
+  executed_on: "远端主机 172.16.119.199:2224（容器 ros_dev）"
+  calibration_written: false
+  controller_pose_usage: "仅用于 FK 交叉校验，不得作为规划真值"
+recalibration_triggers:     # 重标触发条件（设计 §5.8）
+  - 更换码盘电池
+  - 机械拆装
+  - 外力冲击
+  - 电源波动
+  - 控制器固件升级
+  - 基座移动

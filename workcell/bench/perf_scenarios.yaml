@@ -1,0 +1,72 @@
+# S09/T4 性能基线场景声明 —— **唯一来源**（声明式、可版本化、可 diff）
+#
+# 依据：设计文档 §6.9「性能场景集」原文：
+#   S1 单臂自由空间 100 组 / S2 笛卡尔 20 组 / S3 绕障 20 组
+#   S4 双臂共存 20 组 / S5 双臂相对约束 10 组
+#
+# 纪律：
+#   * 本文件是 S1–S5 的**唯一**声明处；Python 侧（rmctl.regression.perf_baseline）
+#     **只读**本文件，禁止在代码里另写一份场景表；
+#   * `applicable: false` 的场景必须写 `not_applicable_reason`（不生成任何假数字）；
+#   * `scenario_ids` 只能引用**已版本化的黄金场景集**
+#     （dualarm_ws/src/rmctl/tests/golden/planner_scenarios.json）里的 id；
+#   * `applicable: true` 必须给出至少一个 `scenario_ids`（防止用假数据冒充）。
+#
+# 实测数字**不在**本文件里——它们来自 S08 性能脚本产出的报告 JSON
+# （build/reports/s08_planner_perf.json），由 perf_baseline 投影成基线表。
+
+version: 1
+source: "设计文档 §6.9 性能场景集 S1–S5"
+scenario_set: "dualarm_ws/src/rmctl/tests/golden/planner_scenarios.json"
+
+suites:
+  - id: S1
+    name: 单臂自由空间
+    applicable: true
+    group_count: 100
+    goal_type: joint
+    scope: "单臂（JOINT_GROUP=rm75_arm，7 DOF）自由空间关节目标"
+    scenario_ids:
+      - joint_small_local
+      - joint_cross_zero
+    not_applicable_reason: ""
+
+  - id: S2
+    name: 笛卡尔目标
+    applicable: true
+    group_count: 20
+    goal_type: pose
+    scope: "单臂笛卡尔位姿目标（可达）"
+    scenario_ids:
+      - cartesian_reachable
+    not_applicable_reason: ""
+
+  - id: S3
+    name: 绕障
+    applicable: true
+    group_count: 20
+    goal_type: joint
+    scope: "单臂带障碍物场景（绕障）"
+    scenario_ids:
+      - obstacle_blocked_timeout
+      - obstacle_blocked_planner_gives_up
+    not_applicable_reason: ""
+    caveat: "黄金场景集里的绕障场景期望结局是「规划失败 / 服务端超时」（负例护栏），本表记录的是这些绕障请求的端到端耗时与符合期望率，不等同于「绕障成功规划」的延迟基线（黄金场景集当前没有绕障成功的场景）——不得据此宣称绕障成功路径达标。"
+
+  - id: S4
+    name: 双臂共存
+    applicable: false
+    group_count: 20
+    goal_type: joint
+    scope: "双臂同时存在并各自规划（需要双臂工位）"
+    scenario_ids: []
+    not_applicable_reason: "本里程碑为单臂（JOINT_GROUP=rm75_arm，7 DOF），双臂场景需双臂工位；单臂工位无法复现双臂共存的几何/时序条件，故本套件 not_applicable，不生成任何假数字。"
+
+  - id: S5
+    name: 双臂相对约束
+    applicable: false
+    group_count: 10
+    goal_type: joint
+    scope: "双臂相对位姿约束（需要双臂工位）"
+    scenario_ids: []
+    not_applicable_reason: "本里程碑为单臂（JOINT_GROUP=rm75_arm，7 DOF），双臂场景需双臂工位；单臂工位无法复现双臂相对约束条件，故本套件 not_applicable，不生成任何假数字。"

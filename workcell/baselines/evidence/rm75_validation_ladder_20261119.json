@@ -1,0 +1,686 @@
+{
+  "schema": "rmctl.rm75_validation_evidence/1",
+  "generated_at": "2026-11-19T10:41:09",
+  "arm": "left",
+  "endpoint": {
+    "ip": "192.168.1.18",
+    "port": 8080,
+    "udp_port": 8091
+  },
+  "status": "pass",
+  "params": {
+    "joint_index": 0,
+    "delta_deg": 0.3,
+    "speed_pct": 2,
+    "udp_duration_s": 60.0,
+    "fk_samples": 20,
+    "repeats": 30,
+    "target_deg": null,
+    "trials": 1
+  },
+  "summary": {
+    "stages": 10,
+    "passed": 9,
+    "failed": 1,
+    "blocked": 0,
+    "errored": 0,
+    "skipped": 0,
+    "sources": [
+      "/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/build/reports/validation/ladder_report.json",
+      "/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/build/reports/validation_rerun/ladder_report.json",
+      "/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/build/reports/validation_udp600/ladder_report.json",
+      "/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/build/reports/validation_v8/ladder_report.json",
+      "/mnt/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/build/reports/validation_v9/ladder_report.json"
+    ]
+  },
+  "coverage": {
+    "CC1": {
+      "criteria": "CC1",
+      "stages": [],
+      "passed_stages": [],
+      "verification_class": "-",
+      "slices": [],
+      "open": true,
+      "note": "取放循环 50 次真机 —— 需要夹爪与工艺场景（单臂阶梯只覆盖运动链路，不含夹爪）"
+    },
+    "CC2": {
+      "criteria": "CC2",
+      "stages": [
+        "V3",
+        "V5"
+      ],
+      "passed_stages": [
+        "V3",
+        "V5"
+      ],
+      "verification_class": "Operational",
+      "slices": [
+        "S03",
+        "S04"
+      ],
+      "open": false,
+      "note": ""
+    },
+    "CC3": {
+      "criteria": "CC3",
+      "stages": [],
+      "passed_stages": [],
+      "verification_class": "-",
+      "slices": [],
+      "open": true,
+      "note": "规划性能与人工 MTTR —— 规划内核需 tesseract 环境；MTTR 属现场人工指标"
+    },
+    "CC4": {
+      "criteria": "CC4",
+      "stages": [
+        "V2",
+        "V7",
+        "V8"
+      ],
+      "passed_stages": [
+        "V2",
+        "V7",
+        "V8"
+      ],
+      "verification_class": "Operational",
+      "slices": [
+        "S01",
+        "S02",
+        "S04"
+      ],
+      "open": false,
+      "note": ""
+    },
+    "CC5": {
+      "criteria": "CC5",
+      "stages": [
+        "V0",
+        "V6"
+      ],
+      "passed_stages": [
+        "V0"
+      ],
+      "verification_class": "Contract",
+      "slices": [
+        "S02",
+        "S09",
+        "S01"
+      ],
+      "open": false,
+      "note": ""
+    },
+    "CC6": {
+      "criteria": "CC6",
+      "stages": [
+        "V1",
+        "V4",
+        "V5"
+      ],
+      "passed_stages": [
+        "V1",
+        "V4",
+        "V5"
+      ],
+      "verification_class": "Integration",
+      "slices": [
+        "S02",
+        "S03",
+        "S04"
+      ],
+      "open": false,
+      "note": ""
+    },
+    "CC7": {
+      "criteria": "CC7",
+      "stages": [
+        "V9"
+      ],
+      "passed_stages": [
+        "V9"
+      ],
+      "verification_class": "Operational",
+      "slices": [
+        "S04"
+      ],
+      "open": false,
+      "note": ""
+    },
+    "CC8": {
+      "criteria": "CC8",
+      "stages": [],
+      "passed_stages": [],
+      "verification_class": "-",
+      "slices": [],
+      "open": true,
+      "note": "切片交付线 —— 由 9 个切片的 SUMMARY/ASSESSMENT 承担，不属真机证据"
+    }
+  },
+  "stages": [
+    {
+      "id": "V0",
+      "title": "契约体检",
+      "risk": "none",
+      "moves_arm": false,
+      "status": "pass",
+      "reason": "契约与符号体检通过（22 核心符号可解析、审计零违规）",
+      "duration_s": 2.794,
+      "evidence": [
+        "rmctl doctor --json 退出码 3",
+        "rm_hw_bridge.audit --repo 退出码 0：审计通过：0 项违规"
+      ],
+      "data": {
+        "doctor_exit": 3,
+        "hw_checks": {
+          "hw:sdk": {
+            "name": "hw:sdk",
+            "ok": true,
+            "detail": "RM-API2 动态库在位: /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.deps/rm_api2/libapi_c.so（契约声明版本 1.1.7）",
+            "action": "python3 -m rmctl connect --arm left --ip <ip>  # 用该 .so 连真机",
+            "level": "INFO"
+          },
+          "hw:symbols": {
+            "name": "hw:symbols",
+            "ok": true,
+            "detail": "22 核心符号全部可解析（/home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.deps/rm_api2/libapi_c.so）；支持层 21/21 可解析",
+            "action": "python3 -m rmctl connect --arm left --ip <ip>  # 符号齐备，可直接连真机",
+            "level": "INFO"
+          },
+          "hw:contract": {
+            "name": "hw:contract",
+            "ok": true,
+            "detail": "白/黑名单静态审计零违规（扫描 158 个 .py）",
+            "action": "python3 -m rm_hw_bridge.audit --repo  # 复核（退出码 0 = 零违规）",
+            "level": "INFO"
+          },
+          "hw:limits_source": {
+            "name": "hw:limits_source",
+            "ok": false,
+            "detail": "限值默认来源 status=blocked source=measured_limits.yaml (status=blocked, 未实测)（实测限值基线 status=blocked（不是 measured）：基线未实测，不得用占位值下发）",
+            "action": "python3 dualarm_ws/src/rm_description/scripts/apply_measured_limits.py --dry-run  # 真机窗口回填 measured_limits.yaml 后把 status 改为 measured",
+            "level": "INFO"
+          },
+          "hw:gripper": {
+            "name": "hw:gripper",
+            "ok": false,
+            "detail": "夹爪配置齐备（/home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/workcell/rm_workcell.yaml），但标定系数未回填: position_mm_per_unit, force_scale, force_threshold, grasp_position_window（判定层据此走 needs_param，属预期行为，不阻塞）",
+            "action": "在真机窗口回填标定系数（position_mm_per_unit, force_scale, force_threshold, grasp_position_window）：编辑 workcell/rm_workcell.yaml::gripper 的 position_mm_per_unit, force_scale, force_threshold, grasp_position_window",
+            "level": "INFO"
+          }
+        },
+        "audit_exit": 0,
+        "doctor_status": "blocked"
+      },
+      "runs": 1
+    },
+    {
+      "id": "V1",
+      "title": "连接与状态快照",
+      "risk": "none",
+      "moves_arm": false,
+      "status": "pass",
+      "reason": "连接成功，前置检查 7/7 通过，控制器 RM_NO_PLANNING_E",
+      "duration_s": 0.586,
+      "evidence": [
+        "snapshot: 读到 7 个关节角 / 控制器 RM_NO_PLANNING_E",
+        "preflight: 前置检查 7/7 通过",
+        "motion: precheck-only：只读检查通过，**未发出任何运动指令**"
+      ],
+      "data": {
+        "joint_deg": [
+          0.32600000500679016,
+          42.11600112915039,
+          19.476999282836914,
+          -22.663000106811523,
+          -1.2230000495910645,
+          5.307000160217285,
+          -200.5330047607422
+        ],
+        "udp_frames": 8,
+        "controller_type": "RM_NO_PLANNING_E",
+        "arm_state": "RM_STOP_E"
+      },
+      "runs": 1
+    },
+    {
+      "id": "V2",
+      "title": "UDP 上报质量",
+      "risk": "none",
+      "moves_arm": false,
+      "status": "pass",
+      "reason": "UDP 上报 24002 帧（到达率 20.0%），实测周期 24.998 ms（配置 5 ms 的 5×），无断流",
+      "duration_s": 600.626,
+      "evidence": [
+        "udp_stability status=ok",
+        "配置周期 5 ms → **实测周期** 24.998 ms（5×）",
+        "帧数 24002 / 期望 120000（到达率 20.0%）",
+        "断流窗口 0，最大空窗 0.0 ms"
+      ],
+      "data": {
+        "frames": 24002,
+        "expected_frames": 120000,
+        "elapsed_s": 600.0,
+        "dropout_count": 0,
+        "dropout_frames": 95998,
+        "max_gap_ms": 0.0,
+        "period_ms": 5,
+        "period_multiple_ok": true,
+        "sampled_frames": 200,
+        "host": "192.168.1.18",
+        "set_realtime_push_ret": 0,
+        "sampling_window_ms": 50.0,
+        "note": "真机采样（帧数来自 SDK 上报回调）；只保留聚合统计与抽样帧",
+        "observed_period_ms": 24.998,
+        "observed_period_multiple": 4.9996,
+        "arrival_ratio": 0.2
+      },
+      "runs": 2
+    },
+    {
+      "id": "V3",
+      "title": "最小运动·规划通道",
+      "risk": "low",
+      "moves_arm": true,
+      "status": "pass",
+      "reason": "关节1 +0.300°：到位误差 0.005°，漂移 0.002001°，回程 0.038°",
+      "duration_s": 0.928,
+      "evidence": [
+        "snapshot: 读到 7 个关节角 / 控制器 RM_NO_PLANNING_E",
+        "preflight: 前置检查 7/7 通过",
+        "arm_safety: 碰撞检测等级 8 + 自碰撞检测使能 已下发",
+        "move_out: 去程指令（movej 通道）指令已下发",
+        "verify_out: 到位误差 0.005°（容差 0.2°），其它关节最大漂移 0.002°（容差 0.1°）",
+        "move_back: 回程指令（movej 通道）指令已下发",
+        "verify_back: 回程最大偏差 0.038°（容差 0.2°，关节1）",
+        "ok: 关节角透传通道可用：关节1 去程 0.325°→0.630°，回程回到原位"
+      ],
+      "data": {
+        "joint_deg": [
+          0.32499998807907104,
+          42.11600112915039,
+          19.47800064086914,
+          -22.65999984741211,
+          -1.2230000495910645,
+          5.307000160217285,
+          -200.53399658203125
+        ],
+        "udp_frames": 2418,
+        "controller_type": "RM_NO_PLANNING_E",
+        "arm_state": "RM_STOP_E",
+        "arrival_error_deg": 0.005,
+        "max_drift_deg": 0.002001,
+        "max_return_error_deg": 0.038
+      },
+      "runs": 1
+    },
+    {
+      "id": "V4",
+      "title": "关节角透传",
+      "risk": "low",
+      "moves_arm": true,
+      "status": "pass",
+      "reason": "canfd 透传：到位误差 0.163°，漂移 0.002001°，回程 0.162°",
+      "duration_s": 0.572,
+      "evidence": [
+        "snapshot: 读到 7 个关节角 / 控制器 RM_NO_PLANNING_E",
+        "preflight: 前置检查 7/7 通过",
+        "arm_safety: 碰撞检测等级 8 + 自碰撞检测使能 已下发",
+        "move_out: 去程指令（canfd 通道）透传到位（到位误差 0.177°）",
+        "verify_out: 到位误差 0.163°（容差 0.2°），其它关节最大漂移 0.002°（容差 0.1°）",
+        "move_back: 回程指令（canfd 通道）透传到位（到位误差 0.148°）",
+        "verify_back: 回程最大偏差 0.162°（容差 0.2°，关节1）",
+        "ok: 关节角透传通道可用：关节1 去程 0.361°→0.498°，回程回到原位"
+      ],
+      "data": {
+        "joint_deg": [
+          0.3610000014305115,
+          42.11399841308594,
+          19.47800064086914,
+          -22.66200065612793,
+          -1.2200000286102295,
+          5.309000015258789,
+          -200.5330047607422
+        ],
+        "udp_frames": 2455,
+        "controller_type": "RM_NO_PLANNING_E",
+        "arm_state": "RM_IDLE_E",
+        "arrival_error_deg": 0.163,
+        "max_drift_deg": 0.002001,
+        "max_return_error_deg": 0.162
+      },
+      "runs": 1
+    },
+    {
+      "id": "V5",
+      "title": "执行层 live 闭环",
+      "risk": "low",
+      "moves_arm": true,
+      "status": "pass",
+      "reason": "执行层 live 闭环通过（10 ms 透传 + 反馈到位判定）",
+      "duration_s": 5.898,
+      "evidence": [
+        "rm_executor live status=ok",
+        "trajectory: /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/build/reports/validation/V5/micro_trajectory.json",
+        "ticks = 501",
+        "duration_s = 5.537807172047906"
+      ],
+      "data": {
+        "metrics": {
+          "ticks": 501,
+          "duration_s": 5.537807172047906,
+          "rt_factor": 0.9999936104053632,
+          "tick_jitter_p50_ms": 0.0634780153632164,
+          "tick_jitter_p95_ms": 0.09757396765053272,
+          "tick_jitter_p99_ms": 0.18662598449736834,
+          "tick_jitter_max_ms": 0.2948959590867162,
+          "follow_err_rms_deg": 0.050648031444656905,
+          "follow_err_max_deg": 0.11241563335619897,
+          "arrival_err_deg": 0.0039977747730830515,
+          "arrival_hold_ms": 310.08867104537785,
+          "sched_fifo": false,
+          "pre_position_hold_ms": 202.01871206518263,
+          "hold_ticks": 32,
+          "planned_duration_s": 5.0
+        }
+      },
+      "runs": 1
+    },
+    {
+      "id": "V6",
+      "title": "FK 交叉校验",
+      "risk": "none",
+      "moves_arm": false,
+      "status": "failed",
+      "reason": "FK 交叉校验不合格：最大位置偏差 75.03142324747947 mm（阈值 1 mm）；偏差是**系统性平移**且 TCP 未标定：自研 FK 算的是 Link7 系、控制器报的是 TCP 系，两者本就差一个工具偏置 —— 该偏差**不能**当作模型精度结论；工具标定 calibration.tcp=null（未标定）",
+      "duration_s": 2.625,
+      "evidence": [
+        "fk_cross status=ok",
+        "samples = 20",
+        "max_pos_dev_mm = 75.03142324747947",
+        "max_ori_dev_deg = None",
+        "mean_dev_norm_mm = 75.01897998050148",
+        "dev_spread_mm = 0.04677705037035651",
+        "dev_interpretation = 恒定偏置（TCP 未标定 / 零位整体漂移的典型特征）：偏差向量几乎不随位形变化",
+        "conclusion = FAIL：最大位置偏差 75.0314 mm（阈值 1.0000 mm），越界样本 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]",
+        "attribution.pattern = systematic_translation",
+        "attribution.hint: 偏差方向高度一致（consistency=1.00）：疑似**整体平移**，典型原因是零位漂移",
+        "attribution.hint: 按设计 §5.3 顺序排查：零位 → 工具系 → MDH 偏置"
+      ],
+      "data": {
+        "method": "rmctl.fk_cross（自研 FK vs 控制器位姿交叉校验，20 组位形）",
+        "samples": 20,
+        "max_pos_dev_mm": 75.03142324747947,
+        "max_ori_dev_deg": null,
+        "conclusion": "FAIL：最大位置偏差 75.0314 mm（阈值 1.0000 mm），越界样本 [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]",
+        "controller_pose_usage": "仅用于 FK 交叉校验，不得作为规划真值",
+        "ok": false,
+        "violations": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19
+        ],
+        "attribution": {
+          "pattern": "systematic_translation",
+          "consistency": 0.999834159257023,
+          "mean_vector_mm": [
+            -8.068451157815502,
+            -74.50881096900862,
+            3.3443297106249155
+          ],
+          "mean_dev_mm": 75.0189824405567,
+          "max_dev_mm": 75.03142324747947,
+          "hints": [
+            "偏差方向高度一致（consistency=1.00）：疑似**整体平移**，典型原因是零位漂移",
+            "按设计 §5.3 顺序排查：零位 → 工具系 → MDH 偏置"
+          ],
+          "next_checks": [
+            "zero_offset",
+            "tool_frame",
+            "mdh_offset"
+          ],
+          "next_check_detail": [
+            "查零位：示教器凹槽对齐照片、joint1-7 zero_deg 读数、换电池/拆装/冲击/固件升级后是否漂移",
+            "查工具系：TCP/法兰偏置（workcell calibration.tcp 目前为 null，未标定前工具系误差必然存在）",
+            "查 MDH 偏置：官方 MDH 表 a/α/θ 偏置与清洗 URDF 逐项核对"
+          ]
+        },
+        "dev_vectors_mm": [
+          [
+            -8.08412189965707,
+            -74.51000186839272,
+            3.3471432817220315
+          ],
+          [
+            -8.071275013338653,
+            -74.5129463894854,
+            3.345134006614181
+          ],
+          [
+            -8.09037329157003,
+            -74.51571827968584,
+            3.3549331759284984
+          ],
+          [
+            -8.055212695887326,
+            -74.50775512786325,
+            3.3440235452993905
+          ],
+          [
+            -8.096260656956233,
+            -74.51159116906305,
+            3.3550522547562966
+          ],
+          [
+            -8.045009555908978,
+            -74.5070024713043,
+            3.333227039213016
+          ],
+          [
+            -8.07419167154505,
+            -74.51053803398334,
+            3.343172053596577
+          ],
+          [
+            -8.06420796699453,
+            -74.51472792511404,
+            3.3378628081448536
+          ],
+          [
+            -8.04921800706465,
+            -74.52369075016544,
+            3.338275152059089
+          ],
+          [
+            -8.068441609400622,
+            -74.51687832682506,
+            3.34989424706178
+          ],
+          [
+            -8.091343416952334,
+            -74.50850728858873,
+            3.353978392287793
+          ],
+          [
+            -8.057248961916619,
+            -74.49850653437248,
+            3.340318872046666
+          ],
+          [
+            -8.07267760489816,
+            -74.49435402940766,
+            3.3451844039167344
+          ],
+          [
+            -8.057940566492617,
+            -74.51162989620445,
+            3.3412069182634507
+          ],
+          [
+            -8.052586761827573,
+            -74.50394858553675,
+            3.3382156702947974
+          ],
+          [
+            -8.025916033452262,
+            -74.49444832853396,
+            3.331193113068842
+          ],
+          [
+            -8.060648400335824,
+            -74.5214158279382,
+            3.337880069511079
+          ],
+          [
+            -8.078618608519495,
+            -74.50016899586372,
+            3.345090537579365
+          ],
+          [
+            -8.075624962339656,
+            -74.50419467161068,
+            3.3489054177909816
+          ],
+          [
+            -8.098105471252392,
+            -74.5081948802331,
+            3.3559032533428956
+          ]
+        ],
+        "mean_dev_vector_mm": [
+          -8.068451157815502,
+          -74.50881096900862,
+          3.3443297106249155
+        ],
+        "mean_dev_norm_mm": 75.01897998050148,
+        "dev_spread_mm": 0.04677705037035651,
+        "dev_interpretation": "恒定偏置（TCP 未标定 / 零位整体漂移的典型特征）：偏差向量几乎不随位形变化"
+      },
+      "runs": 2
+    },
+    {
+      "id": "V7",
+      "title": "TCP 重复性",
+      "risk": "medium",
+      "moves_arm": true,
+      "status": "pass",
+      "reason": "重复性：最大散布 0.026131417906566107 mm（标称 ±0.05 mm）",
+      "duration_s": 8.563,
+      "evidence": [
+        "tcp_repeatability status=ok",
+        "target_deg = 0.510, 42.111, 19.456, -22.659, -1.222, 5.309, -200.534",
+        "max_deviation_mm = 0.026131417906566107",
+        "within_nominal = True"
+      ],
+      "data": {
+        "repeats": 30,
+        "mean_position_mm": [
+          315.9329017003377,
+          38.78853308657805,
+          750.9215335051218
+        ],
+        "max_deviation_mm": 0.026131417906566107,
+        "mean_deviation_mm": 0.012712712187401085,
+        "per_axis_spread_mm": [
+          0.041991472244262695,
+          0.032998621463775635,
+          0.014007091522216797
+        ],
+        "nominal_repeatability_mm": 0.05,
+        "within_nominal": true,
+        "scope": "重复性（散布）≠ 绝对精度（未标定）"
+      },
+      "runs": 1
+    },
+    {
+      "id": "V8",
+      "title": "阶梯 acc/jerk",
+      "risk": "high",
+      "moves_arm": true,
+      "status": "pass",
+      "reason": "阶梯 acc/jerk 采集完成",
+      "duration_s": 8.284,
+      "evidence": [
+        "ladder_acc_jerk status=ok"
+      ],
+      "data": {
+        "trials": 3,
+        "envelope": "min over trials（保守下界）",
+        "derivative_method": "rmctl.retime.derivatives",
+        "scope": "acc/jerk 上限的保守下界（多次采样包络），非单次极值",
+        "unit_acceleration": "rad/s^2",
+        "unit_jerk": "rad/s^3",
+        "step_deg": 10.0,
+        "return_to_origin": true,
+        "acceleration_rad_s2": {
+          "joint1": 1.755718584483999
+        },
+        "jerk_rad_s3": {
+          "joint1": 81.09893830324319
+        }
+      },
+      "runs": 1
+    },
+    {
+      "id": "V9",
+      "title": "急停演练",
+      "risk": "high",
+      "moves_arm": true,
+      "status": "pass",
+      "reason": "急停演练完成（需在示教器清错并重新使能后方可继续）",
+      "duration_s": 0.645,
+      "evidence": [
+        "estop_drill status=ok"
+      ],
+      "data": {
+        "soft_stop": {
+          "ret": 0,
+          "state_ret": 0,
+          "arm_err": [
+            0
+          ],
+          "arm_state": 0,
+          "arm_state_name": "RM_NO_PLANNING_E",
+          "sys_err": null,
+          "sys_err_note": "RM-API2 1.1.7 的 rm_current_arm_state_t 无独立 sys_err 字段（见 rm_hw_bridge/abi_spec.yaml），此处留空而非编造"
+        },
+        "emergency_stop": {
+          "ret": 0,
+          "state_ret": 0,
+          "arm_err": [
+            0
+          ],
+          "arm_state": 0,
+          "arm_state_name": "RM_NO_PLANNING_E",
+          "sys_err": null,
+          "sys_err_note": "RM-API2 1.1.7 的 rm_current_arm_state_t 无独立 sys_err 字段（见 rm_hw_bridge/abi_spec.yaml），此处留空而非编造"
+        },
+        "recovery": "急停后需在示教器上清错并重新使能；本项目不自动清错、不自动续跑。",
+        "safety_checklist": [
+          "工作半径内无人员、无设备、无其它机械臂",
+          "急停按钮可触及，且已确认断电后机械臂停止运动",
+          "示教器在手边，可清错并重新使能（项目不自动清错）",
+          "演练后恢复流程已口头确认"
+        ],
+        "drill_performed": true
+      },
+      "runs": 1
+    }
+  ],
+  "note": "本文件由 scripts/rm75_evidence_merge.py 合并 scripts/rm75_validation_ladder.py 的真机报告生成；数值均来自真机读数，未做任何人工填写或加工。"
+}
