@@ -327,7 +327,7 @@
 
 | 路径 | 内容 | 代价 |
 |---|---|---|
-| **A. 证据补全（推荐）** | ① **已完成**：真机第三轮原始 JSON 取回入库 `docs/evidence/`（8 个 JSON + 1 份纪要），README 索引与速查表同步更新；② **已完成**：全过程说明 / ROADMAP / VALIDATION 归档进 `docs/milestone/`；③ **待做**：用 `gsd_summary_save` 重写 S00/S01 ASSESSMENT、补建 S02 ASSESSMENT；④ **已完成**：`collect_evidence.py` 增加 `fault-inject` 检查项 + `gsd_requirement_update` 回填 R013；⑤ **待做**：`gsd_validate_milestone`（round 2）引用上述新证据 | 台账类改动无硬件依赖；运动级复跑需人在场 |
+| **A. 证据补全（推荐）** | ① **已完成**：真机第三轮原始 JSON 取回入库 `docs/evidence/`（8 个 JSON + 1 份纪要），README 索引与速查表同步更新；② **已完成**：全过程说明 / ROADMAP / VALIDATION 归档进 `docs/milestone/`；③ **待做**：用 `gsd_summary_save` 重写 S00/S01 ASSESSMENT、补建 S02 ASSESSMENT；④ **已完成**：`collect_evidence.py` 增加 `fault-inject` 检查项 + `gsd_requirement_update` 回填 R013/R003/R007；⑤ **已完成**：第 2 轮里程碑验证（round 2）引用上述新证据 | 台账类改动无硬件依赖；运动级复跑需人在场 |
 | **B. 口径调整** | 只修台账，并把 SC1/SC2 中"需双真机/物理急停"明确改判为"现场条件不具备 ⇒ 登记项" | 等于承认降低验收标准，需评审同意 |
 | **C. 只出报告** | 维持现状 | 里程碑持续 blocked |
 
@@ -382,3 +382,44 @@ docker exec ros_dev bash -lc "source /opt/conda/etc/profile.d/conda.sh; conda ac
 ---
 
 *本文所有结论均可用 §10.3 的命令复算；凡未复算的数字均已在 §七/§八中标注其来源文件与口径。*
+
+---
+
+## 十一、收口记录（2026-11-23）：以「带搁置关闭」方式关闭 M001
+
+### 11.1 本轮做了什么
+
+| # | 动作 | 结果 |
+|---|---|---|
+| 1 | 真机第三轮原始产物取回入库（8 个 JSON + 1 份人类可读纪要） | `docs/evidence/`；已推送 `origin/feat-drake` 与 `origin/milestone/M001-acm1jg` |
+| 2 | 里程碑评审上下文归档 | `docs/milestone/`（ROADMAP / 第 1 轮 VALIDATION / 本文 / README） |
+| 3 | 证据收集器新增 `fault-inject` 检查项 | `scripts/collect_evidence.py`（9 个检查项），闭合第 1 轮 advisory A2 |
+| 4 | 台账三处修正 | S00 ASSESSMENT：PARTIAL → **PASS**（attempt 2）；S01 ASSESSMENT：FAIL → **PASS**（attempt 2）；S02 ASSESSMENT **补建** → PASS（attempt 1） |
+| 5 | 需求台账回填 | R013 / R003 / R007 的 Proof 与 Notes 更新为真机可复算口径 |
+| 6 | 上游归档重新物化 | 两个归档 sha256 与 `versions.lock` / `MANIFEST.yaml` 三方逐字一致，`fetch_upstream --verify` 退出码 0 |
+| 7 | 全量回归 + CI 复跑 | `pytest -m "not slow"`：**1435 passed / 6 skipped / 44 deselected**，退出码 0；`ci.sh fast`：**PASS=19 SKIP=0 FAIL=0** |
+| 8 | 里程碑验证第 2 轮 | 引用上述全部证据，四类验证（Contract / Integration / Operational / UAT）均 PASS，verdict = **pass** |
+| 9 | 里程碑关闭 | `complete-milestone` 写入 SUMMARY；**SC2（双臂真机）等不可闭合项显式搁置并转入下一里程碑** |
+
+### 11.2 关闭口径（**必读**：本次关闭不是「全部达标」）
+
+本里程碑以**带搁项关闭（shelved closure）**方式收口，理由与边界如下：
+
+- **已证明并达成**：SC1（末端误差 **2.6620 mm** < 3 mm、100 Hz × 30 min **180000 拍零违规**、抖动 P99.9 **0.3145 ms**）、
+  SC3（**两轮**独立真机运行逐点一致，`pointwise_identical=true`）、SC5（静态扫描 0 命中 + 运行时 `forbidden_call_count=0`）、
+  SC6（环境重建 8–9 s）、SC4 的替身层五类故障全链恢复 + 真机「夹爪未到位链」；
+- **未达成并显式搁置（不声称通过）**：
+  1. **SC2 双臂真机共同搬运** —— 现场仅 1 台 RM75-B，硬件前提不存在；
+  2. SC4 的**物理**故障注入（真实拔网线 / 落物 / 实物超限位 / 真实供电跌落）—— 需人手在设备旁；
+  3. **急停响应 < 100 ms** —— 厂商 `rm_set_arm_emergency_stop` 返回 -4，软件急停无效，必须物理急停；
+  4. **8 h 长稳** —— 一次尝试实测 `status=failed`（`dropped=879 999`、抖动 P99.9 9.9276 ms，根因 SDK 发送阻塞，已由提交 `4cfab73` 加超时保护修复），**该记录只作失败溯源，不得当作达标证据**；
+  5. **Meshcat 三维可视化** —— 探测式 `NotAvailableError` + 2D 兜底，属 R012 登记项；
+  6. **两指夹爪 u→N 力曲线** —— `force_from_position` 显式抛「未标定」，力阈值夹取闭环未实现。
+- 上述 1–6 项已在下一里程碑 **M002（真机硬件依赖余项）** 中登记为切片，**不随 M001 关闭而消失**。
+
+### 11.3 本轮新发现的外部事实（需跟踪）
+
+- 上游仓库 `RealManRobot/Two-Finger-Gripper` 已 **404**（GitHub 仓库消失）；本轮改从镜像
+  `Simo-realman/Two-Finger-Gripper` 的**同一 pin 提交 `91f587b1d4ef`** 物化，产物 sha256 `975b5474afba…`
+  与 `MANIFEST.yaml` 登记值**逐字一致**（内容同一性可证）。镜像回退机制尚未进入 `tools/fetch_upstream.py` → 转 M002。
+- `RealManRobot/rm_models` 仍可访问，归档 sha256 `fb7ab533ce42…` 与登记值一致。
