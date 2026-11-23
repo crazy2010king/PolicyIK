@@ -1,0 +1,291 @@
+{
+  "status": "ok",
+  "device": {
+    "schema_version": 1,
+    "name": "rm75_b_192_168_1_18",
+    "arm_ip": "192.168.1.18",
+    "tcp_port": 8080,
+    "udp_port": 8080,
+    "udp_cycle": 1,
+    "joint_zero_offset": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "accel_limits": {
+      "measured": false,
+      "values": [
+        6.0,
+        6.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0,
+        8.0
+      ]
+    },
+    "current_thresholds": {
+      "calibrated": true,
+      "values": [
+        6379.5,
+        3240.0,
+        1762.5,
+        2133.0,
+        600.0,
+        718.5,
+        600.0
+      ]
+    },
+    "fence": {
+      "table_height_m": 0.75,
+      "singularity_radius_m": 0.15
+    }
+  },
+  "samples": 5408,
+  "duration_s": 6.0,
+  "poses": [
+    {
+      "name": "origin",
+      "joint_rad": [
+        0.11725121801713559,
+        0.7338062083379427,
+        0.3419448905391303,
+        -0.3943396887987538,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    },
+    {
+      "name": "jog_axis1_plus",
+      "joint_rad": [
+        0.20451768061685205,
+        0.7338062083379427,
+        0.3419448905391303,
+        -0.3943396887987538,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    },
+    {
+      "name": "jog_axis1_minus",
+      "joint_rad": [
+        0.029984755417419115,
+        0.7338062083379427,
+        0.3419448905391303,
+        -0.3943396887987538,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    },
+    {
+      "name": "jog_axis2_plus",
+      "joint_rad": [
+        0.11725121801713559,
+        0.8210726709376592,
+        0.3419448905391303,
+        -0.3943396887987538,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    },
+    {
+      "name": "jog_axis2_minus",
+      "joint_rad": [
+        0.11725121801713559,
+        0.6465397457382263,
+        0.3419448905391303,
+        -0.3943396887987538,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    },
+    {
+      "name": "jog_axis3_plus",
+      "joint_rad": [
+        0.11725121801713559,
+        0.7338062083379427,
+        0.4292113531388468,
+        -0.3943396887987538,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    },
+    {
+      "name": "jog_axis3_minus",
+      "joint_rad": [
+        0.11725121801713559,
+        0.7338062083379427,
+        0.2546784279394138,
+        -0.3943396887987538,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    },
+    {
+      "name": "jog_axis4_plus",
+      "joint_rad": [
+        0.11725121801713559,
+        0.7338062083379427,
+        0.3419448905391303,
+        -0.3070732261990373,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    },
+    {
+      "name": "jog_axis4_minus",
+      "joint_rad": [
+        0.11725121801713559,
+        0.7338062083379427,
+        0.3419448905391303,
+        -0.4816061513984703,
+        -0.021380283753049456,
+        0.09248499333475399,
+        -3.4997864886249057
+      ]
+    }
+  ],
+  "per_axis": [
+    {
+      "axis": 1,
+      "abs_current_p50_ma": 97.0,
+      "abs_current_p95_ma": 401.0,
+      "abs_current_p99_ma": 532.0,
+      "static_envelope_ma": 534.0,
+      "dynamic_envelope_ma": 1053.0,
+      "abs_current_envelope_ma": 1053.0,
+      "abs_current_max_ma": 13501.0
+    },
+    {
+      "axis": 2,
+      "abs_current_p50_ma": 1075.0,
+      "abs_current_p95_ma": 1501.0,
+      "abs_current_p99_ma": 2056.0,
+      "static_envelope_ma": 2103.0,
+      "dynamic_envelope_ma": 450.0,
+      "abs_current_envelope_ma": 2103.0,
+      "abs_current_max_ma": 2172.0
+    },
+    {
+      "axis": 3,
+      "abs_current_p50_ma": 202.0,
+      "abs_current_p95_ma": 367.0,
+      "abs_current_p99_ma": 983.0,
+      "static_envelope_ma": 1051.0,
+      "dynamic_envelope_ma": 217.0,
+      "abs_current_envelope_ma": 1051.0,
+      "abs_current_max_ma": 1175.0
+    },
+    {
+      "axis": 4,
+      "abs_current_p50_ma": 711.0,
+      "abs_current_p95_ma": 1273.0,
+      "abs_current_p99_ma": 1292.0,
+      "static_envelope_ma": 1337.0,
+      "dynamic_envelope_ma": 271.0,
+      "abs_current_envelope_ma": 1337.0,
+      "abs_current_max_ma": 1468.0
+    },
+    {
+      "axis": 5,
+      "abs_current_p50_ma": 140.0,
+      "abs_current_p95_ma": 278.0,
+      "abs_current_p99_ma": 293.0,
+      "static_envelope_ma": 293.0,
+      "dynamic_envelope_ma": 137.0,
+      "abs_current_envelope_ma": 293.0,
+      "abs_current_max_ma": 300.0
+    },
+    {
+      "axis": 6,
+      "abs_current_p50_ma": 72.0,
+      "abs_current_p95_ma": 436.0,
+      "abs_current_p99_ma": 453.0,
+      "static_envelope_ma": 454.0,
+      "dynamic_envelope_ma": 153.0,
+      "abs_current_envelope_ma": 454.0,
+      "abs_current_max_ma": 522.0
+    },
+    {
+      "axis": 7,
+      "abs_current_p50_ma": 74.0,
+      "abs_current_p95_ma": 149.0,
+      "abs_current_p99_ma": 159.0,
+      "static_envelope_ma": 155.0,
+      "dynamic_envelope_ma": 161.0,
+      "abs_current_envelope_ma": 161.0,
+      "abs_current_max_ma": 181.0
+    }
+  ],
+  "envelope_ma": [
+    1053.0,
+    2103.0,
+    1051.0,
+    1337.0,
+    293.0,
+    454.0,
+    161.0
+  ],
+  "static_envelope_ma": [
+    534.0,
+    2103.0,
+    1051.0,
+    1337.0,
+    293.0,
+    454.0,
+    155.0
+  ],
+  "dynamic_envelope_ma": [
+    1053.0,
+    450.0,
+    217.0,
+    271.0,
+    137.0,
+    153.0,
+    161.0
+  ],
+  "merged_envelope_ma": [
+    1053.0,
+    2103.0,
+    1051.0,
+    1337.0,
+    293.0,
+    454.0,
+    161.0
+  ],
+  "merged_with": [],
+  "dynamic": {
+    "recording": "/tmp/plan_rm75.json",
+    "final_phase": "done",
+    "num_samples": 53,
+    "violations": []
+  },
+  "safety_factor": 1.5,
+  "floor_ma": 600.0,
+  "percentile": 0.995,
+  "debounce_ticks": 3,
+  "proposed_thresholds_ma": [
+    1579.5,
+    3154.5,
+    1576.5,
+    2005.5,
+    600.0,
+    681.0,
+    600.0
+  ],
+  "current_thresholds_calibrated": true,
+  "written_to": "devices/rm75_b_192_168_1_18.yaml",
+  "write_status": "ok"
+}

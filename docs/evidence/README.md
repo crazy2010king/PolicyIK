@@ -25,6 +25,14 @@
 | 6 | `rm75-b-real-arm-ladder.md` | 真机验证阶梯（L0–L14）首轮实测 | 现场 RM75-B（192.168.1.18）**两轮**实测：只读级别 L0–L5/L10 与运动级别 L6/L7/L8/L9/L12/L14 全部 PASS；L4 因机械臂处于**急停态**（`arm_current_status=9`）判 FAIL ⇒ 运动级被门禁拦截；`cycle` 读法实测定为 **5 ms 的倍数**（P50=4.998 ms）；**末端跟踪误差 2.56 mm**（加速度上限须收紧到 1.0/1.2 rad/s²）；**修掉 14 个真机缺陷**；未验证指标逐条列出 | `python3 scripts/real_machine_ladder.py --to L5 --device-config devices/rm75_b_192_168_1_18.yaml --json` |
 | 7 | `rm75-b-ladder-2026-11-19.json` | 真机验证阶梯第一轮**原始报告** | L0–L10 的逐级 PASS/FAIL/BLOCKED、判据实测值与未验证指标清单（机器可读） | `python3 scripts/real_machine_ladder.py --to L10 --device-config devices/rm75_b_192_168_1_18.yaml --json` |
 | 8 | `rm75-b-real-exec-runlog.json` / `rm75-b-real-exec-recording.json` / `rm75-b-real-exec-compare.json` | **一次真机运行**的全链路运行日志 + 其录制 + 逐点一致性比较 | 真机 131 点实际下发序列与离线录制**逐点一致**（max diff 0.0 rad）；同一条录制离线重放：131 点、逃逸 0、最大单步 0.001521 rad ⇒ SC3 真机口径闭合 | `python3 scripts/compare_exec_vs_recording.py --run-log docs/evidence/rm75-b-real-exec-runlog.json --recording docs/evidence/rm75-b-real-exec-recording.json --json` |
+| 9 | `rm75-b-final-round-2026-11-20.md` | **R003 / R008 / R017**（真机口径）、R001（关节空间透传） | **第三轮真机最终回归的机器可读纪要**：全阶梯 **L0–L10 PASS=11 / FAIL=0**（`mode=hardware`、`allow_motion=true`）、末端误差 **2.6620 mm**（阈值 3）、100 Hz × 30 min 长稳 **180000 拍零违规 / 抖动 P99.9 0.3145 ms**、运行时 `forbidden_call_count=0`；并列出单臂 / 五类物理故障 / 急停 / 围栏余量 4 mm 等诚实边界 | `python3 scripts/real_machine_ladder.py --to L10 --device-config devices/rm75_b_192_168_1_18.yaml --allow-motion --json` |
+| 10 | `rm75-b-ladder-final-2026-11-20.json` | 真机阶梯第三轮**最终报告** | L0–L10 逐级 PASS/FAIL、判据实测值、`summary={pass:11,fail:0}`、`unverified_metrics` 清单（机器可读） | 同上 |
+| 11 | `rm75-b-ladder-after-recovery-2026-11-20.json` | 网卡掉线**恢复后**回归 | 开发机→机械臂网卡恢复后的只读级回归（L0–L5/L10 pass；L6–L9 未允许运动 ⇒ blocked） | `python3 scripts/real_machine_ladder.py --to L5 --device-config devices/rm75_b_192_168_1_18.yaml --json` |
+| 12 | `rm75-b-soak-30min-final-2026-11-20.json` | **R003**（抖动/时延）、**R008**（运行时零调用） | 100 Hz × 1800 s：`ticks=180000`、`commands_sent=180000`、violations=0、errors=0、抖动 P99.9 **0.3145 ms**（阈值 0.5）、命令→执行延迟 P99.9 0.2901 ms、`sdk_audit.forbidden_call_count=0`、标定后加速度上限 1.0/1.2 | `python3 scripts/soak_test.py --device-config devices/rm75_b_192_168_1_18.yaml --duration-s 1800 --hz 100 --json` |
+| 13 | `rm75-b-tracking-final-2026-11-20.json` | **R003**（末端跟踪误差 < 3 mm） | 131 点配对：`tcp_error_mm` p50=1.4416 / p95=2.4467 / **max=2.6620**（阈值 3.0）⇒ `status=pass` | `python3 scripts/eval_tracking.py --run-log docs/evidence/rm75-b-runlog-final-2026-11-20.json --json` |
+| 14 | `rm75-b-runlog-final-2026-11-20.json` / `rm75-b-plan-final-2026-11-20.json` | **R007**（录制/回放同源） | 最终一次真机 `cli exec` 的全链路运行日志（`mode=hardware`、265 events、131 samples、violations=0、jitter p999 0.2964 ms）与其下发的规划轨迹（recording schema v1、131 点、dt=0.005） | `python3 scripts/compare_exec_vs_recording.py --run-log docs/evidence/rm75-b-runlog-final-2026-11-20.json --recording docs/evidence/rm75-b-plan-final-2026-11-20.json --json` |
+| 15 | `rm75-b-current-calibration-2026-11-20.json` | **R015**（标定链） | 电流阈值标定 `status=ok`、`calibrated=true`、逐轴 `[6379.5, 3240.0, 1762.5, 2133.0, 600.0, 718.5, 600.0]` mA | `python3 scripts/calibrate_currents.py --device-config devices/rm75_b_192_168_1_18.yaml --json` |
+| 16 | `rm75-b-evidence-summary-2026-11-20.json` | 汇总口径 | `{"L8": {"exec_exit_code": 0, "tcp_tracking_error_mm": 2.6619684756546693}}` | — |
 
 机器可读产物（与 `S02-rerun.md` 配套）：`s02-rerun.json`
 （`schema_version=1`，`generator=scripts/collect_evidence.py`，逐项命令 / 退出码 / 耗时 / 摘要）。
@@ -40,6 +48,10 @@
 | CLI `bimanual` | 退出码 **0**、29 采样点、3 区域、逃逸 0、相对位姿残差 max 1.0395e-08 m / 3.541e-08 rad | `S02-rerun.md` §2 |
 | `plan_stats`（2 样本、seed 0） | 成功率 1.0、端到端 P95 10.799 s、GCS P95 8.876e-4 s（**凸松弛**口径） | `S02-rerun.md` §2 / §2.2 |
 | FK 门槛 | 真实官方 URDF **< 5e-6 m**（固有残差 ≈ 2.2407e-6 m）；精确 ±π/2 变体 < 1e-6 m；鉴别力 > 1e-3 m | `../architecture/fk-tolerance.md` |
+| 真机末端跟踪误差（第三轮，131 点） | **max 2.6620 mm**（阈值 3 mm），p95 2.4467 mm | `rm75-b-tracking-final-2026-11-20.json` |
+| 真机 100 Hz × 30 min 长稳 | ticks **180000**、commands_sent 180000、violations **0**、errors 0、抖动 P99.9 **0.3145 ms**（阈值 0.5）、延迟 P99.9 0.2901 ms | `rm75-b-soak-30min-final-2026-11-20.json` |
+| 真机运行时禁用接口调用 | `sdk_audit.forbidden_call_count=0`（18 万次真实调用） | `rm75-b-soak-30min-final-2026-11-20.json` |
+| 真机阶梯最终回归 | **PASS=11 / FAIL=0**（L0–L10，`mode=hardware`、`allow_motion=true`） | `rm75-b-ladder-final-2026-11-20.json` |
 | CLI `task` 双臂缺口 | **仅支持单臂**；多臂场景退出码 **2** + reason `task_single_arm_only` | `../../runbooks/s06_task_primitives.md` §7 |
 
 ## 3. 复算入口
