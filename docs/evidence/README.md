@@ -42,10 +42,10 @@
 
 | 口径项 | 现状数字 | 出处 |
 |-------|---------|------|
-| 上游归档字节级校验 | `--verify` 退出码 **0**，「校验通过：2 个资产」，2 条 sha256 三方逐字一致 | `S09-upstream-archive.md` §1–§3 |
-| CI fast 档 | **PASS=17 / SKIP=0 / FAIL=0**，退出码 0，耗时 55 s | `S09-ci-fast.md` §1 |
+| 上游归档字节级校验 | `--verify` 退出码 **0**，「校验通过：2 个资产」，2 条 sha256 三方逐字一致（收口轮重新物化后复验通过） | `S09-upstream-archive.md` §1–§3 + 本轮复跑 |
+| CI fast 档 | **PASS=19 / SKIP=0 / FAIL=0**，退出码 0，耗时 60–62 s（上游归档物化并解包后，视觉网格链路由 [SKIP] 转 [PASS]；物化前为 PASS=18 / SKIP=1） | `S09-ci-fast.md` §1 + 本轮复跑 |
 | 禁用接口扫描 | 扫描 **90** 个代码文件、名单 **13** 项、**0 命中** | `S02-rerun.md` §2 / §2.3 |
-| 全量非慢回归 | `pytest -m "not slow"`：**1369 passed / 3 skipped / 44 deselected** | `S02-rerun.md` §2 |
+| 全量非慢回归 | `pytest -m "not slow"`：**1435 passed / 6 skipped / 44 deselected**，退出码 0（2026-11-23 收口轮；S02 轮为 1369 / 3） | `S02-rerun.md` §2 + 本轮复跑 |
 | CLI `bimanual` | 退出码 **0**、29 采样点、3 区域、逃逸 0、相对位姿残差 max 1.0395e-08 m / 3.541e-08 rad | `S02-rerun.md` §2 |
 | `plan_stats`（2 样本、seed 0） | 成功率 1.0、端到端 P95 10.799 s、GCS P95 8.876e-4 s（**凸松弛**口径） | `S02-rerun.md` §2 / §2.2 |
 | FK 门槛 | 真实官方 URDF **< 5e-6 m**（固有残差 ≈ 2.2407e-6 m）；精确 ±π/2 变体 < 1e-6 m；鉴别力 > 1e-3 m | `../architecture/fk-tolerance.md` |
