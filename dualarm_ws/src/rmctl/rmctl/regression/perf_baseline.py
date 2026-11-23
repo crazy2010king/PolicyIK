@@ -62,6 +62,15 @@ SCENARIOS_REL = os.path.join("workcell", "bench", "perf_scenarios.yaml")
 #: S08 性能报告默认路径（相对工作区；运行时产物）
 DEFAULT_PERF_REPORT = os.path.join("build", "reports", "s08_planner_perf.json")
 
+#: S08 性能报告的**版本库留存副本**（git 跟踪）——干净 checkout 上也能复现本段。
+#:
+#: 背景（S16）：``build/`` 被 gitignore → 性能报告只存在于运行时目录 →
+#: 干净 checkout 跑一键回归时 ``perf_baseline`` 段会以「S08 性能报告缺失」
+#: 判 blocked（**可复现性缺口**：不是回归失败，而是证据产物没入库）。
+#: 因此把同一份报告固化进版本库，本段在运行时产物缺失时回落到它。
+FALLBACK_PERF_REPORT_REL = os.path.join(
+    "workcell", "bench", "perf_baseline", "s08_planner_perf.json")
+
 #: 本表产出的两个文件（相对工作区 ``build/reports/``）
 CSV_NAME = "s09_perf_baseline.csv"
 MD_NAME = "s09_perf_baseline.md"
@@ -99,9 +108,14 @@ CSV_COLUMNS = (
 # 1. 场景声明（唯一来源）
 # ---------------------------------------------------------------------------
 def default_repo_root() -> str:
-    """仓库根（本文件位于 ``<repo>/dualarm_ws/src/rmctl/rmctl/`` 下）。"""
+    """仓库根（本文件位于 ``<repo>/dualarm_ws/src/rmctl/rmctl/regression/`` 下）。
+
+    2026-11-23（S16）修正：此前多写了一个 ``..``（按模块在 ``rmctl/rmctl/``
+    时的层级计算），实际返回 ``<repo>/dualarm_ws`` → 场景声明与版本库留存
+    副本都找不到（默认调用路径会误判「声明缺失」）。此处按真实层级上溯。
+    """
     here = os.path.dirname(os.path.abspath(__file__))
-    return os.path.abspath(os.path.join(here, "..", "..", "..", ".."))
+    return os.path.abspath(os.path.join(here, "..", "..", "..", "..", ".."))
 
 
 def scenarios_path(repo_root: Optional[str] = None) -> str:
@@ -414,6 +428,13 @@ def run_perf_baseline(repo_root: Optional[str] = None,
         reports_dir or os.path.join(ws, "build", "reports"))
     perf_report_path = os.path.abspath(
         perf_report or os.path.join(ws, DEFAULT_PERF_REPORT))
+    #: 是否用了版本库留存副本（干净 checkout 兜底）
+    used_fallback = False
+    if not os.path.isfile(perf_report_path) and perf_report is None:
+        fallback_path = os.path.join(repo_root, FALLBACK_PERF_REPORT_REL)
+        if os.path.isfile(fallback_path):
+            perf_report_path = os.path.abspath(fallback_path)
+            used_fallback = True
 
     # -- (1) 场景声明：仓库文件缺失/非法 → fail（契约回归）---------------
     try:

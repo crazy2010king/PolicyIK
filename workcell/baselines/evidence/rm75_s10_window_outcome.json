@@ -2,8 +2,8 @@
   "schema": "rmctl.rm75_s10_window_outcome/1",
   "mode": "blocked",
   "status": "blocked",
-  "reason": "真机窗口门禁未通过（status=blocked）：门禁未通过：ip_reachable（--- 192.168.1.18 ping statistics --- / 3 packets transmitted, 0 received, 100% packet loss, time 2045ms）；tcp_reachable（TCP 192.168.1.18:8080 连接失败: timed out）；probe_precheck（已跳过：ip/TCP 门禁未通过，未建立任何连接（零运动指令））；未执行任何运动指令，长跑 / 断流 / 阶梯均未执行。",
-  "generated_at": "2026-11-20T14:23:21",
+  "reason": "真机窗口门禁未通过（status=blocked）：门禁未通过：udp_ports_free（8091 本地 UDP 8091 已被占用: [Errno 98] Address already in use；8092 本地 UDP 8092 空闲）；未执行任何运动指令，长跑 / 断流 / 阶梯均未执行。",
+  "generated_at": "2026-11-23T15:37:33",
   "arm": "left",
   "endpoint": {
     "ip": "192.168.1.18",
@@ -16,7 +16,7 @@
   "gate": {
     "schema": "rmctl.rm75_window_gate/1",
     "status": "blocked",
-    "reason": "门禁未通过：ip_reachable（--- 192.168.1.18 ping statistics --- / 3 packets transmitted, 0 received, 100% packet loss, time 2045ms）；tcp_reachable（TCP 192.168.1.18:8080 连接失败: timed out）；probe_precheck（已跳过：ip/TCP 门禁未通过，未建立任何连接（零运动指令））",
+    "reason": "门禁未通过：udp_ports_free（8091 本地 UDP 8091 已被占用: [Errno 98] Address already in use；8092 本地 UDP 8092 空闲）",
     "arm": "left",
     "endpoint": {
       "ip": "192.168.1.18",
@@ -26,36 +26,36 @@
         8092
       ]
     },
-    "started_at": "2026-11-20T14:23:16",
-    "finished_at": "2026-11-20T14:23:21",
+    "started_at": "2026-11-23T15:37:30",
+    "finished_at": "2026-11-23T15:37:33",
     "checks": [
       {
         "name": "ip_reachable",
-        "ok": false,
-        "detail": "--- 192.168.1.18 ping statistics --- / 3 packets transmitted, 0 received, 100% packet loss, time 2045ms",
+        "ok": true,
+        "detail": "3 packets transmitted, 3 received, 0% packet loss, time 2041ms / rtt min/avg/max/mdev = 0.430/0.474/0.554/0.056 ms",
         "evidence": {
           "command": "ping -c 3 -W 1 192.168.1.18"
         }
       },
       {
         "name": "tcp_reachable",
-        "ok": false,
-        "detail": "TCP 192.168.1.18:8080 连接失败: timed out",
+        "ok": true,
+        "detail": "TCP 192.168.1.18:8080 可连接",
         "evidence": {
           "command": "nc -vz 192.168.1.18 8080"
         }
       },
       {
         "name": "udp_ports_free",
-        "ok": true,
-        "detail": "8091 本地 UDP 8091 空闲；8092 本地 UDP 8092 空闲",
+        "ok": false,
+        "detail": "8091 本地 UDP 8091 已被占用: [Errno 98] Address already in use；8092 本地 UDP 8092 空闲",
         "evidence": {
           "command": "ss -ulnp | grep -E '8091|8092'",
           "ports": [
             {
               "port": 8091,
-              "ok": true,
-              "detail": "本地 UDP 8091 空闲"
+              "ok": false,
+              "detail": "本地 UDP 8091 已被占用: [Errno 98] Address already in use"
             },
             {
               "port": 8092,
@@ -75,11 +75,12 @@
       },
       {
         "name": "probe_precheck",
-        "ok": false,
-        "detail": "已跳过：ip/TCP 门禁未通过，未建立任何连接（零运动指令）",
+        "ok": true,
+        "detail": "探针前置检查 status=ok",
         "evidence": {
           "command": "python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --port 8080 --udp-port 8091 --precheck-only",
-          "skipped": true
+          "report_status": "ok",
+          "failed_preflight_checks": []
         }
       }
     ],
@@ -87,20 +88,20 @@
       {
         "action": "icmp_ping",
         "command": "ping -c 3 -W 1 192.168.1.18",
-        "result": "--- 192.168.1.18 ping statistics --- / 3 packets transmitted, 0 received, 100% packet loss, time 2045ms",
-        "ok": false
+        "result": "3 packets transmitted, 3 received, 0% packet loss, time 2041ms / rtt min/avg/max/mdev = 0.430/0.474/0.554/0.056 ms",
+        "ok": true
       },
       {
         "action": "tcp_connect",
         "command": "nc -vz 192.168.1.18 8080",
-        "result": "TCP 192.168.1.18:8080 连接失败: timed out",
-        "ok": false
+        "result": "TCP 192.168.1.18:8080 可连接",
+        "ok": true
       },
       {
         "action": "udp_port_check",
         "command": "ss -ulnp | grep -E '8091|8092'",
-        "result": "8091 本地 UDP 8091 空闲；8092 本地 UDP 8092 空闲",
-        "ok": true
+        "result": "8091 本地 UDP 8091 已被占用: [Errno 98] Address already in use；8092 本地 UDP 8092 空闲",
+        "ok": false
       },
       {
         "action": "sdk_import",
@@ -111,31 +112,28 @@
       {
         "action": "probe_precheck",
         "command": "python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --port 8080 --udp-port 8091 --precheck-only",
-        "result": "已跳过：ip/TCP 门禁未通过，未建立任何连接（零运动指令）",
-        "ok": false
+        "result": "探针前置检查 status=ok",
+        "ok": true
       }
     ],
     "next_action": [
-      "ping -c 3 192.168.1.18",
-      "nc -vz 192.168.1.18 8080",
       "在示教器上重新使能 7 轴（joint_en_flag 全 1）",
       "在示教器上清错误码复位（arm_err / joint_err_code 全 0）",
       "ss -ulnp | grep -E '8091|8092'   # 确认本地 UDP 端口未被占用",
-      "python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --precheck-only",
       "python3 scripts/rm75_window_gate.py --ip 192.168.1.18 --out build/reports/validation/window_gate.json"
     ],
     "honesty": "本工件只记录只读门禁结果；未执行任何运动指令；不得据此声称真机长跑或断流已达标。",
     "exit_code": 3,
     "artifact_path": "build/reports/validation/window_gate.json",
-    "gate_started_at": "2026-11-20T14:23:16"
+    "gate_started_at": "2026-11-23T15:37:30"
   },
   "long_run": null,
   "stream_loss": null,
   "ladder": null,
   "not_executed": {
-    "long_run": "门禁未通过（status=blocked）：门禁未通过：ip_reachable（--- 192.168.1.18 ping statistics --- / 3 packets transmitted, 0 received, 100% packet loss, time 2045ms）；tcp_reachable（TCP 192.168.1.18:8080 连接失败: timed out）；probe_precheck（已跳过：ip/TCP 门禁未通过，未建立任何连接（零运动指令））；本项未执行，无任何实测数字。",
-    "stream_loss": "门禁未通过（status=blocked）：门禁未通过：ip_reachable（--- 192.168.1.18 ping statistics --- / 3 packets transmitted, 0 received, 100% packet loss, time 2045ms）；tcp_reachable（TCP 192.168.1.18:8080 连接失败: timed out）；probe_precheck（已跳过：ip/TCP 门禁未通过，未建立任何连接（零运动指令））；本项未执行，无任何实测数字。",
-    "ladder": "门禁未通过（status=blocked）：门禁未通过：ip_reachable（--- 192.168.1.18 ping statistics --- / 3 packets transmitted, 0 received, 100% packet loss, time 2045ms）；tcp_reachable（TCP 192.168.1.18:8080 连接失败: timed out）；probe_precheck（已跳过：ip/TCP 门禁未通过，未建立任何连接（零运动指令））；本项未执行，无任何实测数字。"
+    "long_run": "门禁未通过（status=blocked）：门禁未通过：udp_ports_free（8091 本地 UDP 8091 已被占用: [Errno 98] Address already in use；8092 本地 UDP 8092 空闲）；本项未执行，无任何实测数字。",
+    "stream_loss": "门禁未通过（status=blocked）：门禁未通过：udp_ports_free（8091 本地 UDP 8091 已被占用: [Errno 98] Address already in use；8092 本地 UDP 8092 空闲）；本项未执行，无任何实测数字。",
+    "ladder": "门禁未通过（status=blocked）：门禁未通过：udp_ports_free（8091 本地 UDP 8091 已被占用: [Errno 98] Address already in use；8092 本地 UDP 8092 空闲）；本项未执行，无任何实测数字。"
   },
   "reference_values": {
     "date": "2026-11-19",
@@ -151,20 +149,20 @@
     {
       "action": "icmp_ping",
       "command": "ping -c 3 -W 1 192.168.1.18",
-      "result": "--- 192.168.1.18 ping statistics --- / 3 packets transmitted, 0 received, 100% packet loss, time 2045ms",
-      "ok": false
+      "result": "3 packets transmitted, 3 received, 0% packet loss, time 2041ms / rtt min/avg/max/mdev = 0.430/0.474/0.554/0.056 ms",
+      "ok": true
     },
     {
       "action": "tcp_connect",
       "command": "nc -vz 192.168.1.18 8080",
-      "result": "TCP 192.168.1.18:8080 连接失败: timed out",
-      "ok": false
+      "result": "TCP 192.168.1.18:8080 可连接",
+      "ok": true
     },
     {
       "action": "udp_port_check",
       "command": "ss -ulnp | grep -E '8091|8092'",
-      "result": "8091 本地 UDP 8091 空闲；8092 本地 UDP 8092 空闲",
-      "ok": true
+      "result": "8091 本地 UDP 8091 已被占用: [Errno 98] Address already in use；8092 本地 UDP 8092 空闲",
+      "ok": false
     },
     {
       "action": "sdk_import",
@@ -175,17 +173,14 @@
     {
       "action": "probe_precheck",
       "command": "python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --port 8080 --udp-port 8091 --precheck-only",
-      "result": "已跳过：ip/TCP 门禁未通过，未建立任何连接（零运动指令）",
-      "ok": false
+      "result": "探针前置检查 status=ok",
+      "ok": true
     }
   ],
   "next_action": [
-    "ping -c 3 192.168.1.18",
-    "nc -vz 192.168.1.18 8080",
     "在示教器上重新使能 7 轴（joint_en_flag 全 1）",
     "在示教器上清错误码复位（arm_err / joint_err_code 全 0）",
     "ss -ulnp | grep -E '8091|8092'   # 确认本地 UDP 端口未被占用",
-    "python3 scripts/rm75_safe_probe.py --ip 192.168.1.18 --precheck-only",
     "python3 scripts/rm75_window_gate.py --ip 192.168.1.18 --out build/reports/validation/window_gate.json",
     "python3 scripts/rm75_window_run.py --out workcell/baselines/evidence/rm75_s10_window_outcome.json"
   ],

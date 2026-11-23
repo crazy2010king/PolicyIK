@@ -1523,9 +1523,9 @@ class ArmLink:
         cfg = gen.rm_realtime_push_config_t()
         cfg.cycle = int(self.realtime_period_ms or REALTIME_CYCLE_MULTIPLE_MS)
         cfg.enable = bool(enabled)
-        cfg.port = int(port or self._udp_port or 0)
+        cfg.port = int(port or self.udp_port or 0)
         cfg.force_coordinate = 0
-        cfg.ip = (target_ip or self._realtime_target_ip or "0.0.0.0").encode("utf-8")[:27]
+        cfg.ip = (target_ip or self.realtime_target_ip or "0.0.0.0").encode("utf-8")[:27]
         cfg.custom_config.arm_current_status = 1
         cfg.custom_config.joint_speed = 1
         try:

@@ -395,6 +395,34 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 
 ---
 
+### 6.5 S14 真机窗口实测（2026-11-23 15:22–16:10，远端主机 ros_dev）
+
+工件：`workcell/baselines/evidence/rm75_s14_real_machine_window.json`（schema `rmctl.rm75_s14_real_machine_window/1`，`status=blocked`）。
+
+**只读门禁全部通过**：ping 3 发 3 收 0% 丢包（rtt 0.434/0.503/0.616 ms）、TCP 8080 可连、UDP 8091/8092 空闲、SDK 可加载、探针前置检查 7/7（7 轴全部使能、`arm_err` / `joint_err_code` 全 0、控制器 `RM_NO_PLANNING_E` + `RM_IDLE_E`、当前位形在限值内）。
+
+**执行层 600 s 长跑：两次尝试均被真实断流打断（未达成时长判据）**
+
+| 尝试 | 实际时长 | ticks | 跟随误差 RMS | 事件链 | 控制器保护停 |
+|---|---|---|---|---|---|
+| #1 | 145.24 s | 14431 | 0.00317° | `pre_position_ok` → `feedback_stream_lag` → `feedback_stream_lost` → `safety_l4_emergency_stop` → `fault_stream_lost` | 否 |
+| #2 | 251.28 s | 25033 | 0.00289° | 同上 | 否 |
+
+→ **关节级透传与闭环跟踪稳定**（RMS ≈ 0.003°，保护停未触发）；断的是**反馈通道**（UDP 主动上报）。
+→ 两次断流时刻不同 → **非固定时长触发的确定性缺陷**。
+→ 两次都触发了 **L4 急停**（本项目安全链路的**真机实证**：断流 → L4 停机生效）。
+
+**断流专用演练：进程 SIGSEGV（退出码 139），未产出通过证据**
+
+| 层 | 结论 |
+|---|---|
+| 本项目 | **已修复**：`ArmLink.set_realtime_push_enabled` 引用了不存在的私有属性 `_udp_port` / `_realtime_target_ip`（真实属性为公开的 `udp_port` / `realtime_target_ip`）→ 真机线程内抛 `AttributeError` → 进程 core dump。修复后单独调用 `set_realtime_push_enabled(False)` → `rc=0`、无崩溃；新增守卫 `dualarm_ws/src/rm_hw_bridge/tests/test_realtime_push_toggle.py`（7 例） |
+| 厂商 SDK | **未闭合**：修复上述缺陷后，「执行器正在流式下发 + 另一个连接关主动上报」的并发组合仍使进程 SIGSEGV → 指向 RM-API2 1.1.7 行为（所用符号 `rm_set_realtime_push` 在契约 `support` 名单内，属纯配置类） |
+
+**已知线索**：2026-11-19 的反馈通道专项采集（`udp_stability 600 s`）实测 24002 帧 / 断流窗口 0 / 周期 24.998 ms → 控制器在**无流式下发**时可稳定上报 600 s；因此差异点在「流式下发 + 反馈上报并发」的组合。
+
+---
+
 ## 7. 仍未闭合的项与下一步
 
 | 项 | 现状 | 下一步（具体命令/动作） |
@@ -405,11 +433,11 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | **基线状态位** | 四张表**仍非全 measured**：`measured_limits=measured`（已闭合），`zero_baseline` / `version_matrix` / `network_plan` 仍为 `blocked`（全表口径：示教器版本无自动读数路径、每关节零位与凹槽照片未采集、右臂实体不可达、执行层 600 s 长跑与 UDP 断流复现未执行） | 实测值已写在各表 `partial_observations` + 证据工件；**不得**为求 pass 改 status；一键回归 `baselines` 段 verdict 与四表 status 同向（本轮为 `blocked`，退出码 3） |
 | **示教器版本** | **未闭合**：无自动读数路径（只能人工读屏），2026-11-23 窗口无人操作示教器 → `version_matrix.teachpendant` 保持 `null`，该表因此**注定** `blocked` | 现场人员读示教器「系统信息」版本号 → 回填 `version_matrix.yaml`（连同已归档在 `partial_observations` 的控制器版本与容器镜像一次性搬入正式字段）→ 9 条全非 null 后才可改 `status=measured`；**归属 M002-o62zc6/T03** |
 | **FK 残差根因** | **未闭合**：2026-11-20 复测 `max_pos_dev_mm=151.460` / `max_ori_dev_deg=179.965`，`residual_kind=orientation_dependent`（约 130 mm / 约 180°）→ 指向 URDF 清洗 / 零位 / 控制器位姿参考系，**不写任何标定偏置** | 查零位（示教器凹槽照片 + 每关节零位读数）→ 核对官方 MDH 与清洗 URDF → 确认控制器位姿参考系 → 扩大位形多样性后复测 `python3 -m rmctl.hwcollect fk_cross --arm left --samples 8 --fk-amplitude-deg 5 --seed <seed> --out <dir>`（**远端主机**）；**归属 M002-o62zc6/T03** |
-| **CC2 的"连续 10 分钟"** | **blocked**：2026-11-20 真机窗口门禁未通过（ip 100% 丢包 / TCP 8080 timed out）→ 执行层 600 s 长跑**未执行、无任何实测数字**；现存最长真机执行仍只有 5.53 s / 501 拍（2026-11-19 V5）。结案工件：`workcell/baselines/evidence/rm75_s10_window_outcome.json` | 按结案工件的 `next_action` 依次执行：示教器重新使能 7 轴 → 清错误码复位 → `ss -ulnp \| grep -E '8091\|8092'` 确认端口空闲 → 重跑 `python3 scripts/rm75_window_run.py --out workcell/baselines/evidence/rm75_s10_window_outcome.json`（门禁通过后由该入口自动续跑 长跑 → 断流 → 阶梯） |
+| **CC2 的"连续 10 分钟"** | **仍未闭合，但阻塞原因已从「窗口不可用」换成真实根因**：2026-11-23 远端主机真机窗口**门禁全部通过**，执行层长跑**实际执行**两次，分别在 **145.24 s / 251.28 s** 处被**真实的 UDP 反馈断流**打断（`feedback_stream_lag` → `feedback_stream_lost` → `safety_l4_emergency_stop`），跟踪误差 RMS ≈ 0.003°、控制器保护停未触发；两次都**触发了 L4 急停**（安全链路真机实证）。工件：`workcell/baselines/evidence/rm75_s14_real_machine_window.json`（`status=blocked`）；结案工件 `workcell/baselines/evidence/rm75_s10_window_outcome.json` | 仍以结案工件入口为准：示教器重新使能 7 轴 → 清错误码复位 → `ss -ulnp \| grep -E '8091\|8092'` 确认端口空闲 → 重跑 `python3 scripts/rm75_window_run.py --out workcell/baselines/evidence/rm75_s10_window_outcome.json`（门禁通过后由该入口自动续跑 长跑 → 断流 → 阶梯）；并按工件 `findings` F1/F2 做隔离实验：① 流式下发期间统计反馈帧数与最后一帧时刻，区分「SDK 回调线程退出」与「控制器停止上报」；② 对照「只跑反馈通道」（已 600 s 通过）与「流式 + 反馈」的差异；③ 断流演练改为**同一连接**关闭主动上报（避开并发崩溃）；④ 若确认为厂商 SDK 行为，保留 core dump 向厂商反馈。**R001 保持 active** |
 | **CC1 取放 50 次 / 夹爪** | 未覆盖 | 需夹爪供电与协议时序打通后另开窗口 |
 | **双臂（P4/P5）** | 右臂 `192.168.1.19` **未接触**：2026-11-23 远端主机再次实测 `ping` 100% 丢包、TCP 8080 `[Errno 113] No route to host` → **该网段内不存在右臂实体**，本环境无法补测 | 右臂实体接入网段并确认可达后另开窗口；注意 UDP 端口 8092 预留；**归属 M002-o62zc6/T03** |
 | **里程碑验证重跑** | M001 仍是 `needs-attention` | 2026-11-20 已做**范围重划**：M001 收敛为单臂（验收条款、ROADMAP Success Criteria、CONTEXT、需求归属均已更新），夹爪/取放/现场人项移交新里程碑 **M002-o62zc6**（T01–T05）；M001 剩余未完成项为 10 分钟长跑与断流真机复现（2026-11-20 窗口门禁 blocked，见 `workcell/baselines/evidence/rm75_s10_window_outcome.json`；需臂使能 + 网络可达） |
-| **臂的使能状态** | 急停演练后已清错复位（`RM_IDLE_E`），但 **7 轴仍掉使能**（`joint_en_flag` 全 0） | 需在示教器**重新使能**；在此之前探针的 7 项前置检查会拒绝任何运动指令（这是预期行为） |
+| **臂的使能状态** | **2026-11-23 更新：已使能可用** —— 远端主机真机窗口的探针前置检查 **7/7 通过**（7 轴 `joint_en_flag` 全 1、`arm_err` / `joint_err_code` 全 0、控制器 `RM_NO_PLANNING_E` + `RM_IDLE_E`）；长跑期间未掉使能（事件链无掉使能项） | 若后续窗口又出现掉使能，仍需在示教器**重新使能**；在此之前探针的 7 项前置检查会拒绝任何运动指令（这是预期行为） |
 | **R004 电子围栏（能力缺口）** | **未闭合**：厂商 SDK **有**电子围栏接口（`dualarm_ws/src/rm_hw_bridge/vendor/rm_api2/include/rm_interface.h`：`rm_set_electronic_fence_enable` / `rm_set_electronic_fence_config` / `rm_set_virtual_wall_config` / `rm_get_virtual_wall_config`；类型 `rm_fence_config_t` / `rm_electronic_fence_enable_t` 见同目录 `rm_define.h`），但本项目的调用许可清单 `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml`（`core:` / `support:` / `blacklist:` 三段）grep 'fence' **零命中** → 装载层**没有绑定**这些符号 → 当前实现**无法下发电子围栏**；归属 M001/S02（R004 需求侧），实现侧移交 **M002-o62zc6**，R004 保持 active | 归属 **M002-o62zc6**（本里程碑 M001-3kzz40 **不做**：R004 的其余字段已由 S02 离线覆盖，而「下发电子围栏」需要新增 SDK 符号绑定 + 白名单条目，属独立技术债切片）；后续绑定入口路径：`rm_hw_bridge/abi_spec.yaml` 与 `rm_hw_bridge/generated/rm_api2_ctypes.py` 增加对应符号 → 在 `rm_hw_bridge/rm_hw_bridge/contract.yaml` 的 `support:` 段显式登记（含理由）→ 硬件层新增 `set_electronic_fence` 下发命令并接入 R004 的 `set_safety` 入口 |
 | **R008 真机版崩溃隔离（未实证）** | **未闭合**：离线层已实证（真实规划内核 + 真实四道校验 + 真实进程级 SIGKILL + `rm_executor` fake 回放；服务端超时被 SIGKILL 强制中断 8/8、服务被杀不影响运动执行 15/15），但**真机层的崩溃隔离未实证**——「`rm_runtime` 执行轨迹过程中 `kill -9 rm_planner` 后真机运动是否继续」本轮**未执行**，属真机窗口项（`.gsd/phases/01-3kzz40-phase/01-07-ASSESSMENT.md` 登记为 human-follow-up / NEEDS-HUMAN）；归属 M001/S07–S09，R008 保持 active | 真机窗口内执行：① `rm_runtime` 开始执行一条真机轨迹（记录服务 pid / worker pid / 轨迹点位）→ ② 另开终端 `kill -9 <rm_planner pid>` → ③ 观察真机运动是否继续，并记录是否出现安全事件 → ④ 回填 `docs/rm_planner规划服务说明.md` §9.2 与 `build/reports/s08_*`（口径先写「未实证」，回填后再改状态）→ ⑤ 回填本文档 §7 本行 |
 
