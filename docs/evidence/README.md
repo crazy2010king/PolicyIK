@@ -62,8 +62,11 @@
 # 全量证据复跑（唯一收集器，机器可读）
 python3 scripts/collect_evidence.py --output docs/evidence/s02-rerun.json
 
-# 单组复跑（unit / env / static / cli / plan / ci）
+# 单组复跑（unit / env / static / cli / plan / fault / ci）
 python3 scripts/collect_evidence.py --checks cli --json
+
+# 五类故障注入（替身传输层，全链恢复；物理注入仍属真机项）
+python3 scripts/collect_evidence.py --checks fault-inject --json
 
 # 上游归档字节级校验（R019）
 python3 tools/fetch_upstream.py --verify

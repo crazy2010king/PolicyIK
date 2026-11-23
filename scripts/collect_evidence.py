@@ -321,6 +321,38 @@ def _build_checks() -> List[Check]:
         )
     )
 
+    # ── 组 fault：五类故障注入（替身传输层，全链恢复）──────────────
+    # 闭合第 1 轮验证的 advisory A2（证据面缺故障注入检查项）：
+    # 五类故障（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位 / 供电跌落）
+    # 在替身传输层注入后必须全部进入安全态并恢复到 READY。
+    # 物理注入（真实拔网线 / 落物 / 实物超限位）仍属真机项，不在此检查范围内。
+    checks.append(
+        Check(
+            id="fault-inject",
+            group="fault",
+            description=(
+                "五类故障注入（fault_inject.py，替身传输层）：全部 ok=true / recovered=true "
+                "/ safe_state=fault / final_state=ready，failed=[]"
+            ),
+            steps=(
+                Step(
+                    command=(
+                        sys.executable,
+                        "scripts/fault_inject.py",
+                        "--json",
+                    ),
+                    patterns=(
+                        r'"failed"\s*:\s*\[\s*\]',
+                        r'"ok"\s*:\s*true',
+                        r'"recovered"\s*:\s*true',
+                        r'"final_state"\s*:\s*"ready"',
+                    ),
+                    timeout_s=900.0,
+                ),
+            ),
+        )
+    )
+
     # ── 组 ci：CI fast 档 ──────────────────────────────────────────
     checks.append(
         Check(

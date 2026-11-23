@@ -177,7 +177,7 @@
 - 验证：`python3 tools/verify_env.py --model --joint-limits /nonexistent/path.yaml` → **exit 2** 且 stderr 点名路径（对齐 `01-01-UAT.md:47` 逐字契约）；`python3 scripts/fault_inject.py --json` → exit 0，5/5 case `ok=true / recovered=true / safe_state=fault / final_state=ready`、`failed=[]`。
 
 ### S09 证据闭合与需求口径校准（low）
-- 交付：`scripts/collect_evidence.py`（**唯一证据收集器**，8 个检查项：`pytest-not-slow` / `verify-env-model` / `verify-env-plan` / `forbidden-apis-scan` / `cli-single-replay` / `cli-bimanual` / `plan-stats` / `ci-fast`）、`docs/evidence/`（机器可读 JSON + 人类可读 Markdown 双份）、`docs/architecture/fk-tolerance.md`、`tools/fetch_upstream.py --verify`（归档字节级校验）。
+- 交付：`scripts/collect_evidence.py`（**唯一证据收集器**，9 个检查项：`pytest-not-slow` / `verify-env-model` / `verify-env-plan` / `forbidden-apis-scan` / `cli-single-replay` / `cli-bimanual` / `plan-stats` / **`fault-inject`** / `ci-fast`）、`docs/evidence/`（机器可读 JSON + 人类可读 Markdown 双份）、`docs/architecture/fk-tolerance.md`、`tools/fetch_upstream.py --verify`（归档字节级校验）。
 - 验证：`python3 tools/fetch_upstream.py --verify` → exit 0「校验通过：2 个资产」，sha256 与 MANIFEST + versions.lock 三方逐字一致（rm_models `fb7ab533…`、two_finger_gripper `975b5474…`）。
 
 ---
@@ -279,7 +279,7 @@
 | B1 | `.gsd/phases/01-acm1jg-phase/01-01-ASSESSMENT.md` | `verdict: FAIL` | 其唯一 FAIL 判据（`--joint-limits` 非法路径期望 2、实测 1）已被 S08 修复，本轮实测 **exit 2** |
 | B2 | `01-00-ASSESSMENT.md` | `verdict: PARTIAL` | 未决项"上游归档正向字节级校验"已被 S09 闭合（`fetch_upstream.py --verify` exit 0） |
 | B3 | `01-02-ASSESSMENT.md` | **文件不存在** | 10 切片唯一缺口；S02 的 runtime-executable 证据已入库（`docs/evidence/S02-rerun.md/json`），但缺与其它切片同构的逐条 check + 证据 ID 记录 |
-| B4 | S09 证据面 / 需求台账 | 缺第五类故障项；R013 Proof 未回填 | `collect_evidence.py` 的 8 个检查项里没有 fault-inject 项 |
+| B4 | S09 证据面 / 需求台账 | 缺第五类故障项；R013 Proof 未回填 | **已闭合**：`collect_evidence.py` 新增 `fault-inject` 检查项（5 类替身注入全链恢复，exit 0）；R013 Proof 已回填 |
 
 #### 成因 C：硬约束（补不上的部分）
 
@@ -327,7 +327,7 @@
 
 | 路径 | 内容 | 代价 |
 |---|---|---|
-| **A. 证据补全（推荐）** | ① **已完成**：真机第三轮原始 JSON 取回入库 `docs/evidence/`（8 个 JSON + 1 份纪要），README 索引与速查表同步更新；② **已完成**：全过程说明 / ROADMAP / VALIDATION 归档进 `docs/milestone/`；③ **待做**：用 `gsd_summary_save` 重写 S00/S01 ASSESSMENT、补建 S02 ASSESSMENT；④ **待做**：`collect_evidence.py` 增加 fault-inject 检查项 + `gsd_requirement_update` 回填 R013；⑤ **待做**：`gsd_validate_milestone`（round 2）引用上述新证据 | 台账类改动无硬件依赖；运动级复跑需人在场 |
+| **A. 证据补全（推荐）** | ① **已完成**：真机第三轮原始 JSON 取回入库 `docs/evidence/`（8 个 JSON + 1 份纪要），README 索引与速查表同步更新；② **已完成**：全过程说明 / ROADMAP / VALIDATION 归档进 `docs/milestone/`；③ **待做**：用 `gsd_summary_save` 重写 S00/S01 ASSESSMENT、补建 S02 ASSESSMENT；④ **已完成**：`collect_evidence.py` 增加 `fault-inject` 检查项 + `gsd_requirement_update` 回填 R013；⑤ **待做**：`gsd_validate_milestone`（round 2）引用上述新证据 | 台账类改动无硬件依赖；运动级复跑需人在场 |
 | **B. 口径调整** | 只修台账，并把 SC1/SC2 中"需双真机/物理急停"明确改判为"现场条件不具备 ⇒ 登记项" | 等于承认降低验收标准，需评审同意 |
 | **C. 只出报告** | 维持现状 | 里程碑持续 blocked |
 
