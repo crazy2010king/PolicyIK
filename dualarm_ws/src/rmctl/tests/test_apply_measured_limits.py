@@ -74,6 +74,18 @@ def read_limits(ws):
     return text, yaml.safe_load(text)
 
 
+def current_limit(ws, joint="joint1", field="acceleration"):
+    """限值文件里该关节该字段的**当前**已生效值。
+
+    2026-11-23（S13）：真机实测限值回填后，仓库里的 joint_limits.yaml 已不再是
+    5.2359 / 30.0 的保守占位（acc 已按实测收紧到 1.48~2.44 rad/s^2，jerk 仍 30.0）。
+    因此这些断言改为**按现值推算**期望值（conservative 语义仍是 min(实测, 现值)），
+    而不是写死占位值 —— 工具的行为契约（min(实测, 现值)）不变。
+    """
+    _, data = read_limits(ws)
+    return data["rm75_arm"][joint][field]
+
+
 def codes(report, level="error"):
     return [i["code"] for i in report["issues"] if i["level"] == level]
 
@@ -130,14 +142,16 @@ def test_write_keeps_yaml_valid_comments_and_provenance(tmp_workspace):
     """写盘后：仍是合法 YAML、7 个关节键齐全、原注释未丢失、来源与日期已追加。"""
     write_baseline(tmp_workspace, measured_baseline(acc=4.0, jerk=20.0))
     original_text, _ = read_limits(tmp_workspace)
+    pre_acc = current_limit(tmp_workspace)
+    pre_jerk = current_limit(tmp_workspace, field="jerk")
     rc = aml.main(["--ws", tmp_workspace, "--date", "2026-11-13"])
     assert rc == 0
     text, data = read_limits(tmp_workspace)
     # 合法 YAML + 7 个关节齐全
     group = data["rm75_arm"]
     assert set(group.keys()) == set(JOINTS)
-    assert group["joint1"]["acceleration"] == pytest.approx(4.0)
-    assert group["joint1"]["jerk"] == pytest.approx(20.0)
+    assert group["joint1"]["acceleration"] == pytest.approx(min(4.0, pre_acc))
+    assert group["joint1"]["jerk"] == pytest.approx(min(20.0, pre_jerk))
     # 原注释逐字保留（文件头 + 每个关节行尾）
     assert "# 自建关节限值（唯一真值）" in text
     assert "±178°, 180°/s" in text
@@ -154,6 +168,7 @@ def test_provenance_block_is_replaced_not_appended(tmp_workspace):
     write_baseline(tmp_workspace, measured_baseline(acc=4.0, jerk=20.0))
     assert aml.main(["--ws", tmp_workspace, "--date", "2026-11-13"]) == 0
     first, _ = read_limits(tmp_workspace)
+    after_first = current_limit(tmp_workspace)
     # 第二次回填：实测值更小 → 仍然只应有一个记录块
     write_baseline(tmp_workspace, measured_baseline(acc=3.0, jerk=15.0))
     assert aml.main(["--ws", tmp_workspace, "--date", "2026-11-14"]) == 0
@@ -161,7 +176,8 @@ def test_provenance_block_is_replaced_not_appended(tmp_workspace):
     assert second.count("实测限值回填记录") == 1
     assert "回填日期: 2026-11-14" in second
     assert "回填日期: 2026-11-13" not in second
-    assert data["rm75_arm"]["joint1"]["acceleration"] == pytest.approx(3.0)
+    assert data["rm75_arm"]["joint1"]["acceleration"] == pytest.approx(
+        min(3.0, after_first))
     assert set(data["rm75_arm"].keys()) == set(JOINTS)
     assert len(second.splitlines()) <= len(first.splitlines()) + 1
 
@@ -169,6 +185,7 @@ def test_provenance_block_is_replaced_not_appended(tmp_workspace):
 def test_write_refreshes_build_model_copy(tmp_workspace):
     """机器本地的 build/model 副本也刷新（rmctl 实际读这一份）。"""
     write_baseline(tmp_workspace, measured_baseline(acc=3.0, jerk=10.0))
+    pre_joint3 = current_limit(tmp_workspace, joint="joint3")
     build_dir = os.path.join(tmp_workspace, "build", "model")
     os.makedirs(build_dir, exist_ok=True)
     build_copy = os.path.join(build_dir, "joint_limits.yaml")
@@ -177,7 +194,8 @@ def test_write_refreshes_build_model_copy(tmp_workspace):
     assert rc == 0
     with open(build_copy, "r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
-    assert data["rm75_arm"]["joint3"]["acceleration"] == pytest.approx(3.0)
+    assert data["rm75_arm"]["joint3"]["acceleration"] == pytest.approx(
+        min(3.0, pre_joint3))
 
 
 def test_diff_summary_lists_per_joint(tmp_workspace):
@@ -223,14 +241,15 @@ def test_broken_evidence_is_refused(tmp_workspace, mutate, expect_code):
     base = measured_baseline()
     mutate(base)
     write_baseline(tmp_workspace, base)
+    pre_acc = current_limit(tmp_workspace)
     rc = aml.main(["--ws", tmp_workspace])
     assert rc == 3
     # 拒绝原因必须明确指向该条证据缺失
     rep = aml.plan_backfill(base, read_limits(tmp_workspace)[1])
     assert expect_code in codes(rep)
-    # 拒绝时不得写坏限值文件
+    # 拒绝时不得写坏限值文件（数值必须与拒绝前逐字相同）
     _, data = read_limits(tmp_workspace)
-    assert data["rm75_arm"]["joint1"]["acceleration"] == pytest.approx(5.2359)
+    assert data["rm75_arm"]["joint1"]["acceleration"] == pytest.approx(pre_acc)
 
 
 def test_missing_joint_in_limits_is_refused(tmp_workspace):

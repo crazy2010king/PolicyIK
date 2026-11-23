@@ -114,11 +114,20 @@ def _blank(v):
 
 
 def _fmt_num(v):
-    """数值 → 稳定的 YAML 文本（保留浮点身份，不写成 int）。"""
+    """数值 → 稳定的 YAML 文本（保留浮点身份，不写成 int）。
+
+    2026-11-23（S13）：**不再**把浮点截断到 9 位小数。
+
+    截断的副作用：写盘值与基线值（= 工件里的逐字实测值）之间会出现 <1e-9 的差，
+    而 ``rmctl baseline check`` 是**精确比较**（基线 value > 已生效限值即报
+    ``limit_above_joint_limits``）→ 基线值会被判成"比已生效限值更宽松"，
+    明明刚回填就自相矛盾。保留完整精度后，写盘值与基线值**逐字相等**，
+    口径自洽（只收紧不放宽的判定仍然成立）。
+    """
     f = float(v)
     if f == int(f) and abs(f) < 1e15:
         return "%.1f" % f
-    return repr(round(f, 9))
+    return repr(f)
 
 
 def _one_line(text):

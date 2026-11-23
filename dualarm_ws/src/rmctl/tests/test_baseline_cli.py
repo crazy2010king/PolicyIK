@@ -199,11 +199,20 @@ def test_doctor_limits_measured_is_info_not_blocking(capsys, repo_root):
 
 
 def test_doctor_limits_measured_reports_blocked_status(capsys, repo_root):
-    """基线为 blocked 时，doctor 必须如实显示 status=blocked。"""
+    """doctor 必须如实显示基线的 status（与 YAML 逐字一致）。
+
+    2026-11-23（S13）起 measured_limits 已实测（status=measured），
+    故这里断言"doctor 显示的 status == YAML 里的 status"，
+    而不是写死 blocked（那只是 S13 之前的状态）。
+    """
+    import yaml as _yaml
+    with open(os.path.join(repo_root, "workcell", "baselines", "measured_limits.yaml"),
+              "r", encoding="utf-8") as fh:
+        status = (_yaml.safe_load(fh) or {}).get("status")
     code, out = _run(capsys, ["--ws", repo_root, "doctor"])
     line = [ln for ln in out.splitlines() if "limits:measured" in ln]
     assert line, out
-    assert "status=blocked" in line[0]
+    assert "status=%s" % status in line[0], line[0]
 
 
 def test_doctor_check_count_increased_by_two(capsys, repo_root):

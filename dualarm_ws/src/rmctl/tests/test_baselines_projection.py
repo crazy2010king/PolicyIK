@@ -138,10 +138,13 @@ def test_status_not_hardcoded_but_follows_yaml(tmp_workspace):
     row = next(r for r in rows if r["kind"] == kind)
     assert row["yaml_status"] == "measured"
     assert row["status"] == "measured"
-    # 其余三类未回填 → 仍 blocked（反向断言：不会因为一张表而全体变 measured）
+    # 其余**本用例未改写**的表仍是 blocked（反向断言：不会因为一张表而全体变 measured）
+    # 注：measured_limits 自 S13（2026-11-23）起已实测（status=measured），
+    #     它不是本用例改写的对象，故不参与这条反向断言。
     for other in rows:
-        if other["kind"] != kind:
-            assert other["status"] != "measured", other["kind"]
+        if other["kind"] in (kind, "measured_limits"):
+            continue
+        assert other["status"] != "measured", other["kind"]
 
 
 def test_blocked_yaml_never_projected_as_measured(repo_root):
@@ -241,10 +244,17 @@ def test_missing_status_field_is_blocked_and_named(tmp_path, tmp_workspace):
 
 
 def test_schema_violation_is_fail_not_blocked(tmp_path, tmp_workspace):
-    """未实测项填占位数值 → schema 违规 → 段级 fail（仓库侧契约破坏）。"""
+    """实测值与已生效限值冲突 → schema 违规 → 段级 fail（仓库侧契约破坏）。
+
+    2026-11-23（S13）起 measured_limits 已是 measured（S13 前这里是"blocked 表里
+    填了占位数值"）。两种状态下的违规本质相同——**实测值与基线口径不自洽**，
+    这里用"基线值高于已生效限值"（limit_above_joint_limits）触发同一个 fail 路径。
+    """
     kind = "measured_limits"
     data = _read_yaml(tmp_workspace, kind)
-    data["joints"][0]["acceleration"]["value"] = 1.23  # status=blocked 时必须 null
+    limits = bl.load_joint_limits(tmp_workspace)
+    data["joints"][0]["acceleration"]["value"] = \
+        limits["joint1"]["acceleration"] * 1.5  # 高于已生效限值
     _write_yaml(tmp_workspace, kind, data)
     reports_dir = str(tmp_path / "reports")
     result = blp.run_baselines(repo_root=tmp_workspace, ws=tmp_workspace,

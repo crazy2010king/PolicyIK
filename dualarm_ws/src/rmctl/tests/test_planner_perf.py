@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import importlib.util
 import os
 import sys
@@ -365,8 +366,18 @@ def test_redline_density_check_is_not_vacuous(model):
     没有这一条，上一条「两种点数结论一致」可能是**平凡成立**的（例如两边
     都因为数据缺失而跳过校验）。这里构造一条「少点抹平 jerk 峰值」的轨迹：
     粗校验通过、稠密校验不过 —— 证明稠密化确实在提高校验分辨率。
+
+    2026-11-23（S13）起 joint_limits.yaml 的 acceleration 已按真机实测收紧
+    （1.48~2.44 rad/s^2）→ 这条固定轨迹会在**粗校验**阶段就撞上 acceleration
+    上限，前置条件不再成立 —— 变的是限值口径，不是分辨率机制。故把模型限值
+    **钉死**在回填前的占位值（不改判据、不放宽任何真实限值）。
     """
     from rmctl.verify import check_limits, resample_trajectory
+
+    pinned = copy.copy(model)
+    pinned.limits = {joint: {"acceleration": 5.2359, "jerk": 30.0, "velocity": 3.1416}
+                     for joint in model.joint_names}
+    model = pinned
 
     times = [0.0, 0.3488, 0.5544, 0.8298, 1.0]
     values = [-0.7242, -0.5601, -0.5130, -0.3139, -0.2105]

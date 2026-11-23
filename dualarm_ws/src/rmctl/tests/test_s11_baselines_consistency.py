@@ -326,13 +326,24 @@ def test_version_numbers_are_monotonic():
 # 5. 负例（Q7）：伪造 measured 主张 / 缺自证 → 必须被判出来
 # ---------------------------------------------------------------------------
 def _copy_workspace(tmp_path):
-    """把四张基线 YAML 复制到临时工作区（负例用）。"""
+    """把四张基线 YAML + 关节限值文件复制到临时工作区（负例用）。
+
+    2026-11-23（S13）：measured_limits 已是 measured → 基线校验会拿**已生效限值**
+    做保守性比对（value 不得高于限值），负例工作区必须带上 joint_limits.yaml，
+    否则比对无从做起（只会得到 joint_limits_unavailable）。
+    """
     ws = str(tmp_path / "ws")
     target = os.path.join(ws, "workcell", "baselines")
     os.makedirs(target, exist_ok=True)
     for kind in bl.KINDS:
         shutil.copy2(_yaml_path(REPO_ROOT, kind),
                      os.path.join(target, "%s.yaml" % kind))
+    limits_dst = os.path.join(ws, "dualarm_ws", "src", "rm_description", "config")
+    os.makedirs(limits_dst, exist_ok=True)
+    shutil.copy2(
+        os.path.join(REPO_ROOT, "dualarm_ws", "src", "rm_description", "config",
+                     "joint_limits.yaml"),
+        os.path.join(limits_dst, "joint_limits.yaml"))
     return ws
 
 
@@ -342,15 +353,26 @@ def _error_codes(report):
 
 
 def test_placeholder_value_in_blocked_table_is_rejected(tmp_path):
-    """负例：blocked 的 measured_limits 里填了占位 acc → 必须报 error。"""
+    """负例：基线里的实测值与口径不自洽 → 必须报 error。
+
+    2026-11-23（S13）起 measured_limits 已是 measured → 同类负例换成
+    "基线值高于已生效限值"（limit_above_joint_limits）；仍是 error，不是 warning。
+    """
     ws = _copy_workspace(tmp_path)
     data = _read_yaml(ws, "measured_limits")
-    data["joints"][0]["acceleration"]["value"] = 5.0
+    if data.get("status") == "measured":
+        limits = bl.load_joint_limits(ws)
+        data["joints"][0]["acceleration"]["value"] = \
+            limits["joint1"]["acceleration"] * 1.5
+        expect = "limit_above_joint_limits"
+    else:
+        data["joints"][0]["acceleration"]["value"] = 5.0
+        expect = "unmeasured_value_present"
     _write_yaml(ws, "measured_limits", data)
     report = bl.validate_all(ws)
     assert not report["ok"], "填了占位数值却判定通过"
     codes = {code for code, _ in _error_codes(report)}
-    assert "unmeasured_value_present" in codes, sorted(codes)
+    assert expect in codes, sorted(codes)
 
 
 def test_blocked_without_reason_is_rejected(tmp_path):
@@ -379,7 +401,8 @@ def test_placeholder_value_makes_regression_segment_fail(tmp_path):
     """负例：伪造实测值 → 回归 baselines 段必须判 fail（不得静默 pass）。"""
     ws = _copy_workspace(tmp_path)
     data = _read_yaml(ws, "measured_limits")
-    data["joints"][1]["jerk"]["value"] = 30.0
+    # 45.0 在两种状态下都是违规：blocked 态 → 占位数值；measured 态 → 高于已生效限值
+    data["joints"][1]["jerk"]["value"] = 45.0
     _write_yaml(ws, "measured_limits", data)
     reports_dir = str(tmp_path / "reports")
     result = blp.run_baselines(repo_root=ws, ws=ws, reports_dir=reports_dir)

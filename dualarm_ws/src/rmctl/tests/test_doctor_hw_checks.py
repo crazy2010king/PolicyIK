@@ -10,10 +10,33 @@
 **不依赖本机是否装了 SDK / 厂商库**：所有"缺失"场景都在临时工作区里构造。
 """
 import os
+import shutil
 
 import pytest
 
 from rmctl import cli
+
+
+def _fake_repo_without_baseline(tmp_path, repo_root, monkeypatch):
+    """造一个"仓库根"形态的临时目录：有 ``dualarm_ws/src/rm_description`` 与
+    ``workcell/``，但**没有** ``measured_limits.yaml``（= 基线未实测）。
+
+    为什么不用 ``tmp_workspace``：``rm_hw_bridge.paths.workspace_root()`` 以
+    ``$RM_WS`` 为最高优先级，而临时工作区缺 ``dualarm_ws/src/rm_description``
+    标记目录 → 硬件层解析不到"仓库根" → 回退到**仓库本身**的基线，
+    "删掉临时副本"根本不起作用（这条负例必须可复现）。故用 ``$RM_WS``
+    指向一个真正的假仓库根。
+    """
+    root = tmp_path / "fake_repo"
+    (root / "dualarm_ws" / "src" / "rm_description" / "config").mkdir(parents=True)
+    (root / "workcell" / "baselines").mkdir(parents=True)
+    shutil.copyfile(
+        os.path.join(repo_root, "dualarm_ws", "src", "rm_description", "config",
+                     "joint_limits.yaml"),
+        str(root / "dualarm_ws" / "src" / "rm_description" / "config" /
+            "joint_limits.yaml"))
+    monkeypatch.setenv("RM_WS", str(root))
+    return str(root)
 
 
 def _run(capsys, argv):
@@ -132,20 +155,20 @@ def test_hw_contract_check_reports_violation_detail(tmp_workspace):
 
 
 # ------------------------------------------------------- 负例：限值未实测
-def test_hw_limits_source_not_measured_is_info(capsys, tmp_workspace):
+def test_hw_limits_source_not_measured_is_info(capsys, tmp_path, repo_root, monkeypatch):
     """基线未实测 → hw:limits_source 是 INFO（不阻塞），action 指向回填流程。"""
-    os.remove(os.path.join(tmp_workspace, "workcell", "baselines", "measured_limits.yaml"))
-    _, out = _run(capsys, ["--ws", tmp_workspace, "doctor"])
+    ws = _fake_repo_without_baseline(tmp_path, repo_root, monkeypatch)
+    _, out = _run(capsys, ["--ws", ws, "doctor"])
     line = _line_of(out, "hw:limits_source")
     assert line, out
     assert "[INFO]" in line, line
     assert "apply_measured_limits.py" in out, out
 
 
-def test_hw_limits_source_check_status_not_measured(tmp_workspace):
+def test_hw_limits_source_check_status_not_measured(tmp_path, repo_root, monkeypatch):
     """单元级：限值来源不是 measured 时 ok=False、level=INFO、detail 带 status。"""
-    os.remove(os.path.join(tmp_workspace, "workcell", "baselines", "measured_limits.yaml"))
-    chk = cli._hw_limits_source_check(tmp_workspace)
+    ws = _fake_repo_without_baseline(tmp_path, repo_root, monkeypatch)
+    chk = cli._hw_limits_source_check(ws)
     assert chk["name"] == "hw:limits_source"
     assert chk["ok"] is False
     assert chk["level"] == "INFO"

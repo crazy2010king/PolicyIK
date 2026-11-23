@@ -11,10 +11,30 @@
 #   复检位置，会把**合法可执行**的位姿判成越界（实测 501 项越界，真机执行层无法
 #   执行任何以当前位姿为起点的轨迹）。故两者必须分开。
 rm75_arm:
-  joint1: {lower: -3.106,  upper: 3.106,  velocity: 3.1416, acceleration: 5.2359, jerk: 30.0}   # ±178°, 180°/s
-  joint2: {lower: -2.2689, upper: 2.2689, velocity: 3.1416, acceleration: 5.2359, jerk: 30.0}   # ±130°, 180°/s
-  joint3: {lower: -3.106,  upper: 3.106,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±178°, 225°/s
-  joint4: {lower: -2.356,  upper: 2.356,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±135°, 225°/s
-  joint5: {lower: -3.106,  upper: 3.106,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±178°, 225°/s
-  joint6: {lower: -2.234,  upper: 2.234,  velocity: 3.9270, acceleration: 5.2359, jerk: 30.0}   # ±128°, 225°/s
-  joint7: {lower: -3.14159, upper: 3.14159, execution_lower: -6.283185, execution_upper: 6.283185, velocity: 3.9270, acceleration: 5.2359, jerk: 30.0} # 规划域 ±180°，执行域 ±360°（厂商参数页）
+  joint1: {lower: -3.106,  upper: 3.106,  velocity: 3.1416, acceleration: 1.755718584483999, jerk: 30.0}   # ±178°, 180°/s
+  joint2: {lower: -2.2689, upper: 2.2689, velocity: 3.1416, acceleration: 2.4365919720514606, jerk: 30.0}   # ±130°, 180°/s
+  joint3: {lower: -3.106,  upper: 3.106,  velocity: 3.9270, acceleration: 1.4804146765637594, jerk: 30.0}   # ±178°, 225°/s
+  joint4: {lower: -2.356,  upper: 2.356,  velocity: 3.9270, acceleration: 2.2030060277953374, jerk: 30.0}   # ±135°, 225°/s
+  joint5: {lower: -3.106,  upper: 3.106,  velocity: 3.9270, acceleration: 1.7539498082448197, jerk: 30.0}   # ±178°, 225°/s
+  joint6: {lower: -2.234,  upper: 2.234,  velocity: 3.9270, acceleration: 1.821400596792399, jerk: 30.0}   # ±128°, 225°/s
+  joint7: {lower: -3.14159, upper: 3.14159, execution_lower: -6.283185, execution_upper: 6.283185, velocity: 3.9270, acceleration: 2.3343106979504324, jerk: 30.0} # 规划域 ±180°，执行域 ±360°（厂商参数页）
+
+# ── 实测限值回填记录（apply_measured_limits.py 自动追加，勿手改）──
+# 回填日期: 2026-11-23
+# 基线来源: workcell/baselines/measured_limits.yaml（version=6, status=measured, captured_at=2026-11-23T02:38:37+00:00）
+# 回填模式: conservative
+# 逐关节来源（source | method | samples）:
+#   joint1   acceleration source=workcell/baselines/evidence/rm75_validation_ladder_20261119.json（V8 阶段 ladder_acc_jerk） | method=实测包络 1.755718584483999 rad/s^2（S01 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(1.755718584483999, 5.2359) = 1.755718584483999 rad/s^2（只收紧不放宽） | samples=3
+#   joint1   jerk         source=workcell/baselines/evidence/rm75_validation_ladder_20261119.json（V8 阶段 ladder_acc_jerk） | method=实测包络 81.09893830324319 rad/s^3（S01 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(81.09893830324319, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽） | samples=3
+#   joint2   acceleration source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint2 包络，3 档取 min） | method=实测包络 2.4365919720514606 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(2.4365919720514606, 5.2359) = 2.4365919720514606 rad/s^2（只收紧不放宽） | samples=3
+#   joint2   jerk         source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint2 包络，3 档取 min） | method=实测包络 108.50930700229166 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(108.50930700229166, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽） | samples=3
+#   joint3   acceleration source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint3 包络，3 档取 min） | method=实测包络 1.4804146765637594 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(1.4804146765637594, 5.2359) = 1.4804146765637594 rad/s^2（只收紧不放宽） | samples=3
+#   joint3   jerk         source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint3 包络，3 档取 min） | method=实测包络 74.13862019128324 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(74.13862019128324, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽） | samples=3
+#   joint4   acceleration source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint4 包络，3 档取 min） | method=实测包络 2.2030060277953374 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(2.2030060277953374, 5.2359) = 2.2030060277953374 rad/s^2（只收紧不放宽） | samples=3
+#   joint4   jerk         source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint4 包络，3 档取 min） | method=实测包络 90.30649361146672 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(90.30649361146672, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽） | samples=3
+#   joint5   acceleration source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint5 包络，3 档取 min） | method=实测包络 1.7539498082448197 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(1.7539498082448197, 5.2359) = 1.7539498082448197 rad/s^2（只收紧不放宽） | samples=3
+#   joint5   jerk         source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint5 包络，3 档取 min） | method=实测包络 103.12441546845534 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(103.12441546845534, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽） | samples=3
+#   joint6   acceleration source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint6 包络，3 档取 min） | method=实测包络 1.821400596792399 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(1.821400596792399, 5.2359) = 1.821400596792399 rad/s^2（只收紧不放宽） | samples=3
+#   joint6   jerk         source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint6 包络，3 档取 min） | method=实测包络 95.17370715070257 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(95.17370715070257, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽） | samples=3
+#   joint7   acceleration source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint7 包络，3 档取 min） | method=实测包络 2.3343106979504324 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(2.3343106979504324, 5.2359) = 2.3343106979504324 rad/s^2（只收紧不放宽） | samples=3
+#   joint7   jerk         source=workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint7 包络，3 档取 min） | method=实测包络 97.83636375219686 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(97.83636375219686, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽） | samples=3

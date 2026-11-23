@@ -30,6 +30,7 @@
 """
 from __future__ import annotations
 
+import copy
 import math
 import os
 import shutil
@@ -90,6 +91,21 @@ def _smooth_trajectory(n_knots=9, amplitude=0.2, omega=1.0, horizon=1.0):
 #: 通过；稠密化（0.01 rad）后数值微分逼近真实导数 → jerk 峰值暴露 → 不通过。
 PEAK_TIMES = [0.0, 0.3488, 0.5544, 0.8298, 1.0]
 PEAK_VALUES = [-0.7242, -0.5601, -0.5130, -0.3139, -0.2105]
+
+#: 本文件测的是**校验分辨率**（点数 ↔ 校验强度），与"实测限值口径"无关。
+#: S13（2026-11-23）起 joint_limits.yaml 的 acceleration 已按真机实测**逐关节收紧**
+#: （1.48~2.44 rad/s^2）→ 上面那条固定的"少点抹平 jerk 峰值"轨迹会在**粗校验**
+#: 阶段就撞上 acceleration 上限，前置条件（粗校验通过）不再成立 —— 变的是限值口径，
+#: 不是分辨率机制。故在需要该前置条件的用例里把模型限值**钉死**在回填前的占位值，
+#: 让断言只检验分辨率机制本身（不改判据、不放宽任何真实限值）。
+PINNED_LIMITS = {"acceleration": 5.2359, "jerk": 30.0, "velocity": 3.1416}
+
+
+def _pinned_model(model):
+    """返回一份限值被钉死（回填前占位值）的模型副本。"""
+    pinned = copy.copy(model)
+    pinned.limits = {joint: dict(PINNED_LIMITS) for joint in model.joint_names}
+    return pinned
 
 
 # --------------------------------------------------------------------------
@@ -222,6 +238,7 @@ def test_few_points_do_not_flatten_jerk_peak(model):
     SUCCESS）：点数少 → 数值微分的峰值被抹平 → 校验被静默削弱。稠密化后
     结论**不被削弱**（反而更严格）。
     """
+    model = _pinned_model(model)
     points, times = _trajectory(PEAK_TIMES, PEAK_VALUES)
 
     coarse_issues, _ = check_limits(model, points, times)
@@ -242,6 +259,7 @@ def test_few_points_do_not_flatten_jerk_peak(model):
 
 def test_dense_verification_never_weakens_the_verdict(model):
     """单调性：粗校验不过 → 稠密校验也不过（不允许「变绿」）。"""
+    model = _pinned_model(model)
     # (1) 位置越限：粗/稠密都不过
     over, over_times = _trajectory([0.0, 1.0], [0.0, 3.5])
     dense_over, dense_over_times = resample_trajectory(over, over_times, STEP_RAD)

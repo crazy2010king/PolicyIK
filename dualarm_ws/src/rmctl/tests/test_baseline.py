@@ -49,6 +49,16 @@ def test_pending_state_is_informational_not_blocking(tmp_workspace):
             data = yaml.safe_load(fh)
         data["status"] = "pending"
         data.pop("blocked", None)
+        # 2026-11-23（S13）：measured_limits 已整体升为 measured，值字段非空；
+        # 切到 pending 时必须同时把实测值清成 null（pending 态的硬契约：
+        # 未实测项不得留占位数值），否则这条用例测的是"契约被破坏"。
+        if name == "measured_limits.yaml":
+            for j in data.get("joints") or []:
+                for field in ("acceleration", "jerk"):
+                    if isinstance(j.get(field), dict):
+                        j[field]["value"] = None
+            if isinstance(data.get("tcp_repeatability"), dict):
+                data["tcp_repeatability"]["value_mm"] = None
         with open(path, "w", encoding="utf-8") as fh:
             yaml.safe_dump(data, fh, allow_unicode=True, sort_keys=False)
     report = bl.validate_all(ws=tmp_workspace)
@@ -59,18 +69,36 @@ def test_pending_state_is_informational_not_blocking(tmp_workspace):
 
 
 def test_repo_baselines_are_unmeasured_honest(repo_root):
-    """未实测项必须是 null（禁止占位数值）。"""
+    """未实测项必须是 null（禁止占位数值）；已实测项必须带证据。
+
+    2026-11-23（S13）起 measured_limits 已整体升为 measured（值非空），
+    故本断言按**状态**分支：status != measured → 实测值必须为 null；
+    status == measured → 值必须为正数且带 source/method/samples。
+    """
     for kind in KINDS:
         data = bl.load_baseline(kind, repo_root)
-        assert data["status"] in ("pending", "blocked"), kind
+        assert data["status"] in ("pending", "blocked", "measured"), kind
+        if data["status"] != "measured":
+            if kind == "measured_limits":
+                for j in data["joints"]:
+                    assert j["acceleration"]["value"] is None
+                    assert j["jerk"]["value"] is None
+                assert data["tcp_repeatability"]["value_mm"] is None
+            if kind == "zero_baseline":
+                for j in data["joints"]:
+                    assert j["zero_deg"] is None
+            continue
+        # measured：值必须是**带证据**的正数（不得是占位数值）
         if kind == "measured_limits":
             for j in data["joints"]:
-                assert j["acceleration"]["value"] is None
-                assert j["jerk"]["value"] is None
-            assert data["tcp_repeatability"]["value_mm"] is None
-        if kind == "zero_baseline":
-            for j in data["joints"]:
-                assert j["zero_deg"] is None
+                for field in ("acceleration", "jerk"):
+                    item = j[field]
+                    assert item["value"] and item["value"] > 0, (j["name"], field)
+                    assert item["source"] and item["method"], (j["name"], field)
+                    assert item["samples"] >= 3, (j["name"], field)
+            tcp = data["tcp_repeatability"]
+            assert tcp["value_mm"] is not None and tcp["value_mm"] >= 0
+            assert tcp["source"] and tcp["method"] and tcp["samples"] >= 3
 
 
 def test_repo_baselines_are_either_measured_or_blocked(repo_root):
@@ -281,14 +309,21 @@ def test_blocked_status_also_forbids_placeholder_values():
 
 # ------------------------------------------------------------------ measured 口径
 def _measured_limits_data(acc=5.2359, jerk=30.0, samples=5, source="ladder_acc_jerk",
-                          method="阶梯速度反推"):
+                          method="阶梯速度反推", limits=None):
     data = _minimal("measured_limits")
     data["status"] = "measured"
     data["captured_at"] = "2026-11-13T10:00:00+08:00"
     for j in data["joints"]:
-        j["acceleration"].update({"value": acc, "source": source, "method": method,
+        # 2026-11-23（S13）：joint_limits.yaml 的 acceleration 已按真机实测**逐关节
+        # 不同**（1.48~2.44 rad/s^2）→ 给定 limits 时必须逐关节取各自的现值，
+        # 否则"等于已生效限值"的用例会被别的关节判成"比限值更宽松"。
+        jacc, jjerk = acc, jerk
+        if limits:
+            jacc = limits[j["name"]]["acceleration"]
+            jjerk = limits[j["name"]]["jerk"]
+        j["acceleration"].update({"value": jacc, "source": source, "method": method,
                                   "samples": samples})
-        j["jerk"].update({"value": jerk, "source": source, "method": method,
+        j["jerk"].update({"value": jjerk, "source": source, "method": method,
                           "samples": samples})
     data["tcp_repeatability"].update({"value_mm": 0.04, "source": source, "method": method,
                                       "samples": 30})
@@ -298,8 +333,7 @@ def _measured_limits_data(acc=5.2359, jerk=30.0, samples=5, source="ladder_acc_j
 def test_measured_limits_equal_to_joint_limits_is_accepted(tmp_workspace):
     limits = bl.load_joint_limits(tmp_workspace)
     assert limits and "joint1" in limits
-    data = _measured_limits_data(acc=limits["joint1"]["acceleration"],
-                                 jerk=limits["joint1"]["jerk"])
+    data = _measured_limits_data(limits=limits)
     codes = [i["code"] for i in bl.validate_baseline("measured_limits", data, ws=tmp_workspace)
              if i["level"] == "error"]
     assert codes == [], codes

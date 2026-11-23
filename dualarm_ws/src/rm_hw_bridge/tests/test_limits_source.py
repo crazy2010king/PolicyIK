@@ -204,11 +204,22 @@ def test_blocked_baseline_rejects_downlink(tmp_path, link_factory):
     assert lib.downlink_calls() == [], "被拒时不得产生任何下发调用"
 
 
-def test_repo_baseline_is_blocked_by_default(repo_root):
-    """仓库内真实基线（status=blocked）默认拒绝下发。"""
+def test_repo_baseline_status_matches_yaml(repo_root):
+    """仓库内真实基线：默认下发的判定必须与 YAML 的 status **逐字一致**。
+
+    2026-11-23（S13）起仓库基线已实测（status=measured）→ 默认允许下发
+    （给出逐关节数值）；未实测（blocked/pending）时必须拒绝下发且不给数值。
+    """
+    path = os.path.join(repo_root, "workcell", "baselines", "measured_limits.yaml")
+    with open(path, "r", encoding="utf-8") as fh:
+        status = (yaml.safe_load(fh) or {}).get("status")
     defaults = limits_mod.load_limit_defaults(ws=repo_root)
-    assert defaults["status"] == limits_mod.STATUS_BLOCKED
-    assert defaults["values"] == {}
+    assert defaults["status"] == status, (defaults["status"], status)
+    if status == "measured":
+        assert defaults["values"], "已实测基线必须给出逐关节下发数值"
+    else:
+        assert defaults["status"] == limits_mod.STATUS_BLOCKED
+        assert defaults["values"] == {}
 
 
 # ------------------------------------------------- 占位回退：必须显式 opt-in

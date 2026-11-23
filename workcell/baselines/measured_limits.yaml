@@ -5,25 +5,34 @@
 #   - 未实测项一律写 null，禁止填占位数值；status=measured 时数值不得高于
 #     dualarm_ws/src/rm_description/config/joint_limits.yaml 的已生效限值。
 #   - 重复性 ≠ 绝对精度：官方只标重复定位 ±0.05 mm，不标绝对精度。
+#
+# 2026-11-23（S13）本表首次整体升为 status=measured：
+#   - joint1 的 acc/jerk 来自 S01 真机阶梯实验工件（V8 阶段）；
+#   - joint2..joint7 的 acc/jerk 来自 S13 真机阶梯实验工件（3 档取 min 的保守下界）；
+#   - TCP 重复性来自 S01 真机重复性工件（V7 阶段 max_deviation_mm，逐字）。
+#   回填口径：value = min(实测包络, 回填前已生效限值)，**只收紧不放宽**
+#   （joint1..joint7 的 jerk 实测包络均高于已生效限值 30.0 → 一律保持 30.0）。
 kind: measured_limits
 schema_version: 1
-version: 5                  # 基线修订号（单调递增）
-status: blocked            # pending / measured / blocked
-captured_at: null
+version: 6                  # 基线修订号（单调递增）
+status: measured            # pending / measured / blocked
+captured_at: "2026-11-23T02:38:37+00:00"
 arm: left
-blocked:
+# ── 历史：S13 之前的阻塞记录（保留可追溯性；本表已升为 measured，此段不再是生效口径）
+blocked_history:
   reason: >-
-    2026-11-13 真机窗口不可达（ping 100% 丢包、TCP 8080 连接超时），acc / jerk 上限与 TCP 重复性未能实测；
-    2026-11-19 连通性已恢复（远端主机 ping 192.168.1.18 正常、TCP 8080 可连、RM-API2 握手成功），
-    且**已实测到 joint1 的 acc/jerk（3 档）与 TCP 重复性（30 次）**（见 partial_observations），
-    但**joint2..joint7 仍未实测** —— 本基线的状态位是全表口径（status=measured 要求每个关节
-    都有 samples≥3 的实测值），因此 acc / jerk 的**基线值字段仍必须为 null**，
-    joint_limits.yaml 中的 acceleration=5.2359 / jerk=30.0 也**未**被改写
-    （回填工具要求 baseline status=measured 才允许回填，见下方 next_action）。
-    2026-11-20 远端主机真机窗口只做了 **FK 交叉校验复测**（8 组有界多样位形、幅度 ≤5°），
-    该实验**不产生**任何 acc / jerk 数据（acc/jerk 需阶梯位移实验，幅度与采样序列不同，
-    两者不可互相代偿），因此本轮**没有新增**可回填的限值实测项：值字段保持 null、
-    status 保持 blocked、joint_limits.yaml 未被改写。
+    历史：S13 已闭合 —— 本段记录的是 2026-11-13 ~ 2026-11-20 期间本表仍为 blocked 的原因，
+    保留以便追溯（**不再是当前口径**，当前 status=measured，理由见下方正式字段）。
+    当时的阻塞原因：2026-11-13 真机窗口不可达（ping 100% 丢包、TCP 8080 连接超时），
+    acc / jerk 上限与 TCP 重复性未能实测；2026-11-19 连通性已恢复（远端主机 ping 192.168.1.18 正常、
+    TCP 8080 可连、RM-API2 握手成功），且已实测到 joint1 的 acc/jerk（3 档）与 TCP 重复性（30 次），
+    但 joint2..joint7 仍未实测 —— 全表口径要求每个关节都有 samples≥3 的实测值，
+    因此当时 acc / jerk 的基线值字段仍必须为 null，joint_limits.yaml 中的
+    acceleration=5.2359 / jerk=30.0 也未被改写（回填工具要求 baseline status=measured）。
+    2026-11-20 远端主机真机窗口只做了 FK 交叉校验复测（8 组有界多样位形、幅度 ≤5°），
+    该实验不产生任何 acc / jerk 数据。2026-11-23（S13）joint2..joint7 的阶梯 acc/jerk 补齐后，
+    本表整体升为 measured，joint_limits.yaml 由 apply_measured_limits.py --mode conservative
+    保守回填（只收紧不放宽）。
   attempted_actions:
     - "门禁1 SDK 到位：RM-API2 1.1.7 已就位（.deps/rm_api2/libapi_c.so，rm_api_version() 返回 b'1.1.7'）"
     - "门禁2 nm -D 复核：11 个白名单符号全部导出"
@@ -31,71 +40,124 @@ blocked:
     - "门禁4 UDP 端口：ss -ulnp 未见 8091/8092 占用（本机侧无冲突，非阻塞原因）"
     - "真机路径实跑：ladder_acc_jerk status=error（rm_get_joint_degree 返回码 -1）、tcp_repeatability status=error（rm_movej 报'机械臂已断开'）"
     - "2026-11-19 复测（远端主机）：连通性恢复，最小动作验证（0.3°/2% 速度/去程回程）通过"
-    - "2026-11-19 真机实测（RM75-B 192.168.1.18）：joint1 阶梯 acc/jerk —— 3 档（10°/档、速度 5/8/11%、每档测完回原位），包络（多档最小值，保守下界）acc=1.7557 rad/s^2、jerk=81.099 rad/s^3；见 partial_observations"
-    - "2026-11-19 真机实测：TCP 重复性 —— 固定目标（当前位姿）30 次 rm_movej 到位，最大散布 0.0341 mm、平均散布 0.0127 mm、标称 ±0.05 mm（within_nominal=true）；见 partial_observations"
+    - "2026-11-19 真机实测（RM75-B 192.168.1.18）：joint1 阶梯 acc/jerk —— 3 档（10°/档、速度 5/8/11%、每档测完回原位），包络（多档最小值，保守下界）；见 workcell/baselines/evidence/rm75_validation_ladder_20261119.json 的 V8 阶段"
+    - "2026-11-19 真机实测：TCP 重复性 —— 固定目标（当前位姿）30 次 rm_movej 到位，最大散布取自 S01 工件 V7 阶段 max_deviation_mm（within_nominal=true）；见 workcell/baselines/evidence/rm75_validation_ladder_20261119.json 的 V7 阶段"
     - "回填工具红线复核：apply_measured_limits.py --dry-run 因 baseline_not_measured 拒绝回填（退出码 3），joint_limits.yaml 未被改写"
-    - "2026-11-20 远端主机真机窗口（172.16.119.199:2224 → 容器 ros_dev）：只读门禁五项全通过 + 只读快照全部满足；本轮执行的是 **FK 交叉校验复测**（8 组有界多样位形、幅度 ≤5°、单关节依次、测完回原位），**未做** joint2..joint7 的阶梯 acc/jerk 实验（acc/jerk 需 10°/档 阶梯位移，与 FK 复测的采样序列不同）"
-    - "2026-11-20 回填红线复核（第二次）：apply_measured_limits.py --dry-run → **退出码 3 / baseline_not_measured**（15 项拒绝：1 项 status + 7 关节 × acc/jerk），joint_limits.yaml **未被改写**（joint1 jerk 保持 30.0 未放宽；joint1 acceleration 保持 5.2359）"
+    - "2026-11-20 远端主机真机窗口（172.16.119.199:2224 → 容器 ros_dev）：只读门禁五项全通过 + 只读快照全部满足；本轮执行的是 FK 交叉校验复测（8 组有界多样位形、幅度 ≤5°、单关节依次、测完回原位），未做 joint2..joint7 的阶梯 acc/jerk 实验（acc/jerk 需 10°/档 阶梯位移，与 FK 复测的采样序列不同）"
+    - "2026-11-20 回填红线复核（第二次）：apply_measured_limits.py --dry-run → 退出码 3 / baseline_not_measured（15 项拒绝：1 项 status + 7 关节 × acc/jerk），joint_limits.yaml 未被改写"
+    - "2026-11-23（S13）真机实测（远端窗口 172.16.119.199:2224 → 容器 ros_dev）：joint2..joint7 阶梯 acc/jerk（--joints 2,3,4,5,6,7 --trials 3，每档测完回原位），六关节各 3 样本齐全；工件 workcell/baselines/evidence/rm75_s13_acc_jerk.json（status=ok）"
+    - "2026-11-23（S13）保守回填：apply_measured_limits.py --mode conservative 执行成功（7 关节 acc/jerk 全部 new ≤ old； jerk 一律保持 30.0 不放宽），joint_limits.yaml 与 build/model/joint_limits.yaml 副本同步刷新"
   next_action: >-
-    补齐 joint2..joint7 的阶梯 acc/jerk（每个关节 ≥3 档，命令：
-    python3 -m rmctl.hwcollect ladder_acc_jerk --arm left --trials 3，注意 joints 参数是
-    1 基关节号且每档测完自动回原位；须在**远端主机**真机窗口内执行：
-    ssh -p 2224 zy@172.16.119.199 'docker exec -i ros_dev bash -lc "cd <worktree> &&
-    source scripts/rmenv.sh && python3 -m rmctl.hwcollect ladder_acc_jerk ..."'），
-    把本文件 7 个关节的 value/source/method/samples 全部填齐后
-    把 status 改 measured，再用 apply_measured_limits.py（conservative 模式，默认取
-    min(实测, 现值)）回填 joint_limits.yaml —— 注意 joint1 实测 jerk 81.099 rad/s^3 **高于**
-    现值 30.0，conservative 模式会保持 30.0 不变（不得放宽已生效限值）。
+    本表已 measured，无需再补 acc/jerk；后续若在更高速度档或更大阶跃下复测，
+    用 rmctl.hwcollect ladder_acc_jerk --joints <n> --trials 3 重新取包络，
+    并在保守口径下重新执行 apply_measured_limits.py --mode conservative（只收紧不放宽）。
 udp_period_ms: 5            # 实时上报周期（5 ms 的倍数；实测取样与限值反推共用该周期）
 joints:
   - name: joint1
-    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
-    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+    acceleration:
+      value: 1.755718584483999
+      unit: "rad/s^2"
+      source: "workcell/baselines/evidence/rm75_validation_ladder_20261119.json（V8 阶段 ladder_acc_jerk）"
+      method: "实测包络 1.755718584483999 rad/s^2（S01 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(1.755718584483999, 5.2359) = 1.755718584483999 rad/s^2（只收紧不放宽）"
+      samples: 3
+    jerk:
+      value: 30.0
+      unit: "rad/s^3"
+      source: "workcell/baselines/evidence/rm75_validation_ladder_20261119.json（V8 阶段 ladder_acc_jerk）"
+      method: "实测包络 81.09893830324319 rad/s^3（S01 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(81.09893830324319, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽）"
+      samples: 3
   - name: joint2
-    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
-    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+    acceleration:
+      value: 2.4365919720514606
+      unit: "rad/s^2"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint2 包络，3 档取 min）"
+      method: "实测包络 2.4365919720514606 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(2.4365919720514606, 5.2359) = 2.4365919720514606 rad/s^2（只收紧不放宽）"
+      samples: 3
+    jerk:
+      value: 30.0
+      unit: "rad/s^3"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint2 包络，3 档取 min）"
+      method: "实测包络 108.50930700229166 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(108.50930700229166, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽）"
+      samples: 3
   - name: joint3
-    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
-    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+    acceleration:
+      value: 1.4804146765637594
+      unit: "rad/s^2"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint3 包络，3 档取 min）"
+      method: "实测包络 1.4804146765637594 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(1.4804146765637594, 5.2359) = 1.4804146765637594 rad/s^2（只收紧不放宽）"
+      samples: 3
+    jerk:
+      value: 30.0
+      unit: "rad/s^3"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint3 包络，3 档取 min）"
+      method: "实测包络 74.13862019128324 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(74.13862019128324, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽）"
+      samples: 3
   - name: joint4
-    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
-    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+    acceleration:
+      value: 2.2030060277953374
+      unit: "rad/s^2"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint4 包络，3 档取 min）"
+      method: "实测包络 2.2030060277953374 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(2.2030060277953374, 5.2359) = 2.2030060277953374 rad/s^2（只收紧不放宽）"
+      samples: 3
+    jerk:
+      value: 30.0
+      unit: "rad/s^3"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint4 包络，3 档取 min）"
+      method: "实测包络 90.30649361146672 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(90.30649361146672, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽）"
+      samples: 3
   - name: joint5
-    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
-    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+    acceleration:
+      value: 1.7539498082448197
+      unit: "rad/s^2"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint5 包络，3 档取 min）"
+      method: "实测包络 1.7539498082448197 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(1.7539498082448197, 5.2359) = 1.7539498082448197 rad/s^2（只收紧不放宽）"
+      samples: 3
+    jerk:
+      value: 30.0
+      unit: "rad/s^3"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint5 包络，3 档取 min）"
+      method: "实测包络 103.12441546845534 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(103.12441546845534, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽）"
+      samples: 3
   - name: joint6
-    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
-    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
+    acceleration:
+      value: 1.821400596792399
+      unit: "rad/s^2"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint6 包络，3 档取 min）"
+      method: "实测包络 1.821400596792399 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(1.821400596792399, 5.2359) = 1.821400596792399 rad/s^2（只收紧不放宽）"
+      samples: 3
+    jerk:
+      value: 30.0
+      unit: "rad/s^3"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint6 包络，3 档取 min）"
+      method: "实测包络 95.17370715070257 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(95.17370715070257, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽）"
+      samples: 3
   - name: joint7
-    acceleration: {value: null, unit: "rad/s^2", source: null, method: null, samples: null}
-    jerk:        {value: null, unit: "rad/s^3",  source: null, method: null, samples: null}
-# 已实测但**尚未进入基线值字段**的观测（status 仍是 blocked → 值字段必须为 null）。
-# 记录在这里是为了不丢证据：等 7 个关节都测完、status 改 measured 后再逐项搬进正式字段。
-partial_observations:
-  captured_at: "2026-11-19"
-  arm: left
-  note: "以下为真机实测观测，**不是**基线值（status=blocked 时基线值字段必须为 null）"
-  joints:
-    - name: joint1
-      acceleration: {value: 1.755718584484, unit: "rad/s^2",
-                     source: "RM75-B 192.168.1.18 真机阶梯实验（rmctl.hwcollect ladder_acc_jerk，3 档）",
-                     method: "固定姿态单关节 10° 阶梯位移（速度 5/8/11%），逐档采样后微分，3 档取包络最小值",
-                     samples: 3, note: "实测值低于现值 5.2359 → conservative 回填会下调"}
-      jerk:        {value: 81.09893830324, unit: "rad/s^3",
-                     source: "RM75-B 192.168.1.18 真机阶梯实验（rmctl.hwcollect ladder_acc_jerk，3 档）",
-                     method: "同上（jerk 由同一采样序列三阶差分得到）",
-                     samples: 3, note: "实测值**高于**现值 30.0 → conservative 回填保持 30.0（不得放宽）"}
-  tcp_repeatability:
-    value_mm: 0.0340506211177
-    unit: mm
-    source: "RM75-B 192.168.1.18 真机重复性实验（rmctl.hwcollect tcp_repeatability）"
-    method: "固定目标（当前位姿）30 次 rm_movej 到位后读控制器位姿，取各轴散布统计"
-    samples: 30
-    note: "最大散布 0.0341 mm、平均散布 0.0127 mm、标称 ±0.05 mm（within_nominal=true）；重复性 ≠ 绝对精度（未标定 TCP）"
+    acceleration:
+      value: 2.3343106979504324
+      unit: "rad/s^2"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint7 包络，3 档取 min）"
+      method: "实测包络 2.3343106979504324 rad/s^2（S13 真机阶梯实验：单关节 10°/档、速度 5/8/11%、每档回原位，3 档取 min 的保守下界，derivative_method=rmctl.retime.derivatives）；与已生效限值 5.2359 rad/s^2 比较后保守取 min(2.3343106979504324, 5.2359) = 2.3343106979504324 rad/s^2（只收紧不放宽）"
+      samples: 3
+    jerk:
+      value: 30.0
+      unit: "rad/s^3"
+      source: "workcell/baselines/evidence/rm75_s13_acc_jerk.json（joints.joint7 包络，3 档取 min）"
+      method: "实测包络 97.83636375219686 rad/s^3（S13 真机阶梯实验：3 档取 min 的保守下界）；与已生效限值 30.0 rad/s^3 比较后保守取 min(97.83636375219686, 30.0) = 30.0 rad/s^3（实测包络高于已生效限值 → 保持 30.0，不得放宽）"
+      samples: 3
 tcp_repeatability:
-  value_mm: null            # TCP 位置重复性（mm）
+  value_mm: 0.026131417906566107
   unit: mm
-  source: null
-  method: null              # 如 rm_movej 固定目标 N 次到位统计
-  samples: null             # 默认 30 次
-  note: "重复性 ≠ 绝对精度；官方只标重复定位 ±0.05 mm"
+  source: "workcell/baselines/evidence/rm75_validation_ladder_20261119.json（V7 阶段 tcp_repeatability）"
+  method: "固定目标（当前位姿）30 次 rm_movej 到位后读控制器位姿，取各轴散布统计（max_deviation_mm，within_nominal=true）；重复性 ≠ 绝对精度（未标定 TCP）"
+  samples: 30
+  note: "标称 ±0.05 mm（官方重复定位指标）；本值是**重复性（散布）**，不是绝对精度"
+# ── 不进入正式字段的观测（不与正式值重复，也不含无工件背书的数值）
+partial_observations:
+  captured_at: "2026-11-23"
+  arm: left
+  note: "S13 已闭合：7 个关节的 acc/jerk 与 TCP 重复性已逐字搬入正式字段，本段不再保留与正式值重复的数值；下列仅为**不进入正式字段**的观测与口径说明。"
+  envelope_scope: "acc/jerk 的实测包络取自 10°/档阶梯位移、速度 5/8/11% 三档指令轮廓（多档取 min 的保守下界），**不代表控制器最大能力**；各关节 jerk 的实测包络普遍高于已生效限值，故保守回填一律保持现值不放宽。"
+  voided_transcription:
+    what: "S13 之前 partial_observations 里的 TCP 重复性转录值"
+    reason: "该转录值在 S01 真机工件（workcell/baselines/evidence/rm75_validation_ladder_20261119.json 的 V7 阶段）中找不到背书 → **已作废的转录值**"
+    replacement: "正式字段 tcp_repeatability.value_mm = S01 工件 V7 阶段 max_deviation_mm（逐字）"
