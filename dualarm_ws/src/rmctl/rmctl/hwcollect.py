@@ -1607,6 +1607,9 @@ def _build_parser():
     ap.add_argument("--fk-joints", dest="fk_joints", default=None,
                     help="fk_cross 参与采样的关节（逗号分隔：下标 0..6 或 joint1..joint7；"
                          "缺省全部 7 个）")
+    ap.add_argument("--joints", dest="joints", default=None,
+                    help="ladder_acc_jerk 参与实测的关节（**1 基**关节号，逗号分隔："
+                         "1..7 或 joint1..joint7；缺省全部 7 个）")
     ap.add_argument("--seed", type=int, default=42,
                     help="采样随机种子（位形生成可复现）")
     ap.add_argument("--photo", action="append", default=None,
@@ -1637,6 +1640,30 @@ def main(argv=None):
         kwargs.update({"target_deg": target, "repeats": args.repeats})
     elif args.experiment == "ladder_acc_jerk":
         kwargs.update({"trials": args.trials})
+        if args.joints is not None:
+            # **1 基**关节号（joint1..joint7）；解析风格与 --fk-joints 一致：
+            # 非法输入 → stderr 提示 + 退出码 2；空输入 → 退出码 2。
+            joints = []
+            for token in args.joints.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                low = token.lower()
+                digits = low[len("joint"):] if low.startswith("joint") else low
+                if not digits.isdigit():
+                    print("输入非法: --joints 必须是 1 基关节号（1..7）或 jointN",
+                          file=sys.stderr)
+                    return 2
+                joints.append(int(digits))
+            if not joints:
+                print("输入非法: --joints 不能为空", file=sys.stderr)
+                return 2
+            for number in joints:
+                if not 1 <= number <= 7:
+                    print("输入非法: --joints 关节号必须在 1..7（1 基），实为 %d" % number,
+                          file=sys.stderr)
+                    return 2
+            kwargs.update({"joints": joints})
     elif args.experiment == "fk_cross":
         kwargs.update({"n": args.samples, "seed": args.seed,
                        "amplitude_deg": args.fk_amplitude_deg})

@@ -1,0 +1,520 @@
+{
+  "schema": "rmctl.rm75_s13_acc_jerk/1",
+  "status": "ok",
+  "executed_on": {
+    "utc": "2026-11-23T02:38:37+00:00",
+    "host": "172.16.119.199:2224",
+    "container": "ros_dev",
+    "worktree": ".gsd-worktrees/M001-3kzz40",
+    "why": "本机不通 ≠ 真机不可达：控制臂 192.168.1.18 只在远端主机所在网段可达"
+  },
+  "arm": "left",
+  "endpoint": {
+    "ip": "192.168.1.18",
+    "port": 8080
+  },
+  "command": "python3 -m rmctl.hwcollect ladder_acc_jerk --arm left --ip 192.168.1.18 --joints 2,3,4,5,6,7 --trials 3 --out build/reports/s13_ladder",
+  "joints": {
+    "joint2": {
+      "acceleration_rad_s2": 2.4365919720514606,
+      "jerk_rad_s3": 108.50930700229166,
+      "envelope": "min over trials（保守下界）",
+      "trials": 3,
+      "speeds": [
+        5,
+        8,
+        11
+      ],
+      "samples": [
+        {
+          "trial": 0,
+          "speed": 5,
+          "acc_peak_rad_s2": 2.7040344175837467,
+          "jerk_peak_rad_s3": 155.113077125065,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 1,
+          "speed": 8,
+          "acc_peak_rad_s2": 2.4365919720514606,
+          "jerk_peak_rad_s3": 108.50930700229166,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 2,
+          "speed": 11,
+          "acc_peak_rad_s2": 3.3910365498787214,
+          "jerk_peak_rad_s3": 132.59898375779227,
+          "returned_to_origin": true
+        }
+      ]
+    },
+    "joint3": {
+      "acceleration_rad_s2": 1.4804146765637594,
+      "jerk_rad_s3": 74.13862019128324,
+      "envelope": "min over trials（保守下界）",
+      "trials": 3,
+      "speeds": [
+        5,
+        8,
+        11
+      ],
+      "samples": [
+        {
+          "trial": 0,
+          "speed": 5,
+          "acc_peak_rad_s2": 1.4804146765637594,
+          "jerk_peak_rad_s3": 74.13862019128324,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 1,
+          "speed": 8,
+          "acc_peak_rad_s2": 2.18661075304446,
+          "jerk_peak_rad_s3": 95.80244924875888,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 2,
+          "speed": 11,
+          "acc_peak_rad_s2": 4.796505154099151,
+          "jerk_peak_rad_s3": 181.5226194803295,
+          "returned_to_origin": true
+        }
+      ]
+    },
+    "joint4": {
+      "acceleration_rad_s2": 2.2030060277953374,
+      "jerk_rad_s3": 90.30649361146672,
+      "envelope": "min over trials（保守下界）",
+      "trials": 3,
+      "speeds": [
+        5,
+        8,
+        11
+      ],
+      "samples": [
+        {
+          "trial": 0,
+          "speed": 5,
+          "acc_peak_rad_s2": 2.2030060277953374,
+          "jerk_peak_rad_s3": 119.0260359205581,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 1,
+          "speed": 8,
+          "acc_peak_rad_s2": 3.2556179092284467,
+          "jerk_peak_rad_s3": 160.47386467709194,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 2,
+          "speed": 11,
+          "acc_peak_rad_s2": 2.9878168526098414,
+          "jerk_peak_rad_s3": 90.30649361146672,
+          "returned_to_origin": true
+        }
+      ]
+    },
+    "joint5": {
+      "acceleration_rad_s2": 1.7539498082448197,
+      "jerk_rad_s3": 103.12441546845534,
+      "envelope": "min over trials（保守下界）",
+      "trials": 3,
+      "speeds": [
+        5,
+        8,
+        11
+      ],
+      "samples": [
+        {
+          "trial": 0,
+          "speed": 5,
+          "acc_peak_rad_s2": 1.7539498082448197,
+          "jerk_peak_rad_s3": 103.12441546845534,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 1,
+          "speed": 8,
+          "acc_peak_rad_s2": 2.696861811041211,
+          "jerk_peak_rad_s3": 162.91213222622903,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 2,
+          "speed": 11,
+          "acc_peak_rad_s2": 3.12767733462993,
+          "jerk_peak_rad_s3": 169.53283020417885,
+          "returned_to_origin": true
+        }
+      ]
+    },
+    "joint6": {
+      "acceleration_rad_s2": 1.821400596792399,
+      "jerk_rad_s3": 95.17370715070257,
+      "envelope": "min over trials（保守下界）",
+      "trials": 3,
+      "speeds": [
+        5,
+        8,
+        11
+      ],
+      "samples": [
+        {
+          "trial": 0,
+          "speed": 5,
+          "acc_peak_rad_s2": 1.821400596792399,
+          "jerk_peak_rad_s3": 95.17370715070257,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 1,
+          "speed": 8,
+          "acc_peak_rad_s2": 2.4709047923409786,
+          "jerk_peak_rad_s3": 100.81333326360819,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 2,
+          "speed": 11,
+          "acc_peak_rad_s2": 3.0710159303650957,
+          "jerk_peak_rad_s3": 127.7790945726338,
+          "returned_to_origin": true
+        }
+      ]
+    },
+    "joint7": {
+      "acceleration_rad_s2": 2.3343106979504324,
+      "jerk_rad_s3": 97.83636375219686,
+      "envelope": "min over trials（保守下界）",
+      "trials": 3,
+      "speeds": [
+        5,
+        8,
+        11
+      ],
+      "samples": [
+        {
+          "trial": 0,
+          "speed": 5,
+          "acc_peak_rad_s2": 2.3343106979504324,
+          "jerk_peak_rad_s3": 97.83636375219686,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 1,
+          "speed": 8,
+          "acc_peak_rad_s2": 2.4689023909416288,
+          "jerk_peak_rad_s3": 109.07282952683319,
+          "returned_to_origin": true
+        },
+        {
+          "trial": 2,
+          "speed": 11,
+          "acc_peak_rad_s2": 2.5833307647122576,
+          "jerk_peak_rad_s3": 105.93951977537317,
+          "returned_to_origin": true
+        }
+      ]
+    }
+  },
+  "unit": {
+    "acceleration": "rad/s^2",
+    "jerk": "rad/s^3"
+  },
+  "source": "远端真机窗口 172.16.119.199:2224 → 容器 ros_dev；命令 python3 -m rmctl.hwcollect ladder_acc_jerk --joints 2,3,4,5,6,7 --trials 3",
+  "method": "rmctl.hwcollect ladder_acc_jerk：单关节 +10.0° 阶梯位移，每档测完自动回原位，速度档 5/8/11%，采样 dt=0.02 s，多档取 min 得包络（保守下界）",
+  "derivative_method": "rmctl.retime.derivatives",
+  "step_deg": 10.0,
+  "envelope": "min over trials（保守下界）",
+  "safety_preconditions": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "arm_err_empty",
+        "ok": true,
+        "detail": "臂级错误码: 无（原始: [0]）"
+      },
+      {
+        "name": "joint_err_code_zero",
+        "ok": true,
+        "detail": "非零关节错误码: 无"
+      },
+      {
+        "name": "all_joints_enabled",
+        "ok": true,
+        "detail": "未使能关节: 无（7 轴全部使能）"
+      },
+      {
+        "name": "controller_no_planning",
+        "ok": true,
+        "detail": "控制器规划类型: RM_NO_PLANNING_E（期望 RM_NO_PLANNING_E）"
+      },
+      {
+        "name": "controller_idle",
+        "ok": true,
+        "detail": "控制器臂状态: RM_IDLE_E（期望 RM_IDLE_E）；来源: UDP 主动上报（frames=1）"
+      },
+      {
+        "name": "joints_readable",
+        "ok": true,
+        "detail": "读到 7 个关节角"
+      },
+      {
+        "name": "target_within_execution_domain",
+        "ok": true,
+        "detail": "joint2 当前 42.151° → 目标 52.151°（+10.0°），执行域 [-129.998°, 129.998°]"
+      },
+      {
+        "name": "target_within_execution_domain",
+        "ok": true,
+        "detail": "joint3 当前 19.797° → 目标 29.797°（+10.0°），执行域 [-177.961°, 177.961°]"
+      },
+      {
+        "name": "target_within_execution_domain",
+        "ok": true,
+        "detail": "joint4 当前 -22.656° → 目标 -12.656°（+10.0°），执行域 [-134.989°, 134.989°]"
+      },
+      {
+        "name": "target_within_execution_domain",
+        "ok": true,
+        "detail": "joint5 当前 -1.054° → 目标 8.946°（+10.0°），执行域 [-177.961°, 177.961°]"
+      },
+      {
+        "name": "target_within_execution_domain",
+        "ok": true,
+        "detail": "joint6 当前 5.439° → 目标 15.439°（+10.0°），执行域 [-127.999°, 127.999°]"
+      },
+      {
+        "name": "target_within_execution_domain",
+        "ok": true,
+        "detail": "joint7 当前 -200.409° → 目标 -190.409°（+10.0°），执行域 [-360.000°, 360.000°]"
+      },
+      {
+        "name": "single_connection",
+        "ok": true,
+        "detail": "单进程单连接（控制器连接数上限 ≈5，本轮只建一条链并全程复用）"
+      }
+    ],
+    "snapshot": {
+      "joint_deg": [
+        20.5,
+        42.1510009765625,
+        19.797000885009766,
+        -22.6560001373291,
+        -1.0540000200271606,
+        5.439000129699707,
+        -200.40899658203125
+      ],
+      "joint_current_mA": [
+        -206.0,
+        -811.0,
+        -541.0,
+        -873.0,
+        90.0,
+        -213.0,
+        42.0
+      ],
+      "joint_temperature_c": [
+        24.0,
+        22.0,
+        23.0,
+        24.0,
+        24.0,
+        25.0,
+        25.0
+      ],
+      "joint_voltage_v": [
+        22.0,
+        22.0,
+        23.0,
+        22.0,
+        22.0,
+        22.0,
+        22.0
+      ],
+      "joint_en_flag": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+      ],
+      "joint_err_code": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "arm_err": [
+        0
+      ],
+      "brake_state": {
+        "err_flag": 0,
+        "brake_state": 0,
+        "joint_err_flags": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "brake_open": [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "hard_brake_joints": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "soft_brake_joints": [
+          5,
+          6,
+          7
+        ]
+      },
+      "controller_trajectory_type": 0,
+      "controller_trajectory_type_name": "RM_NO_PLANNING_E",
+      "arm_current_status": 0,
+      "arm_current_status_name": "RM_IDLE_E",
+      "realtime": {
+        "frames": 1,
+        "last_ts": 1795401235.1413348,
+        "period_ms": 5
+      },
+      "controller_pose": {
+        "position": {
+          "x": 0.31860899925231934,
+          "y": -0.06847900152206421,
+          "z": 0.747527003288269,
+          "unit": "m"
+        },
+        "quaternion": {
+          "w": 0.9775683879852295,
+          "x": 0.05005408078432083,
+          "y": 0.1564348340034485,
+          "z": 0.1318437159061432
+        },
+        "euler": {
+          "rx": 0.1459999978542328,
+          "ry": 0.296999990940094,
+          "rz": 0.28999999165534973,
+          "unit": "rad"
+        },
+        "scope": "cross_check_only"
+      },
+      "controller_pose_scope": "cross_check_only"
+    },
+    "snapshot_reason": "",
+    "realtime_enabled": true,
+    "realtime_reason": "",
+    "realtime_target_ip": "192.168.1.198",
+    "udp_port": 8091,
+    "note": "前置检查**不下发任何运动指令**、不改使能位、不清错误码；唯一控制器侧写入是 UDP 主动上报配置（rm_set_realtime_push），只为读取控制器臂状态（RM_IDLE_E 等只出现在 UDP 上报里）"
+  },
+  "network_diagnostics": {
+    "interfaces": [
+      {
+        "name": "docker0",
+        "carrier": "0",
+        "operstate": "down",
+        "address": "be:bd:43:f5:5f:4f"
+      },
+      {
+        "name": "enp8s0",
+        "carrier": "1",
+        "operstate": "up",
+        "address": "d8:53:bc:36:27:c1"
+      },
+      {
+        "name": "enx98fc84e3177a",
+        "carrier": "1",
+        "operstate": "up",
+        "address": "98:fc:84:e3:17:7a"
+      },
+      {
+        "name": "enx98fc84e319b9",
+        "carrier": "1",
+        "operstate": "up",
+        "address": "98:fc:84:e3:19:b9"
+      },
+      {
+        "name": "lo",
+        "carrier": "1",
+        "operstate": "unknown",
+        "address": "00:00:00:00:00:00"
+      },
+      {
+        "name": "wlp0s20f3",
+        "carrier": "1",
+        "operstate": "up",
+        "address": "c8:6e:08:09:a6:0a"
+      }
+    ],
+    "routes": [
+      {
+        "dest_hex": "wlp0s20f3",
+        "dest": "wlp0s20f3",
+        "gateway": "0.0.0.0",
+        "iface": "0"
+      },
+      {
+        "dest_hex": "docker0",
+        "dest": "docker0",
+        "gateway": "172.17.0.0",
+        "iface": "0"
+      },
+      {
+        "dest_hex": "enx98fc84e3177a",
+        "dest": "enx98fc84e3177a",
+        "gateway": "192.168.1.0",
+        "iface": "0"
+      },
+      {
+        "dest_hex": "wlp0s20f3",
+        "dest": "wlp0s20f3",
+        "gateway": "192.168.31.0",
+        "iface": "0"
+      },
+      {
+        "dest_hex": "enp8s0",
+        "dest": "enp8s0",
+        "gateway": "192.168.123.0",
+        "iface": "0"
+      }
+    ],
+    "note": ""
+  },
+  "raw_report_path": "build/reports/s13_ladder/ladder_acc_jerk.left.json",
+  "ladder_run": {
+    "source": "hwcollect 报告（由 --stage assemble 组装，未重跑运动）",
+    "report_path": "build/reports/s13_ladder/ladder_acc_jerk.left.json"
+  },
+  "next_action": [
+    "把本工件 joint2..joint7 的 acc/jerk 包络回填 workcell/baselines/measured_limits.yaml（首个关节的数值取自 S01 工件 rm75_validation_ladder_20261119.json 的 V8 阶段），value = min(实测包络, 已生效限值)（conservative，只收紧不放宽）；",
+    "python3 dualarm_ws/src/rm_description/scripts/apply_measured_limits.py --mode conservative",
+    "python3 -m rmctl baseline check"
+  ],
+  "honesty": "包络反映 5~11% 速度档下的指令轮廓，不代表控制器最大能力，作为保守下界使用。",
+  "reason": "joint2..joint7 阶梯 acc/jerk 实测完成",
+  "self_check": {
+    "ok": true,
+    "problems": []
+  }
+}
