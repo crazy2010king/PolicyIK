@@ -342,6 +342,57 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 
 另有阶梯自身 2 处判据错误：V6 只看采集 `status`（把 FK 的 FAIL 误报成通过）、部分阶段执行时报告阶段号错位。
 
+### 6.4 S13 实测数据（2026-11-23，远端主机真机窗口）
+
+> 执行环境：远端主机 `172.16.119.199:2224` → 容器 `ros_dev` → worktree `.gsd-worktrees/M001-3kzz40`。
+> 本节数字均来自 **git 跟踪的证据工件**，未做任何手工修饰。
+
+#### 6.4.1 joint2..joint7 的阶梯 acc/jerk（samples ≥ 3，3 档：速度 5% / 8% / 11%，每档测完回原位）
+
+工件：`workcell/baselines/evidence/rm75_s13_acc_jerk.json`
+（schema `rmctl.rm75_s13_acc_jerk/1`，`status=ok`）。
+
+| 关节 | acc 包络 (rad/s²) | jerk 包络 (rad/s³) | 样本数 | 档位 |
+|---|---|---|---|---|
+| joint2 | 2.4366 | 108.509 | 3 | 5 / 8 / 11 |
+| joint3 | 1.4804 | 74.139 | 3 | 5 / 8 / 11 |
+| joint4 | 2.2030 | 90.306 | 3 | 5 / 8 / 11 |
+| joint5 | 1.7539 | 103.124 | 3 | 5 / 8 / 11 |
+| joint6 | 1.8214 | 95.174 | 3 | 5 / 8 / 11 |
+| joint7 | 2.3343 | 97.836 | 3 | 5 / 8 / 11 |
+
+* joint1 的 acc/jerk 来自 S01 的 V8 阶段工件（包络 acc 1.7557 rad/s² / jerk 81.099 rad/s³）；
+* 包络 = **多档取 min**（保守下界），**方法学边界**：这是 5%~11% 速度档指令轮廓下的**下界**，
+  **不代表控制器最大能力**；
+* 保守回填后 `joint_limits.yaml` **只收紧不放宽**：
+  acc 逐关节取 `min(实测包络, 已生效 5.2359)`，jerk 全部保持已生效的 **30.0**（实测包络更高也不放宽）。
+
+#### 6.4.2 控制器 / 软件版本（SDK 只读读数路径已打通）
+
+工件：`workcell/baselines/evidence/rm75_s13_versions_connectivity.json`
+（schema `rmctl.rm75_s13_versions_connectivity/1`，`status=ok`，**单次读数**，零运动）。
+
+| 项 | 实测值 |
+|---|---|
+| 读数符号 | `rm_get_arm_software_info`（厂商真实符号名；此前文档里的 `rm_get_arm_software_version` 是**笔误**） |
+| 白名单 | `rm_hw_bridge/contract.yaml` 的 `support:` 21 → **22**，`core:` 仍为 **22** |
+| `product_version` | `RM75-BI` |
+| `ctrl_version` / `ctrl_build_time` | `V1.7.1-f95e896` / `2025/09/17 21:01:26` |
+| `plan_version` / `plan_build_time` | `V1.7.1-85f9432` / `2025/09/17 21:01:44` |
+| `algorithm_version` / `dynamic_model_version` | `1.5.5-c0d52d18` / `2` |
+| 机型 | `arm_dof=7`、`arm_model=1`、`robot_controller_version=3` → 7 轴、**三代控制器** |
+| 容器镜像 | `172.16.119.20:5000/rwthika/ros2-cuda:humble-desktop-full-v25.08_conda_sonnic_20261110_1124` |
+| 示教器版本 | **仍未读取**（无自动读数路径，需人工读屏） |
+
+#### 6.4.3 双臂连通性实测结论
+
+| 侧 | IP | reachable | 原始输出摘要 |
+|---|---|---|---|
+| 左臂 | `192.168.1.18` | **true** | ping 3 发 3 收 / 0% 丢包（rtt 0.452~0.528 ms）；TCP 8080 握手成功 |
+| 右臂 | `192.168.1.19` | **false** | ping 100% 丢包；TCP 8080 `[Errno 113] No route to host` |
+
+→ **该网段内不存在右臂实体**（不是执行环境问题，也不是本机口径问题）→ 右臂相关项本环境**无法**补测。
+
 ---
 
 ## 7. 仍未闭合的项与下一步
@@ -349,12 +400,14 @@ python3 scripts/rm75_evidence_merge.py --out workcell/baselines/evidence/rm75_va
 | 项 | 现状 | 下一步（具体命令/动作） |
 |---|---|---|
 | **V6 FK 交叉校验** | **2026-11-20 已在远端主机真机窗口复测**（工件 `workcell/baselines/evidence/rm75_s11_fk_recheck.json`，`status=ok`）：8 组**有界多样位形**（幅度 5°、单关节依次、每步回原位、速度 10%）→ `raw max_pos_dev_mm=151.460` / `mean_pos_dev_mm=130.525` / `max_ori_dev_deg=179.965`，`residual_kind=orientation_dependent`（`consistency_base=0.839` / `consistency_tip=0.841`）→ 按分支规则**不写任何标定偏置**（`calibration.tcp` / `calibration.base_to_base` 仍为 null）。旧的"75.03 mm 系统性平移"结论**已作废**（那 20 组实为同一位形重复） | 按 `residual_kind` 分支走：查零位（示教器凹槽对齐照片 + `joint1..joint7` 零位读数）→ 核对官方 MDH 表 a/α/θ 与清洗 URDF → 确认控制器位姿参考系（base/work/tool）→ 扩大位形多样性后**复测** `python3 -m rmctl.hwcollect fk_cross --arm left --samples 8 --fk-amplitude-deg 5 --seed <seed> --out <dir>`（**远端主机**执行，见 §7.1） |
-| **零位基线** | 未取证（零位照片 + 固件/示教器版本） | 示教器受控流程对齐凹槽 → 照片 → `rmctl.hwcollect zero_capture` → 回填 `zero_baseline.yaml` |
-| **joint2..joint7 的 acc/jerk** | 只测了 joint1（3 档） | `rmctl.hwcollect ladder_acc_jerk --arm left --trials 3`（注意 `joints` 是 1 基关节号，每档自动回原位）→ 7 个关节测齐后 `measured_limits` 才能改 `status=measured` → 再用 `apply_measured_limits.py --dry-run` 走 conservative 回填 |
-| **基线状态位** | 四张基线仍 `blocked`（全表口径未测齐时值字段必须为 null） | 实测值已写在各表 `partial_observations` + 证据工件；测齐后再逐项搬进正式字段 |
+| **零位基线** | 未取证（零位照片 + 固件/示教器版本）。**2026-11-23 更新**：固件/控制器软件版本已能经 SDK 只读读到（见 §6.4.2），但 `zero_baseline` 的 `firmware` / `teachpendant_version` / 每关节 `zero_deg` / `groove_photos` **仍全部为 null** —— 本表是全表口径 | 示教器受控流程对齐凹槽 → 照片 → `rmctl.hwcollect zero_capture` → 回填 `zero_baseline.yaml`；**归属 M002-o62zc6/T03** |
+| **joint2..joint7 的 acc/jerk** | **已闭合**（2026-11-23，远端主机真机窗口，3 档 × 3 样本；工件 `workcell/baselines/evidence/rm75_s13_acc_jerk.json`）→ `measured_limits` 已升为 `status=measured`，`apply_measured_limits.py --mode conservative` 保守回填完成（只收紧不放宽） | 后续若在更高速度档 / 更大阶跃下复测，用 `rmctl.hwcollect ladder_acc_jerk --joints <n> --trials 3` 重取包络，并在保守口径下重新回填 |
+| **基线状态位** | 四张表**仍非全 measured**：`measured_limits=measured`（已闭合），`zero_baseline` / `version_matrix` / `network_plan` 仍为 `blocked`（全表口径：示教器版本无自动读数路径、每关节零位与凹槽照片未采集、右臂实体不可达、执行层 600 s 长跑与 UDP 断流复现未执行） | 实测值已写在各表 `partial_observations` + 证据工件；**不得**为求 pass 改 status；一键回归 `baselines` 段 verdict 与四表 status 同向（本轮为 `blocked`，退出码 3） |
+| **示教器版本** | **未闭合**：无自动读数路径（只能人工读屏），2026-11-23 窗口无人操作示教器 → `version_matrix.teachpendant` 保持 `null`，该表因此**注定** `blocked` | 现场人员读示教器「系统信息」版本号 → 回填 `version_matrix.yaml`（连同已归档在 `partial_observations` 的控制器版本与容器镜像一次性搬入正式字段）→ 9 条全非 null 后才可改 `status=measured`；**归属 M002-o62zc6/T03** |
+| **FK 残差根因** | **未闭合**：2026-11-20 复测 `max_pos_dev_mm=151.460` / `max_ori_dev_deg=179.965`，`residual_kind=orientation_dependent`（约 130 mm / 约 180°）→ 指向 URDF 清洗 / 零位 / 控制器位姿参考系，**不写任何标定偏置** | 查零位（示教器凹槽照片 + 每关节零位读数）→ 核对官方 MDH 与清洗 URDF → 确认控制器位姿参考系 → 扩大位形多样性后复测 `python3 -m rmctl.hwcollect fk_cross --arm left --samples 8 --fk-amplitude-deg 5 --seed <seed> --out <dir>`（**远端主机**）；**归属 M002-o62zc6/T03** |
 | **CC2 的"连续 10 分钟"** | **blocked**：2026-11-20 真机窗口门禁未通过（ip 100% 丢包 / TCP 8080 timed out）→ 执行层 600 s 长跑**未执行、无任何实测数字**；现存最长真机执行仍只有 5.53 s / 501 拍（2026-11-19 V5）。结案工件：`workcell/baselines/evidence/rm75_s10_window_outcome.json` | 按结案工件的 `next_action` 依次执行：示教器重新使能 7 轴 → 清错误码复位 → `ss -ulnp \| grep -E '8091\|8092'` 确认端口空闲 → 重跑 `python3 scripts/rm75_window_run.py --out workcell/baselines/evidence/rm75_s10_window_outcome.json`（门禁通过后由该入口自动续跑 长跑 → 断流 → 阶梯） |
 | **CC1 取放 50 次 / 夹爪** | 未覆盖 | 需夹爪供电与协议时序打通后另开窗口 |
-| **双臂（P4/P5）** | 右臂 `192.168.1.19` 未接触 | 右臂网络可达后另开窗口；注意 UDP 端口 8092 预留 |
+| **双臂（P4/P5）** | 右臂 `192.168.1.19` **未接触**：2026-11-23 远端主机再次实测 `ping` 100% 丢包、TCP 8080 `[Errno 113] No route to host` → **该网段内不存在右臂实体**，本环境无法补测 | 右臂实体接入网段并确认可达后另开窗口；注意 UDP 端口 8092 预留；**归属 M002-o62zc6/T03** |
 | **里程碑验证重跑** | M001 仍是 `needs-attention` | 2026-11-20 已做**范围重划**：M001 收敛为单臂（验收条款、ROADMAP Success Criteria、CONTEXT、需求归属均已更新），夹爪/取放/现场人项移交新里程碑 **M002-o62zc6**（T01–T05）；M001 剩余未完成项为 10 分钟长跑与断流真机复现（2026-11-20 窗口门禁 blocked，见 `workcell/baselines/evidence/rm75_s10_window_outcome.json`；需臂使能 + 网络可达） |
 | **臂的使能状态** | 急停演练后已清错复位（`RM_IDLE_E`），但 **7 轴仍掉使能**（`joint_en_flag` 全 0） | 需在示教器**重新使能**；在此之前探针的 7 项前置检查会拒绝任何运动指令（这是预期行为） |
 | **R004 电子围栏（能力缺口）** | **未闭合**：厂商 SDK **有**电子围栏接口（`dualarm_ws/src/rm_hw_bridge/vendor/rm_api2/include/rm_interface.h`：`rm_set_electronic_fence_enable` / `rm_set_electronic_fence_config` / `rm_set_virtual_wall_config` / `rm_get_virtual_wall_config`；类型 `rm_fence_config_t` / `rm_electronic_fence_enable_t` 见同目录 `rm_define.h`），但本项目的调用许可清单 `dualarm_ws/src/rm_hw_bridge/rm_hw_bridge/contract.yaml`（`core:` / `support:` / `blacklist:` 三段）grep 'fence' **零命中** → 装载层**没有绑定**这些符号 → 当前实现**无法下发电子围栏**；归属 M001/S02（R004 需求侧），实现侧移交 **M002-o62zc6**，R004 保持 active | 归属 **M002-o62zc6**（本里程碑 M001-3kzz40 **不做**：R004 的其余字段已由 S02 离线覆盖，而「下发电子围栏」需要新增 SDK 符号绑定 + 白名单条目，属独立技术债切片）；后续绑定入口路径：`rm_hw_bridge/abi_spec.yaml` 与 `rm_hw_bridge/generated/rm_api2_ctypes.py` 增加对应符号 → 在 `rm_hw_bridge/rm_hw_bridge/contract.yaml` 的 `support:` 段显式登记（含理由）→ 硬件层新增 `set_electronic_fence` 下发命令并接入 R004 的 `set_safety` 入口 |

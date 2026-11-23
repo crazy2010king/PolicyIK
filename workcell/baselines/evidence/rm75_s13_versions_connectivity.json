@@ -1,41 +1,41 @@
 {
   "schema": "rmctl.rm75_s13_versions_connectivity/1",
-  "status": "blocked",
-  "executed_on": "2026-11-20T11:14:11+00:00",
+  "status": "ok",
+  "executed_on": "2026-11-23T06:40:55+00:00",
   "arm": "left",
   "controller_software": {
-    "product_version": null,
+    "product_version": "RM75-BI",
     "robot_controller_version": null,
-    "algorithm_version": null,
-    "ctrl_version": null,
-    "ctrl_build_time": null,
-    "dynamic_model_version": null,
-    "plan_version": null,
-    "plan_build_time": null,
+    "algorithm_version": "1.5.5-c0d52d18",
+    "ctrl_version": "V1.7.1-f95e896",
+    "ctrl_build_time": "2025/09/17 21:01:26",
+    "dynamic_model_version": "2",
+    "plan_version": "V1.7.1-85f9432",
+    "plan_build_time": "2025/09/17 21:01:44",
     "com_version": null,
     "program_version": null
   },
   "robot_info": {
-    "arm_dof": null,
-    "arm_model": null,
-    "force_type": null,
-    "robot_controller_version": null
+    "arm_dof": 7,
+    "arm_model": 1,
+    "force_type": 0,
+    "robot_controller_version": 3
   },
   "left_connectivity": {
     "ip": "192.168.1.18",
     "port": 8080,
-    "reachable": false,
+    "reachable": true,
     "definition": "reachable = (ping 成功 或 TCP 握手成功)；只判定网络可达性，不据此推断任何其它结论",
     "ping": {
       "command": "ping -c 3 -W 1 192.168.1.18",
-      "ok": false,
-      "returncode": 1,
-      "summary": "PING 192.168.1.18 (192.168.1.18) 56(84) bytes of data.\n\n--- 192.168.1.18 ping statistics ---\n3 packets transmitted, 0 received, 100% packet loss, time 2028ms"
+      "ok": true,
+      "returncode": 0,
+      "summary": "PING 192.168.1.18 (192.168.1.18) 56(84) bytes of data.\n64 bytes from 192.168.1.18: icmp_seq=1 ttl=64 time=0.452 ms\n64 bytes from 192.168.1.18: icmp_seq=2 ttl=64 time=0.528 ms\n64 bytes from 192.168.1.18: icmp_seq=3 ttl=64 time=0.463 ms\n\n--- 192.168.1.18 ping statistics ---\n3 packets transmitted, 3 received, 0% packet loss, time 2060ms\nrtt min/avg/max/mdev = 0.452/0.481/0.528/0.033 ms"
     },
     "tcp": {
-      "ok": false,
+      "ok": true,
       "timeout_s": 2.0,
-      "summary": "TCP 连接失败 192.168.1.18:8080（超时 2.0 s）：timed out"
+      "summary": "TCP 连接成功 192.168.1.18:8080（仅握手，未发送任何应用层数据）"
     }
   },
   "right_connectivity": {
@@ -47,12 +47,12 @@
       "command": "ping -c 3 -W 1 192.168.1.19",
       "ok": false,
       "returncode": 1,
-      "summary": "PING 192.168.1.19 (192.168.1.19) 56(84) bytes of data.\n\n--- 192.168.1.19 ping statistics ---\n3 packets transmitted, 0 received, 100% packet loss, time 2052ms"
+      "summary": "PING 192.168.1.19 (192.168.1.19) 56(84) bytes of data.\n\n--- 192.168.1.19 ping statistics ---\n3 packets transmitted, 0 received, 100% packet loss, time 2045ms"
     },
     "tcp": {
       "ok": false,
       "timeout_s": 2.0,
-      "summary": "TCP 连接失败 192.168.1.19:8080（超时 2.0 s）：timed out"
+      "summary": "TCP 连接失败 192.168.1.19:8080（超时 2.0 s）：[Errno 113] No route to host"
     }
   },
   "container_image": "172.16.119.20:5000/rwthika/ros2-cuda:humble-desktop-full-v25.08_conda_sonnic_20261110_1124",
@@ -61,23 +61,23 @@
   "gates": [
     {
       "name": "controller_link",
-      "ok": false,
-      "detail": "rm_create_robot_arm 返回无效句柄 id=-1：控制器 192.168.1.18:8080 不可达（控制器离线 / 网络不通）"
+      "ok": true,
+      "detail": "已连接控制器 192.168.1.18:8080"
     },
     {
       "name": "software_version_read",
-      "ok": false,
-      "detail": "非空版本字段 0 个：无"
+      "ok": true,
+      "detail": "非空版本字段 7 个：product_version, algorithm_version, ctrl_version, ctrl_build_time, dynamic_model_version, plan_version, plan_build_time"
     },
     {
       "name": "robot_info_read",
-      "ok": false,
-      "detail": "arm_dof=None, arm_model=None, robot_controller_version=None"
+      "ok": true,
+      "detail": "arm_dof=7, arm_model=1, robot_controller_version=3"
     },
     {
       "name": "left_connectivity_probed",
       "ok": true,
-      "detail": "left 192.168.1.18 reachable=False"
+      "detail": "left 192.168.1.18 reachable=True"
     },
     {
       "name": "right_connectivity_probed",
@@ -90,7 +90,7 @@
       "detail": "172.16.119.20:5000/rwthika/ros2-cuda:humble-desktop-full-v25.08_conda_sonnic_20261110_1124"
     }
   ],
-  "next_action": "ssh -p 2224 -o ConnectTimeout=8 -o BatchMode=yes zy@172.16.119.199 'docker exec -i ros_dev bash -lc \"cd /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40 && source scripts/rmenv.sh && export RM_API2_LIB=$PWD/../../.deps/rm_api2/libapi_c.so && python3 scripts/rm75_s13_versions_probe.py --arm %s --ip %s --out build/reports/s13_versions\"'\n（远端窗口不可达 / 控制器不可达时，先在远端容器内执行 `ping -c 3 -W 1 192.168.1.18` 与 `python3 scripts/rmctl.py connect --arm left --ip 192.168.1.18 --json` 复核；仍不通则记录为 blocked，**不得**用 dry-run 或合成数据顶替真实读数。）",
+  "next_action": "把本工件读数回填 workcell/baselines/version_matrix.yaml 的 controller_firmware 字段（示教器版本仍无自动读数路径，该表 status 保持 blocked）；右臂连通性结论回填 workcell/baselines/network_plan.yaml。",
   "honesty": {
     "no_motion_command_issued": true,
     "motion_commands_sent": 0,
@@ -104,14 +104,14 @@
     ]
   },
   "dry_run": false,
-  "link_status": "error",
-  "link_reason": "rm_create_robot_arm 返回无效句柄 id=-1：控制器 192.168.1.18:8080 不可达（控制器离线 / 网络不通）",
+  "link_status": "ok",
+  "link_reason": "已连接控制器 192.168.1.18:8080",
   "evidence": [
     "sdk: /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.deps/rm_api2/libapi_c.so",
-    "rm_create_robot_arm handle.id=-1",
-    "tcp_reachable=False"
-  ],
-  "operator_notes": [
-    "远端主机侧诊断（只读，2026-11-20）：172.16.119.199 的机器人网段 USB 网卡 enx98fc84e3177a（NM 配置 有线连接 2 = 静态 192.168.1.198/24）当前 NO-CARRIER，宿主机无 192.168.1.0/24 路由 → 容器内 ping/TCP 到 192.168.1.18 与 192.168.1.19 均 100% 丢包 / 连接超时；宿主机的 enp8s0(192.168.123.199) 与 192.168.123.18/.19 亦无 ARP 应答。该网卡链路中断是本轮左右臂均不可达的直接原因。"
+    "handle.id=1",
+    "workcell: /home/zy/nfs/test_cc_dev/git_source/groot_nvidia/PolicyIK_roi/.gsd-worktrees/M001-3kzz40/workcell/rm_workcell.yaml",
+    "rm_set_timeout(timeout=1000 ms)",
+    "arm_software_info: ok（控制器/软件版本读取成功（7 个版本字段非空））",
+    "arm_robot_info: ok（机型/控制器代数读取成功（arm_dof=7, arm_model=1, robot_controller_version=3））"
   ]
 }

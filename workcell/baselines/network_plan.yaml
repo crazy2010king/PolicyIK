@@ -5,7 +5,7 @@
 #   - 同一 ip:port 只能被一个客户端占用；上一个进程未退干净会静默失败（采集前先确认端口空闲）。
 kind: network_plan
 schema_version: 1
-version: 6                  # 基线修订号（单调递增）
+version: 7                  # 基线修订号（单调递增）
 status: blocked
 captured_at: null
 blocked:
@@ -32,6 +32,13 @@ blocked:
     **右臂 192.168.1.19 在远端主机同样是 "No route to host"（右臂在该网段不存在）**，
     因此本表的右臂条目**无法**在本环境补测 → 全表口径的 status 仍保持 blocked。
     另外，「执行层 600 s 连续执行长跑」与「UDP 断流 200 ms 停机复现」本轮**仍未执行**。
+    **2026-11-23（S13）口径更新**：远端主机真机窗口再次实测双臂连通性（只读探针，
+    ping -c 3 -W 1 + TCP 握手超时 2.0 s）：左臂 192.168.1.18 **可达**（3 发 3 收、0% 丢包，
+    TCP 8080 握手成功），右臂 192.168.1.19 **不可达**（ping 100% 丢包、TCP 8080
+    `[Errno 113] No route to host`）→ **该网段内不存在右臂实体**（不是执行环境问题）。
+    因此右臂条目在本环境**无法**补测；且「执行层 600 s 连续执行长跑」与
+    「UDP 断流 200 ms 停机复现」**仍未执行** → 本表**仍为 blocked**（全表口径）。
+    工件：workcell/baselines/evidence/rm75_s13_versions_connectivity.json（status=ok）。
   attempted_actions:
     - "本机端口占用核查：ss -ulnp | grep -E '8091|8092' 无输出（本机侧无冲突）"
     - "网络连通（2026-11-13 首次窗口）：ping -c 2 192.168.1.18 → 100% packet loss；ping -c 2 192.168.1.19 → 100% packet loss"
@@ -54,9 +61,12 @@ blocked:
     - "2026-11-20 远端主机实测（172.16.119.199:2224 → 容器 ros_dev）：ping -c 3 -W 1 192.168.1.18 → 3 发 3 收、0% 丢包（rtt 0.428/0.443/0.471 ms）；TCP 192.168.1.18:8080 可连；本地 UDP 8091/8092 空闲；只读门禁五项全通过（工件 workcell/baselines/evidence/rm75_s11_fk_recheck.json 的 gate 段）"
     - "2026-11-20 右臂实测结论：远端主机上 192.168.1.19 仍为 **No route to host**（右臂在该网段不存在）→ 右臂条目本轮无法补测；右臂也未做任何 FK / acc-jerk / 重复性采集"
     - "2026-11-20 本轮执行层长跑 / UDP 断流复现：**仍未执行**（本轮只做了只读门禁、只读快照与有界多样位形 FK 复测）"
+    - "2026-11-23（S13）远端主机双臂连通性实测（只读探针 scripts/rm75_s13_versions_probe.py，零运动）：左臂 192.168.1.18 ping 3 发 3 收 / 0% 丢包（rtt 0.452/0.528/0.463 ms）、TCP 8080 握手成功 → reachable=true；右臂 192.168.1.19 ping 100% 丢包、TCP 8080 '[Errno 113] No route to host' → reachable=false；工件 workcell/baselines/evidence/rm75_s13_versions_connectivity.json"
+    - "2026-11-23（S13）结论：右臂在该网段**不存在实体**（远端主机实测 No route to host）→ 右臂条目本环境无法补测，全表 status 仍为 blocked；执行层 600 s 连续执行长跑与 UDP 断流 200 ms 停机复现**仍未执行**"
   next_action: >-
-    本表仍为 blocked，三条未闭合项互不替代：① **右臂 192.168.1.19 未接触** —— 远端主机实测
-    "No route to host"（右臂在该网段不存在），需右臂接入并确认可达后另开窗口实测；
+    本表仍为 blocked，三条未闭合项互不替代：① **右臂 192.168.1.19 未接触** —— 2026-11-23 远端主机
+    再次实测仍为 "No route to host"（右臂实体不在该网段，**不是**执行环境或本机口径问题），
+    需右臂实体接入网段并确认可达后另开窗口实测；
     ② **执行层 600 s 连续执行长跑与 UDP 断流 200 ms 停机复现未执行** —— 必须在**远端主机**
     真机窗口内执行（2026-11-20 该主机的只读门禁已通过），按结案工件的 next_action 依次执行：
     在示教器上重新使能 7 轴（joint_en_flag 全 1）→ 在示教器上清错误码复位（arm_err / joint_err_code 全 0）→
@@ -82,6 +92,22 @@ partial_observations:
     source: "RM75-B 192.168.1.18 真机 600 s 长跑（rmctl.hwcollect udp_stability --duration-s 600）"
     method: "SDK 主动上报回调计数 + 50 ms 采样窗判断流；周期由 frames/elapsed 反算"
     note: "到达率 20% 的根因是控制器实际以 25 ms 周期上报（配置 5 ms 的 5 倍），不是随机丢包"
+  s13_connectivity:
+    captured_at: "2026-11-23T06:40:55+00:00"
+    source: "workcell/baselines/evidence/rm75_s13_versions_connectivity.json（只读探针 scripts/rm75_s13_versions_probe.py，零运动）"
+    method: "ping -c 3 -W 1 + TCP 握手（超时 2.0 s）；执行环境 = 远端主机 172.16.119.199:2224 → 容器 ros_dev（worktree .gsd-worktrees/M001-3kzz40）"
+    samples: 1
+    left:
+      ip: "192.168.1.18"
+      reachable: true
+      ping_summary: "PING 192.168.1.18 (192.168.1.18) 56(84) bytes of data. 64 bytes from 192.168.1.18: icmp_seq=1 ttl=64 time=0.452 ms → 3 packets transmitted, 3 received, 0% packet loss"
+      tcp_summary: "TCP 连接成功 192.168.1.18:8080（仅握手，未发送任何应用层数据）"
+    right:
+      ip: "192.168.1.19"
+      reachable: false
+      ping_summary: "PING 192.168.1.19 (192.168.1.19) 56(84) bytes of data. → 3 packets transmitted, 0 received, 100% packet loss, time 2045ms"
+      tcp_summary: "TCP 连接失败 192.168.1.19:8080（超时 2.0 s）：[Errno 113] No route to host"
+    conclusion: "右臂 192.168.1.19 在**远端主机**实测不可达（ping 100% 丢包 + TCP No route to host）→ 该网段内不存在右臂实体；左臂可达；全表口径 status 仍为 blocked（右臂未接触 + 执行层 600 s 长跑与 UDP 断流 200 ms 停机复现未执行）"
 arms:
   left:
     ip: "192.168.1.18"

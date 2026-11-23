@@ -5,7 +5,7 @@
 #   - 控制器位姿来自厂商运动学输出，仅用于 FK 交叉校验，不得作为规划真值（设计 §1.4 / R003）。
 kind: zero_baseline
 schema_version: 1
-version: 5                  # 基线修订号（单调递增）
+version: 6                  # 基线修订号（单调递增）
 status: blocked            # pending / measured / blocked
 captured_at: null           # 采集时间（ISO8601）；未实测写 null
 arm: left                   # 本基线所属臂（left / right）——零位按臂独立
@@ -26,6 +26,10 @@ blocked:
     即便如此，本基线的 status 是**全表口径**：控制器固件版本、示教器版本、每关节零位读数
     （joint1..joint7 zero_deg 全部 null）、凹槽对齐照片（groove_photos 为空）**仍未采集**，
     因此 status 保持 blocked —— **不得**据此推断零位，也**不得**因 FK 复测有实测值就把本表标 measured。
+    **2026-11-23（S13）口径更新**：控制器/软件版本已能经 SDK 只读读到（`rm_get_arm_software_info`，
+    见 partial_observations.software_versions），但**本表的 `firmware` / `teachpendant_version` /
+    每关节 `zero_deg` / `groove_photos` 一律保持 null** —— 本表是全表口径（零位读数与照片仍未采集，
+    示教器版本仍需人工读屏），版本读数只作观测归档，不得当成零位基线值。
   attempted_actions:
     - "门禁1 SDK 到位：RM-API2 1.1.7 已就位（.deps/rm_api2/libapi_c.so，rm_api_version() 实际返回 b'1.1.7'）"
     - "门禁2 nm -D 复核：11 个白名单符号全部导出（rm_init / rm_create_robot_arm / rm_set_realtime_push / rm_get_joint_degree / rm_get_current_arm_state / rm_get_arm_all_state / rm_movej / rm_set_arm_stop / rm_set_arm_slow_stop / rm_set_arm_pause / rm_set_arm_continue）"
@@ -38,6 +42,8 @@ blocked:
     - "2026-11-20 远端主机真机窗口（172.16.119.199:2224 → 容器 ros_dev）：只读门禁五项全通过（ping 0% 丢包 rtt 0.44 ms、TCP 8080 可连、UDP 8091/8092 空闲、SDK 可导入、探针前置检查 ok）；只读快照 7 轴全部使能、arm_err/joint_err_code 全 0、控制器 RM_NO_PLANNING_E + RM_IDLE_E"
     - "2026-11-20 远端真机实测（FK 交叉校验复测）：rmctl.hwcollect fk_cross --arm left --samples 8 --fk-amplitude-deg 5 --seed 20261120 → 8/8 互异位形，raw max_pos_dev_mm=151.460 / mean=130.525、max_ori_dev_deg=179.965、residual_kind=orientation_dependent、consistency_base=0.839 / consistency_tip=0.841 → **不写任何标定偏置**；工件 workcell/baselines/evidence/rm75_s11_fk_recheck.json"
     - "2026-11-20 未做：控制器固件版本读取（rm_get_arm_software_version 不在 rm_hw_bridge 符号白名单内，无法经 SDK 读取）、示教器版本现场读数、示教器受控流程凹槽对齐与照片取证、每关节 zero_deg 读数"
+    - "2026-11-23（S13）版本读数路径打通：`rm_get_arm_software_info` 已进 rm_hw_bridge support 名单（21 → 22，core 仍 22）→ 远端主机只读实测读到 ctrl_version=V1.7.1-f95e896 / plan_version=V1.7.1-85f9432 / algorithm_version=1.5.5-c0d52d18 / product_version=RM75-BI（工件 workcell/baselines/evidence/rm75_s13_versions_connectivity.json，status=ok，零运动）"
+    - "2026-11-23（S13）仍未做：示教器版本现场读数、示教器受控流程凹槽对齐与照片取证（groove_photos）、每关节 zero_deg 读数 → 本表 `firmware` / `teachpendant_version` / `zero_deg` / `groove_photos` 保持 null，status 保持 blocked"
   next_action: >-
     按 docs/真机基线与实测限值归档说明.md §3 的**远端窗口口径**执行剩余采集项：
     示教器受控流程对齐凹槽 → 照片取证（groove_photos）→ 读取控制器固件/示教器版本 →
@@ -107,6 +113,20 @@ partial_observations:
     max_ori_dev_deg: null
     conclusion: "FAIL：最大位置偏差 75.0314 mm；归因 systematic_translation"
     invalidation_reason: "该 20 组样本**实为同一位形重复**（dev_spread_mm=0.0468 mm），不能证明偏置性质，其归因结论已被 S11 作废；保留仅作历史记录"
+  software_versions:
+    captured_at: "2026-11-23T06:40:55+00:00"
+    source: "workcell/baselines/evidence/rm75_s13_versions_connectivity.json"
+    method: "rm_get_arm_software_info 只读读数（support 名单符号；core 仍 22）+ rm_get_robot_info；单次读数"
+    samples: 1
+    product_version: "RM75-BI"
+    ctrl_version: "V1.7.1-f95e896"
+    ctrl_build_time: "2025/09/17 21:01:26"
+    plan_version: "V1.7.1-85f9432"
+    plan_build_time: "2025/09/17 21:01:44"
+    algorithm_version: "1.5.5-c0d52d18"
+    dynamic_model_version: "2"
+    robot_controller_version: 3
+    note: "本表 `firmware` / `teachpendant_version` 字段**仍为 null** —— 本表是全表口径（每关节零位读数与凹槽照片仍未采集）；版本读数仅作观测归档，不是零位基线值"
 groove_photos: []           # 凹槽对齐照片 + 示教器截图引用列表
 fk_recheck:
   method: "rmctl.hwcollect fk_cross（自研 FK vs 控制器位姿交叉校验，8 组有界多样位形：单关节依次、幅度 ≤5°、每步测完回原位、速度 10%）"
