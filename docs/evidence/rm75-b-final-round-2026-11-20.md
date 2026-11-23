@@ -63,7 +63,27 @@
 6. 本目录中的**离线类**数字（CI fast、禁用接口扫描、pytest 计数）属 fallback 档（Python 3.10.12 / Drake 1.51.1），
    与本文件的**真机类**数字（远端 Python 3.12 / Drake 1.55.0）**分属不同环境**，不可混说。
 
-## 5. 复算入口
+## 5. 失败记录：8 h 长稳（**不可作为达标证据**）
+
+`rm75-b-soak-8h-failed-2026-11-20.json` 记录的是一次**失败的** 8 h 长稳（2026-11-20 21:13）：
+
+| 项 | 值 |
+|---|---|
+| `mode` / `hz` / `requested_duration_s` | hardware / 100.0 / 28800.0 |
+| `ticks` / `commands_sent` | 2 880 000 / 2 880 000（命令确实全部发出） |
+| 抖动直方图 | `count=2 000 000`、**`dropped=879 999`**、P50 0.0148 ms、P99 0.2060 ms、**P99.9 9.9276 ms**、**max 35 833.15 ms** |
+| 命令→执行延迟 | `count=2 000 000`、`dropped=880 000`、P99.9 0.2465 ms、max 35 843.04 ms |
+| `num_violations` / `num_errors` | 0 / 0 |
+| `sdk_audit` | `total_call_count=2 880 000`、`non_whitelist_call_count=0`、**`forbidden_call_count=0`** |
+| `status` / `failures` | **failed** / 「抖动 P99.9 = 9.9276 ms > 阈值 0.5 ms」 |
+
+**判读**：约 30.6% 的采样被丢弃（879 999 / 2 880 000），最大单拍抖动达 **35.8 s** ⇒ 该次运行**没有维持住 100 Hz 实时节拍**，
+根因是 SDK 发送阻塞（当时 stdout 持续刷 `Send would block, retrying later...`），与本仓库随后修复的
+「SDK 调用加超时保护」（提交 `4cfab73`）是同一根因。
+⇒ **该记录只能作为失败证据与缺陷溯源使用**；「8 h 长稳达标」在本里程碑**仍未验证**。
+
+
+## 6. 复算入口
 
 ```bash
 # 真机（需现场：物理急停在手、单臂、显式 --allow-motion）

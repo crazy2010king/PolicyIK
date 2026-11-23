@@ -33,6 +33,7 @@
 | 14 | `rm75-b-runlog-final-2026-11-20.json` / `rm75-b-plan-final-2026-11-20.json` | **R007**（录制/回放同源） | 最终一次真机 `cli exec` 的全链路运行日志（`mode=hardware`、265 events、131 samples、violations=0、jitter p999 0.2964 ms）与其下发的规划轨迹（recording schema v1、131 点、dt=0.005） | `python3 scripts/compare_exec_vs_recording.py --run-log docs/evidence/rm75-b-runlog-final-2026-11-20.json --recording docs/evidence/rm75-b-plan-final-2026-11-20.json --json` |
 | 15 | `rm75-b-current-calibration-2026-11-20.json` | **R015**（标定链） | 电流阈值标定 `status=ok`、`calibrated=true`、逐轴 `[6379.5, 3240.0, 1762.5, 2133.0, 600.0, 718.5, 600.0]` mA | `python3 scripts/calibrate_currents.py --device-config devices/rm75_b_192_168_1_18.yaml --json` |
 | 16 | `rm75-b-evidence-summary-2026-11-20.json` | 汇总口径 | `{"L8": {"exec_exit_code": 0, "tcp_tracking_error_mm": 2.6619684756546693}}` | — |
+| 17 | `rm75-b-soak-8h-failed-2026-11-20.json` | **失败记录**（8 h 长稳未达标） | 8 h × 100 Hz：ticks/commands_sent 均 2 880 000，但抖动直方图 `dropped=879 999`、P99.9 **9.9276 ms**（阈值 0.5）、max 35 833 ms ⇒ `status=failed`（SDK 发送阻塞，与提交 `4cfab73` 的超时保护同根因）；`forbidden_call_count=0`。**只能作失败证据与缺陷溯源，不得当作达标证据** | `python3 scripts/long_run.py --duration-s 28800 --hz 100 --json` |
 
 机器可读产物（与 `S02-rerun.md` 配套）：`s02-rerun.json`
 （`schema_version=1`，`generator=scripts/collect_evidence.py`，逐项命令 / 退出码 / 耗时 / 摘要）。
@@ -51,6 +52,7 @@
 | 真机末端跟踪误差（第三轮，131 点） | **max 2.6620 mm**（阈值 3 mm），p95 2.4467 mm | `rm75-b-tracking-final-2026-11-20.json` |
 | 真机 100 Hz × 30 min 长稳 | ticks **180000**、commands_sent 180000、violations **0**、errors 0、抖动 P99.9 **0.3145 ms**（阈值 0.5）、延迟 P99.9 0.2901 ms | `rm75-b-soak-30min-final-2026-11-20.json` |
 | 真机运行时禁用接口调用 | `sdk_audit.forbidden_call_count=0`（18 万次真实调用） | `rm75-b-soak-30min-final-2026-11-20.json` |
+| 8 h 长稳 | **未达标（失败记录已入库）**：ticks 2 880 000 全部发出，但 `dropped=879 999`、抖动 P99.9 9.9276 ms（阈值 0.5）⇒ `status=failed` | `rm75-b-soak-8h-failed-2026-11-20.json` |
 | 真机阶梯最终回归 | **PASS=11 / FAIL=0**（L0–L10，`mode=hardware`、`allow_motion=true`） | `rm75-b-ladder-final-2026-11-20.json` |
 | CLI `task` 双臂缺口 | **仅支持单臂**；多臂场景退出码 **2** + reason `task_single_arm_only` | `../../runbooks/s06_task_primitives.md` §7 |
 

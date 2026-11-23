@@ -1,0 +1,109 @@
+{
+  "joint_rad": [
+    0.350036,
+    0.733632,
+    0.34191,
+    -0.394148,
+    -0.02138,
+    0.09231,
+    -3.499699
+  ],
+  "period_ms": 10.0,
+  "ticks": 2880000,
+  "commands_sent": 2880000,
+  "final_state": "completed",
+  "stop_reason": "completed",
+  "reasons": [],
+  "num_violations": 0,
+  "num_errors": 0,
+  "errors": [],
+  "jitter_ms": {
+    "name": "jitter",
+    "unit": "ms",
+    "count": 2000000,
+    "dropped": 879999,
+    "min": 0.0,
+    "max": 35833.15265,
+    "mean": 0.07951405173300245,
+    "p50": 0.014830000000000398,
+    "p99": 0.20597901000000024,
+    "p999": 9.927594001
+  },
+  "command_latency_ms": {
+    "name": "command_latency",
+    "unit": "ms",
+    "count": 2000000,
+    "dropped": 880000,
+    "min": 0.011082,
+    "max": 35843.042764000005,
+    "mean": 0.08248561737200447,
+    "p50": 0.049619,
+    "p99": 0.13715202000000004,
+    "p999": 0.24653401400000235
+  },
+  "mode": "hardware",
+  "requested_duration_s": 28800.0,
+  "hz": 100.0,
+  "device": {
+    "schema_version": 1,
+    "name": "rm75_b_192_168_1_18",
+    "arm_ip": "192.168.1.18",
+    "tcp_port": 8080,
+    "udp_port": 8080,
+    "udp_cycle": 1,
+    "joint_zero_offset": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "accel_limits": {
+      "measured": true,
+      "values": [
+        1.0,
+        1.0,
+        1.2,
+        1.2,
+        1.2,
+        1.2,
+        1.2
+      ]
+    },
+    "current_thresholds": {
+      "calibrated": true,
+      "values": [
+        3200.0,
+        3154.5,
+        1576.5,
+        2005.5,
+        600.0,
+        681.0,
+        600.0
+      ]
+    },
+    "fence": {
+      "table_height_m": 0.75,
+      "singularity_radius_m": 0.15
+    }
+  },
+  "sdk_audit": {
+    "total_call_count": 2880000,
+    "non_whitelist_call_count": 0,
+    "forbidden_call_count": 0,
+    "forbidden_calls": []
+  },
+  "status": "failed",
+  "threshold_p999_ms": 0.5,
+  "failures": [
+    "抖动 P99.9 = 9.9276 ms > 阈值 0.5 ms"
+  ],
+  "unverified_metrics": [
+    "5 ms 透传周期抖动（P50/P99/P99.9/max）",
+    "末端跟踪误差（目标 < 3 mm）",
+    "急停响应时间（目标 < 100 ms）",
+    "五类故障注入的物理验证（拔网线 / 物体掉落 / 夹爪夹空 / 关节超限位 / 供电跌落）"
+  ]
+}

@@ -270,6 +270,7 @@
   - **SC1 的真机数字已经测出来了**（L8 末端 2.56 mm、L12 30 min 180000 拍、P99.9 0.314 ms），只是它们落在 `docs/evidence/rm75-b-real-arm-ladder.md` 的叙述里，**第二/三轮的机器可读 JSON 没有入库**（远端 `/tmp/soak30.json`、`/tmp/ladder_after_recovery.json`、`/tmp/evidence_final.json` 现仍在）；
   - **SC3 已被完全满足但被判 PARTIAL**：入库产物 `docs/evidence/rm75-b-real-exec-runlog.json`（`mode=hardware`、131 采样、violations=0）+ `rm75-b-real-exec-recording.json` + `rm75-b-real-exec-compare.json`（`pointwise_identical=true`、`max_joint_diff_rad=0.0`）就是"一次真机运行全部消息被录制 → 离线重放逐点一致"的完整证据链；验证轮只复跑了离线 722 点 golden，**没有引用这组三件套**。
 - 结论：**SC1/SC3 的"缺证据"部分是引用口径问题，不是证据缺失**。
+- **2026-11-23 补注（已执行）**：第三轮真机原始 JSON 已从远端 `/tmp` 取回并入库 `docs/evidence/`（全阶梯最终报告、30 min 长稳、末端跟踪、最终 runlog/plan、电流标定、网卡恢复回归），并新增人类可读纪要 `rm75-b-final-round-2026-11-20.md`；**8 h 长稳是失败记录**（`rm75-b-soak-8h-failed-2026-11-20.json`：`dropped=879 999`、抖动 P99.9 9.9276 ms ⇒ `status=failed`，与提交 `4cfab73` 的 SDK 超时保护同根因），只能作失败溯源，**不得当作达标证据**。
 
 #### 成因 B：台账陈旧（4 处，均为记录级、非实现级）
 
@@ -299,9 +300,9 @@
 
 | 判据 | 需要的证据 | 当前状态 | 能否在本环境闭合 |
 |---|---|---|---|
-| SC1 末端误差 < 3 mm、30 min 无故障 | 真机阶梯 L8/L12 的机器可读 JSON | 数字在 md 叙述里，**JSON 未入库**（远端 `/tmp` 有） | ✅ 可补：复制入库 + 引用 |
+| SC1 末端误差 < 3 mm、30 min 无故障 | 真机阶梯 L8/L12 的机器可读 JSON | ✅ **已补入**（`rm75-b-ladder-final-2026-11-20.json` 全阶梯 PASS=11/FAIL=0；`rm75-b-soak-30min-final-2026-11-20.json` 180000 拍零违规、抖动 P99.9 0.3145 ms） | ✅ 已闭合 |
 | SC2 双臂搬运成功率 | 第二台机械臂 | ❌ 不可得 | ⛔ 需硬件 |
-| SC3 真机录制逐点一致 | runlog + recording + compare | ✅ **已入库**，只是未被引用 | ✅ 可补：引用口径 |
+| SC3 真机录制逐点一致 | runlog + recording + compare | ✅ **已入库**（另有最终一轮 `rm75-b-runlog-final-2026-11-20.json` + `rm75-b-plan-final-2026-11-20.json`） | ✅ 已闭合（引用口径） |
 | SC4 四类物理故障 | 人手注入记录 | ❌ 替身层已闭，真机未做 | ⚠️ 需人手 |
 | SC5 厂商接口零调用 | 静态扫描 + 运行时审计 | ✅ 双证齐备 | ✅ |
 | SC6 一条命令重建环境 | setup_env 日志 | ✅ 实测 8–9 s | ✅ |
@@ -326,7 +327,7 @@
 
 | 路径 | 内容 | 代价 |
 |---|---|---|
-| **A. 证据补全（推荐）** | ① 远端把 `/tmp/soak30.json`、`ladder_after_recovery.json`、`evidence_final.json` 等复制进 `docs/evidence/`；② 补跑只读阶梯生成新 JSON；③ 验证时引用 `rm75-b-real-exec-*` 三件套（SC3 判 SATISFIED）；④ 用 `gsd_summary_save` 重写 S00/S01 ASSESSMENT、补建 S02 ASSESSMENT；⑤ `collect_evidence.py` 增加 fault-inject 检查项 + `gsd_requirement_update` 回填 R013；⑥ `gsd_validate_milestone`（round 2） | 需一次远端操作；运动级复跑需人在场 |
+| **A. 证据补全（推荐）** | ① **已完成**：真机第三轮原始 JSON 取回入库 `docs/evidence/`（8 个 JSON + 1 份纪要），README 索引与速查表同步更新；② **已完成**：全过程说明 / ROADMAP / VALIDATION 归档进 `docs/milestone/`；③ **待做**：用 `gsd_summary_save` 重写 S00/S01 ASSESSMENT、补建 S02 ASSESSMENT；④ **待做**：`collect_evidence.py` 增加 fault-inject 检查项 + `gsd_requirement_update` 回填 R013；⑤ **待做**：`gsd_validate_milestone`（round 2）引用上述新证据 | 台账类改动无硬件依赖；运动级复跑需人在场 |
 | **B. 口径调整** | 只修台账，并把 SC1/SC2 中"需双真机/物理急停"明确改判为"现场条件不具备 ⇒ 登记项" | 等于承认降低验收标准，需评审同意 |
 | **C. 只出报告** | 维持现状 | 里程碑持续 blocked |
 
